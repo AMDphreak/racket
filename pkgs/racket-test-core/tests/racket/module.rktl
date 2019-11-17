@@ -2504,6 +2504,56 @@ case of module-leve bindings; it doesn't cover local bindings.
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+
+(module m1-expansion-defines-and-provides-m2 racket/base
+  (require (for-syntax racket/base))
+  (provide m1)
+  (define-syntax (m1 stx)
+    #'(begin
+        (provide m2)
+        (define m2 42))))
+
+(module defines-and-provides-m2 racket/base
+  (provide add1)
+  (require 'm1-expansion-defines-and-provides-m2)
+  (m1))
+
+
+(let-values ([(vals stxes) (module->exports ''defines-and-provides-m2 'defined-names)])
+  (test '(3 3) map length (cdr (assq 0 vals)))
+  (test (string->unreadable-symbol "m2.1") 'module->exports
+        (for/first ([v (in-list (cdr (assq 0 vals)))]
+                    #:when (eq? (car v) 'm2))
+          (caddr v)))
+  (test #t 'module->exports (and (memq 'add1 (map car (cdr (assq 0 vals)))) #t))
+  (test null values stxes))
+
+(let-values ([(vals stxes) (module->exports ''defines-and-provides-m2)])
+  (test '(2 2) map length (cdr (assq 0 vals))))
+  
+(err/rt-test (module->exports ''no-such-module-defined 'not-a-valid-verbosity)
+             exn:fail:contract?
+             #rx"not-a-valid-verbosity")
+
+(let-values ([(vals stxes) (module-compiled-exports (compile '(module m racket/kernel
+                                                                (define-values (x) 1)
+                                                                (#%provide x))))])
+  (test null values stxes)
+  (test '(2) map length (cdr (assq 0 vals))))
+
+(let-values ([(vals stxes) (module-compiled-exports (compile '(module m racket/kernel
+                                                                (define-values (x) 1)
+                                                                (#%provide x)))
+                                                    'defined-names)])
+  (test null values stxes)
+  (test '(3) map length (cdr (assq 0 vals))))
+
+(err/rt-test (module-compiled-exports 'no #f))
+(err/rt-test (module-compiled-exports (compile '(module m racket/kernel)) 'not-a-valid-verbosity)
+             #rx"not-a-valid-verbosity")
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
 (let ([check
        (lambda (later rx)
          (err/rt-test (expand `(module m racket/base
@@ -3045,6 +3095,53 @@ case of module-leve bindings; it doesn't cover local bindings.
   (err/rt-test (write c (open-output-bytes))
                exn:fail:contract?
                #rx"write: linklet is not serializable"))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Make sure that re-exports at higher phases correctly track whether
+;; the export is a variable or syntax
+
+(for ([meta '(1 2)])
+  (define name (string->symbol (format "submodule-reexports-macro-at-meta-~a" meta)))
+  (eval `(module ,name racket/base
+           (module foo racket/base
+             (require (for-syntax racket/base))
+             (provide x)
+             (define-syntax x 5))
+           (module bar racket/base
+             (require (for-meta ,meta (submod ".." foo)))
+             (provide (for-meta ,meta x)))))
+
+  (namespace-require `(submod ',name bar))
+
+  (let-values ([(vals stxes) (module->exports `(submod ',name bar))])
+    (test 0 length vals)
+    (test 1 length stxes)))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check that a `local-expand`-triggered lazy instantiation does not
+;; re-enter an instantiation that is already in progress
+
+(module uses-local-expand-at-phase-1-instantiation racket/base
+  (require (for-syntax racket/base
+                       (for-syntax racket/base)))
+  (provide (for-syntax true))
+  (struct Π- (X))
+  (begin-for-syntax
+    (define TY/internal+ (local-expand #'Π- 'expression null))
+    (define true (lambda (x) #t))))
+
+(module imports-uses-local-expand-at-phase-1-instantiation racket/base
+  (require (for-syntax racket/base)
+           'uses-local-expand-at-phase-1-instantiation)
+  (provide #%module-begin)
+  (define-for-syntax predicate true))
+
+(module lang-is-imports-uses-local-expand 'imports-uses-local-expand-at-phase-1-instantiation)
+
+(let ()
+  ;; important that both of these are in the same top-level evaluation:
+  (test (void) namespace-require ''lang-is-imports-uses-local-expand)
+  (test #t namespace? (module->namespace ''lang-is-imports-uses-local-expand)))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 

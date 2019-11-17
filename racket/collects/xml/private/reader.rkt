@@ -302,10 +302,14 @@
                             [(eq? c delimiter) (read-char in) null]
                             [(eq? c #\&)
                              (let ([entity (expand-entity (lex-entity in pos))])
-                               (if (pcdata? entity)
-                                   (append (string->list (pcdata-string entity)) (read-more))
-                                   ;; more here - do something with user defined entites
-                                   (read-more)))]
+                               (append (cond
+                                         [(pcdata? entity)
+                                          (string->list (pcdata-string entity))]
+                                         [(number? (entity-text entity))
+                                          (list (integer->char (entity-text entity)))]
+                                         ;; more here - do something with user defined entites
+                                         [else '()])
+                                       (read-more)))]
                             [else (read-char in) (cons c (read-more))]))))]
                     [else (if (char? delimiter)
                               (lex-error in pos "attribute values must be in ''s or in \"\"s")

@@ -4607,21 +4607,32 @@ if test "$ARFLAGS" = '' ; then
 fi
 SUB_CONFIGURE_EXTRAS="${SUB_CONFIGURE_EXTRAS} AR_FLAGS="'"'"${ARFLAGS}"'"'
 
+is_gmake=`make -v no-such-target-we-hope 2>&1 | grep "GNU Make"`
+
 # If using gcc, we want all warnings:
-if test "$CC" = "gcc" ; then
+is_gcc=`$CC -v 2>&1 | tail -n 1 | grep -E '^gcc version [[:digit:]]+\.[[:digit:]]+\.[[:digit:]]+ \([^\)]+\)[[:space:]]*$'`
+
+# We also need to test if $CC is gcc itself because on mac,
+# where clang impersonates gcc, although is_gcc is false, we want
+# to use it as if it was gcc.
+# See https://github.com/racket/racket/pull/2897#pullrequestreview-314906673
+if test "$is_gcc" != "" || test "`basename $CC`" = "gcc"; then
   COMPFLAGS="$COMPFLAGS -Wall"
 
   # Use -MMD when we have gcc and gnumake:
-  is_gmake=`make -v no-such-target-we-hope 2>&1 | grep "GNU Make"`
   if test "$is_gmake" = "" ; then
     WX_MMD_FLAG=""
   else
     WX_MMD_FLAG="-MMD"
-    INCLUDEDEP="-include"
   fi
 
   # Compile mzdyn.o with -fPIC
   DYN_CFLAGS="-fPIC"
+fi
+
+# When GNU Make is present, use version.mak
+if test "$is_gmake" != ""; then
+   INCLUDEDEP="-include"
 fi
 
 if test "$REZ" = '' ; then
@@ -6874,7 +6885,20 @@ if test "${enable_shared}" = "yes" ; then
   if test "$INCLUDEDEP" = "-include" ; then
     plt_lib_version="\$(FWVERSION)"
   else
-    plt_lib_version=`grep " MZSCHEME_VERSION " ${srcdir}/racket/src/schvers.h | cut -d '"' -f 2`
+    VERSION_X=`grep 'define MZSCHEME_VERSION_X ' ${srcdir}/racket/src/schvers.h | cut -d ' ' -f 3`
+    VERSION_Y=`grep 'define MZSCHEME_VERSION_Y ' ${srcdir}/racket/src/schvers.h | cut -d ' ' -f 3`
+    VERSION_Z=`grep 'define MZSCHEME_VERSION_Z ' ${srcdir}/racket/src/schvers.h | cut -d ' ' -f 3`
+    VERSION_W=`grep 'define MZSCHEME_VERSION_W ' ${srcdir}/racket/src/schvers.h | cut -d ' ' -f 3`
+
+    if test "${VERSION_W}" != "0" ; then
+      plt_lib_version="${VERSION_X}.${VERSION_Y}.${VERSION_Z}.${VERSION_W}"
+    else
+      if test "${VERSION_Z}" != "0" ; then
+        plt_lib_version="${VERSION_X}.${VERSION_Y}.${VERSION_Z}"
+      else
+        plt_lib_version="${VERSION_X}.${VERSION_Y}"
+      fi
+    fi
   fi
 
   AR="${LIBTOOLPROG} --mode=link --tag=CC $CC${need_gcc_static_libgcc}${ar_libtool_no_undefined} -release ${plt_lib_version} -rpath ${abslibdir} \$(ARLIBFLAGS) -o"

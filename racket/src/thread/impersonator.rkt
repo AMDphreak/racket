@@ -4,7 +4,8 @@
          "evt.rkt"
          (submod "evt.rkt" for-chaperone)
          "channel.rkt"
-         (submod "channel.rkt" for-impersonator))
+         (submod "channel.rkt" for-impersonator)
+         "error.rkt")
 
 (provide chaperone-evt
          chaperone-channel
@@ -48,11 +49,13 @@
                                  (unless (= (length rs) (length new-rs))
                                    (raise
                                     (exn:fail:contract:arity
-                                     (string-append
-                                      what " " (if chaperone? "chaperone" "impersonator")
-                                      ": result wrapper returned wrong number of values\n"
-                                      "  expected count: " (number->string (length rs)) "\n"
-                                      "  returned count: " (number->string (length new-rs)))
+                                     (error-message->string
+                                      (string-append
+                                       what " " (if chaperone? "chaperone" "impersonator"))
+                                      (string-append
+                                       "result wrapper returned wrong number of values\n"
+                                       "  expected count: " (number->string (length rs)) "\n"
+                                       "  returned count: " (number->string (length new-rs))))
                                      (current-continuation-marks))))
                                  (when chaperone?
                                    (for ([r (in-list rs)]
@@ -62,10 +65,13 @@
                [args
                 (raise
                  (exn:fail:contract:arity
-                  (string-append
-                   what " " (if chaperone? "chaperone" "impersonator") ": returned wrong number of values\n"
-                   "  expected count: 2\n"
-                   "  returned count: " (number->string (length args)))
+                  (error-message->string
+                   (string-append
+                    what " " (if chaperone? "chaperone" "impersonator"))
+                   (string-append
+                    "returned wrong number of values\n"
+                    "  expected count: 2\n"
+                    "  returned count: " (number->string (length args))))
                   (current-continuation-marks)))])))
          args))
 
@@ -97,15 +103,13 @@
 
 (define (check-chaperone-of what new-r r)
   (unless (chaperone-of? new-r r)
-    (raise
-     (exn:fail:contract
-      (string-append
-       what " chaperone: non-chaperone result;\n"
-       " received a value that is not a chaperone of the original value\n"
-       "  value: " ((error-value->string-handler) r) "\n"
-       "  non-chaperone value: "
-       ((error-value->string-handler) new-r))
-      (current-continuation-marks)))))
+    (raise-arguments-error
+     (string->symbol (string-append what " chaperone"))
+     (string-append
+      "non-chaperone result;\n"
+      " received a value that is not a chaperone of the original value\n")
+     "value" r
+     "non-chaperone value" new-r)))
 
 (define (check-impersonator-properties who args)
   (let loop ([args args])

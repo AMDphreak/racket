@@ -284,15 +284,15 @@ converting between byte strings and C's @cpp{char*} type.
 A type for UCS-4 format strings that include a nul terminator. As
 usual, the type treats @racket[#f] as @cpp{NULL} and vice versa.
 
-For the @3m[] and @CGC[] variants of Racket, the conversion of a
+For the @CS[] implementation of Racket, the conversion of a Racket string for
+the foreign side is a copy of the Racket representation, where the
+copy is managed by the garbage collector.
+
+For the @BC[] implementation of Racket, the conversion of a
 Racket string for the foreign side shares memory with the Racket
 string representation, since UCS-4 is the native representation format
 for those variants. The foreign pointer corresponds to the
-@cpp{mzchar*} type in Racket's C API.
-
-For the @CS[] variant of Racket, the conversion of a Racket string for
-the foreign side is a copy of the Racket representation, where the
-copy is managed by the garbage collector.}
+@cpp{mzchar*} type in Racket's C API.}
 
 
 @deftogether[(
@@ -313,9 +313,9 @@ Simple @cpp{char*} strings that are nul terminated, corresponding to
 Racket's @tech[#:doc reference.scrbl]{path or string}. As usual, the
 type treats @racket[#f] as @cpp{NULL} and vice versa.
 
-For the @3m[] and @CGC[] variants of Racket, the conversion of a
+For the @BC[] implementation of Racket, the conversion of a
 Racket path for the foreign side shares memory with the Racket path
-representation. Otherwise (for the @CS[] variant or for Racket
+representation. Otherwise (for the @CS[] implementation or for Racket
 strings), conversion for the foreign side creates a copy that is
 managed by the garbage collector.
 
@@ -332,15 +332,15 @@ Simple @cpp{char*} strings as Racket symbols (encoded in UTF-8 and nul
 terminated), intended as read-only for the foreign side. Return values
 using this type are interned as symbols.
 
-For the @3m[] and @CGC[] variants of Racket, the conversion of a
+For the @CS[] implementation of Racket, the conversion of a Racket symbol for
+the foreign side is a copy of the Racket representation, where the
+copy is managed by the garbage collector.
+
+For the @BC[] implementation of Racket, the conversion of a
 Racket symbol for the foreign side shares memory with the Racket
 symbol representation, but points to the middle of the symbol's
 allocated memory---so the string pointer must not be used across a
-garbage collection.
-
-For the @CS[] variant of Racket, the conversion of a Racket symbol for
-the foreign side is a copy of the Racket representation, where the
-copy is managed by the garbage collector.}
+garbage collection.}
 
 
 @subsection{Fixed Auto-Converting String Types}
@@ -378,7 +378,14 @@ using a parameter-determined conversion.
 Expands to a use of the @racket[default-_string-type] parameter.  The
 parameter's value is consulted when @racket[_string] is evaluated, so
 the parameter should be set before any interface definition that uses
-@racket[_string].}
+@racket[_string].
+
+Don't use @racket[_string] when you should use @racket[_path].
+Although C APIs typically represent paths as strings, and although
+the default @racket[_string] (via @racket[default-_string-type]) even
+implicitly converts Racket paths to strings, using @racket[_path]
+ensures the proper encoding of strings as paths, which is not always
+UTF-8. See also @racket[_path] for a caveat about relative paths.}
 
 @defparam[default-_string-type type ctype?]{
 
@@ -439,7 +446,7 @@ The same as @racket[_pointer] as an argument type, but as a result
 type, @racket[_gcpointer] corresponds to a C pointer value that refers
 to memory managed by the garbage collector.
 
-In the @3m[] and @CGC[] variants of Racket, a @racket[_gcpointer] result
+In the @BC[] implementation of Racket, a @racket[_gcpointer] result
 pointer can reference to memory that is not
 managed by the garbage collector, but beware of using an address that
 might eventually become managed by the garbage collector. For example,
@@ -510,11 +517,13 @@ the later case, the result is the @racket[ctype]).}
 @defproc[(_cprocedure [input-types (list ctype?)]
                       [output-type ctype?]
                       [#:abi abi (or/c #f 'default 'stdcall 'sysv) #f]
+                      [#:varargs-after varargs-after (or/c #f positive-exact-integer?) #f]
                       [#:atomic? atomic? any/c #f]
                       [#:async-apply async-apply (or/c #f ((-> any/c) . -> . any/c) box?) #f]
                       [#:lock-name lock-name (or/c string? #f) #f]
                       [#:in-original-place? in-original-place? any/c #f]
                       [#:blocking? blocking? any/c #f]
+                      [#:callback-exns? callback-exns? any/c #f]
                       [#:save-errno save-errno (or/c #f 'posix 'windows) #f]
                       [#:wrapper wrapper (or/c #f (procedure? . -> . procedure?))
                                          #f]
@@ -537,8 +546,12 @@ function pointer and vice versa.
 A type created with @racket[_cprocedure] can also be used for passing
 Racket procedures to foreign functions, which will generate a foreign
 function pointer that calls to the given Racket @deftech{callback}
-procedure.  There are no restrictions on the Racket procedure; in
-particular, its lexical context is properly preserved.
+procedure. There are no restrictions on the representation of the
+Racket procedure; in particular, the procedure can have free variables
+that refer to bindings in its environment. Callbacks are subject to
+run-time constraints, however, such as running in atomic mode or not
+raising exceptions; see @elemref["callbacks"]{more information on
+callbacks} below.
 
 The optional @racket[abi] keyword argument determines the foreign ABI
 that is used. Supplying @racket[#f] or @racket['default] indicates the
@@ -546,6 +559,23 @@ platform-dependent default. The other possible
 values---@racket['stdcall] and @racket['sysv] (i.e., ``cdecl'')---are
 currently supported only for 32-bit Windows; using them on other
 platforms raises an exception. See also @racketmodname[ffi/winapi].
+
+The optional @racket[varargs-after] argument indicates whether some
+function-type arguments should be considered ``varargs,'' which are
+argument represented by an ellipsis @litchar{...} in the C declaration
+(but by explicit arguments in @racket[input-types]). A @racket[#f]
+value indicates that the C function type does not have varargs. If
+@racket[varargs-after] is a number, then arguments after the first
+@racket[varargs-after] arguments in @racket[input-types] are varargs.
+Note that @racket[#f] is different from @racket[(length input-types)]
+on some platforms; the possibility of varargs for a function may imply
+a different calling convention even for non-vararg arguments. Note
+also that a non-@racket[#f] @racket[varargs-after] does @emph{not}
+mean that you can supply any number of arguments to a @tech{callout}
+or receive any number of arguments to a @tech{callback} using the
+procedure type; to work with different argument counts and argument
+types, use @racket[_cprocedure] (or @racket[_fun]) separately for each
+combination.
 
 For @tech{callouts} to foreign functions with the generated type:
 
@@ -596,14 +626,36 @@ For @tech{callouts} to foreign functions with the generated type:
  @item{If @racket[blocking?] is true, then a foreign @tech{callout}
        deactivates tracking of the calling OS thread---to the degree
        supported by the Racket variant---during the foreign call. The
-       value of @racket[blocking?] affects only the @CS[] variant of
+       value of @racket[blocking?] affects only the @CS[] implementation of
        Racket, where it enable activity
        such as garbage collection in other OS threads while the
-       @tech{callout} blocks. If the blocking @tech{callout} can
+       @tech{callout} blocks. Since a garbage collection can happen during
+       the foreign call, objects passed to the foreign call need to be
+       immobile if they're managed by the garbage collector; in particular,
+       any @racket[_ptr] arguments should normally specify @racket['atomic-interior]
+       allocation mode.
+       If the blocking @tech{callout} can
        invoke any @tech{callbacks} back to Racket, those
        @tech{callbacks} must be constructed with a non-@racket[#f]
        value of @racket[async-apply], even if they are always applied
        in the OS thread used to run Racket.}
+
+ @item{If @racket[callback-exns?] is true, then a foreign
+       @tech{callout} allows an atomic @tech{callback} during the
+       foreign call to raise an exception that escapes from the
+       foreign call. From the foreign library's perspective, the
+       exception escapes via @tt{longjmp}. Exception escapes are
+       implemented through an exception handler that catches and
+       reraises the exception.
+
+       A callback that raises an exception must be an atomic callback
+       in the @BC[] implementation of Racket (and callbacks are always
+       atomic in the @CS[] implementation). Raising an exception is
+       not allowed in a callback that has an @racket[async-apply],
+       since the callback will run in an unspecified context. Raising
+       an exception is also not allowed if the callout (that led to
+       the callback) was created with @racket[in-original-place?] as
+       true and called in a non-original place.}
 
  @item{Values that are provided to a @tech{callout} (i.e., the
        underlying callout, and not the replacement produced by a
@@ -620,7 +672,8 @@ For @tech{callouts} to foreign functions with the generated type:
 
 ]
 
-For @tech{callbacks} to Racket functions with the generated type:
+For @elemtag["callbacks"]{@tech{callbacks}} to Racket functions with
+the generated type:
 
 @itemize[
 
@@ -686,20 +739,29 @@ For @tech{callbacks} to Racket functions with the generated type:
        @racket[keep] is based on the original function for the
        callback, not the result of @racket[wrapper].}
 
- @item{If @racket[atomic?] is true, then when a Racket procedure is
-       given this procedure type and called as a @tech{callback} from
-       foreign code, then the Racket process is put into atomic mode
-       while evaluating the Racket procedure body.
+ @item{If @racket[atomic?] is true or when using the @CS[] implementation of
+       Racket, then when a Racket procedure is given this type and
+       called as a @tech{callback} from foreign code, then the Racket
+       process is put into atomic mode while evaluating the Racket
+       procedure body.
 
-        In atomic mode, other Racket threads do not run, so the Racket
+       In atomic mode, other Racket threads do not run, so the Racket
        code must not call any function that potentially blocks on
        synchronization with other threads, or else it may lead to
        deadlock. In addition, the Racket code must not perform any
        potentially blocking operation (such as I/O), it must not raise
-       an uncaught exception, it must not perform any escaping
-       continuation jumps, and its non-tail recursion must be minimal
-       to avoid C-level stack overflow; otherwise, the process may
-       crash or misbehave.}
+       an uncaught exception unless called through a @tech{callout}
+       that supports exception (with @racket[#:callback-exns? #t]), it
+       must not perform any escaping continuation jumps, and (at
+       least for the @BC[] implementation) its
+       non-tail recursion must be minimal to avoid C-level stack
+       overflow; otherwise, the process may crash or misbehave.
+
+       Callbacks are always atomic in the @CS[] implementation of Racket,
+       because Racket threads do not capture C-stack context. Even on
+       the @BC[] implementation of Racket, atomic mode is
+       typically needed for callbacks, because capturing by copying a
+       portion of the C stack is often incompatible with C libraries.}
 
  @item{If a @racket[async-apply] is provided as a procedure or box, then a Racket
        @tech{callback} procedure with the generated procedure type can
@@ -749,15 +811,25 @@ For @tech{callbacks} to Racket functions with the generated type:
        OS-level thread that runs Racket, then @racket[async-apply]
        is not used.}
 
+ @item{A callback normally should not escape by raising an exception
+       or invoking a continuation. An atomic callback can potentially
+       raise an exception, but only if it is called during the
+       invocation of a @tech{callout} created with
+       @racket[callback-exns?] as true. A non-atomic callback must
+       never raise an exception.}
+
 ]
 
 @history[#:changed "6.3" @elem{Added the @racket[#:lock-name] argument.}
-         #:changed "6.12.0.2" @elem{Added the @racket[#:blocking?] argument.}]}
+         #:changed "6.12.0.2" @elem{Added the @racket[#:blocking?] argument.}
+         #:changed "7.9.0.16" @elem{Added the @racket[#:varargs-after] argument.}
+         #:changed "8.0.0.8" @elem{Added the @racket[#:callback-exns?] argument.}]}
 
 @defform/subs[#:literals (->> :: :)
               (_fun fun-option ... maybe-args type-spec ... ->> type-spec
                     maybe-wrapper)
               ([fun-option (code:line #:abi abi-expr)
+                           (code:line #:varargs-after varargs-after-expr)
                            (code:line #:save-errno save-errno-expr)
                            (code:line #:keep keep-expr)
                            (code:line #:atomic? atomic?-expr)
@@ -765,6 +837,7 @@ For @tech{callbacks} to Racket functions with the generated type:
                            (code:line #:lock-name lock-name-expr)
                            (code:line #:in-original-place? in-original-place?-expr)
                            (code:line #:blocking? blocking?-expr)
+                           (code:line #:callback-exns? callback-exns?-expr)
                            (code:line #:retry (retry-id [arg-id init-expr]))]
                [maybe-args code:blank
                            (code:line formals ::)]
@@ -791,9 +864,10 @@ specifies a function that receives a string and an integer
 and returns an integer.
 
 See @racket[_cprocedure] for information about the @racket[#:abi],
+@racket[#:varargs-after],
 @racket[#:save-errno], @racket[#:keep], @racket[#:atomic?],
-@racket[#:async-apply], @racket[#:in-original-place?], and
-@racket[#:blocking] options.
+@racket[#:async-apply], @racket[#:in-original-place?],
+@racket[#:blocking], and @racket[#:callback-exns?] options.
 
 In its full form, the @racket[_fun] syntax provides an IDL-like
 language that creates a wrapper function around the
@@ -886,7 +960,9 @@ specifications:
 
 @history[#:changed "6.2" @elem{Added the @racket[#:retry] option.}
          #:changed "6.3" @elem{Added the @racket[#:lock-name] option.}
-         #:changed "6.12.0.2" @elem{Added the @racket[#:blocking?] option.}]}
+         #:changed "6.12.0.2" @elem{Added the @racket[#:blocking?] option.}
+         #:changed "7.9.0.16" @elem{Added the @racket[#:varargs-after] option.}
+         #:changed "8.0.0.8" @elem{Added the @racket[#:callback-exns?] option.}]}
 
 @defproc[(function-ptr [ptr-or-proc (or cpointer? procedure?)]
                        [fun-type ctype?])
@@ -898,7 +974,7 @@ Casts @racket[ptr-or-proc] to a function pointer of type @racket[fun-type].}
 
 A literal used in @racket[_fun] forms. (It's unfortunate that this
 literal has the same name as @racket[->] from
-@racketmodname[racket/contract], but it's a different binding.}}
+@racketmodname[racket/contract], but it's a different binding.)}
 
 @; ----------------------------------------------------------------------
 
@@ -1011,12 +1087,15 @@ Examples:
 
 
 @defform/subs[#:literals (i o io)
-              (_ptr mode type-expr)
-              ([mode i o io])]{
+              (_ptr mode type-expr maybe-malloc-mode)
+              ([mode i o io]
+               [maybe-malloc-mode (code:line) #f raw atomic nonatomic tagged
+                                  atomic-interior interior
+                                  stubborn uncollectable eternal])]{
 
 Creates a C pointer type, where @racket[mode] indicates input or
 output pointers (or both).  The @racket[mode] can be one of the
-following:
+following (matched as a symbol independent of binding):
 
 @itemize[
 
@@ -1030,9 +1109,8 @@ following:
   the foreign function expects a pointer to a place where it will save
   some value, and this value is accessible after the call, to be used
   by an extra return expression.  If @racket[_ptr] is used in this
-  mode, then the generated wrapper does not expect an argument since
-  one will be freshly allocated before the call. The argument is
-  allocated using @racket[(malloc type-expr)].}
+  mode, then the generated wrapper does not expect an argument, since
+  one will be freshly allocated before the call.}
 
  @item{@racket[io] --- combines the above into an
   @italic{input/output} pointer argument: the wrapper gets the Racket
@@ -1058,15 +1136,26 @@ following type:
 
 creates a function that calls the foreign function with a fresh
 integer pointer, and use the value that is placed there as a second
-return value.}
+return value.
+
+The pointer argument created by @racket[_ptr] is allocated using
+allocated using @racket[(malloc type-expr)] if
+@racket[maybe-malloc-mode] is not specified or if it is @racket[#f],
+@racket[(malloc type-expr '@#,racket[maybe-malloc-mode])] otherwise.
+
+@history[#:changed "7.7.0.6" @elem{The modes @racket[i], @racket[o],
+                                   and @racket[io] match as symbols
+                                   instead of free identifiers.}
+         #:changed "8.0.0.13" @elem{Added @racket[malloc-mode].}]}
 
 
-@defform[(_box type)]{
+@defform[(_box type maybe-malloc-mode)]{
 
 A @tech{custom function type} similar to a @racket[(_ptr io _type)]
 argument, where the input is expected to be a box holding an
 appropriate value, which is unboxed on entry and modified accordingly
-on exit.
+on exit. The optional @racket[maybe-malloc-mode] is the same as for
+@racket[_ptr].
 
 Example:
 
@@ -1077,10 +1166,18 @@ Example:
       -> (values res (unbox boxed)))
 ]}
 
-@defform/subs[(_list mode type maybe-len)
+@defform/subs[#:literals (atomic raw atomic nonatomic tagged
+                          atomic-interior interior
+                          stubborn uncollectable eternal)
+              (_list mode type maybe-len maybe-mode)
               ([mode i o io]
                [maybe-len code:blank
-                          len-expr])]{
+                          len-expr]
+               [maybe-mode code:blank
+                           atomic
+                           raw atomic nonatomic tagged
+                           atomic-interior interior
+                           stubborn uncollectable eternal])]{
 
 A @tech{custom function type} that is similar to @racket[_ptr], except
 that it is used for converting lists to/from C vectors.  The optional
@@ -1089,6 +1186,8 @@ the post code, and in the pre code of an output mode to allocate the
 block.  (If the length is 0, then NULL is passed in and an empty list is
 returned.)  In either case, it can refer to a previous binding for the
 length of the list which the C function will most likely require.
+The @racket[maybe-mode], if provided, is quoted and passed to @racket[malloc]
+as needed to allocate the C representation.
 
 For example, the following type corresponds to a function that takes
 a vector argument of type @tt{*float} (from a Racket list input)
@@ -1112,9 +1211,14 @@ return two values, the vector and the boolean.
       [vec : (_list o _float len)]
       -> [res : _bool]
       -> (values vec res))
-]}
+]
 
-@defform[(_vector mode type maybe-len)]{
+@history[#:changed "7.7.0.2" @elem{Added @racket[maybe-mode].}]
+         #:changed "7.7.0.6" @elem{The modes @racket[i], @racket[o],
+                                   and @racket[io] match as symbols
+                                   instead of free identifiers.}]}
+
+@defform[(_vector mode type maybe-len maybe-mode)]{
 
 A @tech{custom function type} like @racket[_list], except that it uses
 Racket vectors instead of lists.
@@ -1131,7 +1235,12 @@ Examples:
       -> (values vec res))
 ]
 
-See @racket[_list] for more explanation about the examples.}
+See @racket[_list] for more explanation about the examples.
+
+@history[#:changed "7.7.0.2" @elem{Added @racket[maybe-mode].}
+         #:changed "7.7.0.6" @elem{The modes @racket[i], @racket[o],
+                                   and @racket[io] match as symbols
+                                   instead of free identifiers.}]}
 
 
 @defform*[#:id _bytes
@@ -1144,10 +1253,10 @@ type; a byte string is passed as @racket[_bytes] without any copying.
 Beware that a Racket byte string is not necessarily nul terminated;
 see also @racket[_bytes/nul-terminated].
 
-In the @3m[] and @CGC[] variants of Racket, a C non-NULL result value
+In the @BC[] implementation of Racket, a C non-NULL result value
 is converted to a Racket byte string without copying; the pointer is
 treated as potentially managed by the garbage collector (see
-@racket[_gcpointer] for caveats). In the @CS[] variant of Racket,
+@racket[_gcpointer] for caveats). In the @CS[] implementation of Racket,
 conversion requires copying to represent a C @cpp{char*}
 result as a Racket byte string, and the original pointer is @emph{not}
 treated as managed by the garbage collector. In both cases, the C result must have
@@ -1155,10 +1264,10 @@ a nul terminator to determine the Racket byte string's length.
 
 A @racket[(_bytes o len-expr)] form is a @tech{custom function type}.
 As an argument, a byte string is allocated with the given length; in
-the @3m[] and @CGC[] variants, that byte string includes an extra byte
+the @BC[] implementation, that byte string includes an extra byte
 for the nul terminator, and @racket[(_bytes o len-expr)] as a result
 wraps a C non-NULL @cpp{char*} pointer as a byte string of the given
-length. For the @CS[] variant, the allocated argument does not include
+length. For the @CS[] implementation, the allocated argument does not include
 a nul terminator and a copy is made for a result string.
 
 As usual, @racket[_bytes] treats @racket[#f] as @cpp{NULL} and vice
@@ -1735,7 +1844,7 @@ a-union-val
 ]}
 
 
-@defproc[(union-ptr [u array?]) cpointer?]{
+@defproc[(union-ptr [u union?]) cpointer?]{
 
 Extracts the pointer for a union's storage.
 

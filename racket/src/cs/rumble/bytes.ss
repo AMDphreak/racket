@@ -12,13 +12,16 @@
             args)
   (register-place-shared (apply #2%bytevector args)))
 
-(define bytes? #2%bytevector?)
+(define (bytes? x) (#2%bytevector? x))
 
-(define bytes-length #2%bytevector-length)
+(define (mutable-bytes? x) (#%mutable-bytevector? x))
+(define (immutable-bytes? x) (#%immutable-bytevector? x))
+
+(define (bytes-length bstr) (#2%bytevector-length bstr))
 
 (define/who make-bytes
   (case-lambda
-   [(n) (#2%make-bytevector n 0)]
+   [(n) (make-bytes n 0)]
    [(n b)
     (check who exact-nonnegative-integer? n)
     (check who byte? b)
@@ -42,37 +45,50 @@
          lst)
   (u8-list->bytevector lst))
 
-(define bytes->list #2%bytevector->u8-list)
+(define (bytes->list bstr) (#2%bytevector->u8-list bstr))
 
-(define bytes-ref #2%bytevector-u8-ref)
-(define bytes-set! #2%bytevector-u8-set!)
-(define bytes->immutable-bytes #2%bytevector->immutable-bytevector)
+(define (bytes-ref bstr i) (#2%bytevector-u8-ref bstr i))
+(define (bytes-set! bstr i b) (#2%bytevector-u8-set! bstr i b))
+(define (bytes->immutable-bytes bstr) (#2%bytevector->immutable-bytevector bstr))
 
 (define/who bytes-copy!
   (case-lambda
     [(dest d-start src)
-     (bytes-copy! dest d-start src 0 (bytes-length src))]
+     (bytes-copy! dest d-start src 0 (and (bytevector? src) (bytevector-length src)))]
     [(dest d-start src s-start)
-     (bytes-copy! dest d-start src s-start (bytes-length src))]
+     (bytes-copy! dest d-start src s-start (and (bytevector? src) (bytevector-length src)))]
     [(dest d-start src s-start s-end)
-     (check who mutable-bytevector? :contract "(and/c bytes? (not/c immutable?))" dest)
-     (check who exact-nonnegative-integer? d-start)
-     (check who bytes? src)
-     (check who exact-nonnegative-integer? s-start)
-     (check who exact-nonnegative-integer? s-end)
-     (let ([d-len (bytevector-length dest)])
-       (check-range who "byte string" dest d-start #f d-len)
-       (check-range who "byte string" src s-start s-end (bytevector-length src))
-       (let ([s-len (fx- s-end s-start)])
-         (check-space who "byte string" d-start d-len s-len)
-         (bytevector-copy! src s-start dest d-start s-len)))]))
+     ;; start with fast, inlined checks for valid calls, then use
+     ;; slower tests with consistent reporting if fast tests fail
+     (cond
+      [(and (mutable-bytevector? dest)
+            (bytevector? src)
+            (fixnum? d-start)
+            (fixnum? s-start)
+            (fixnum? s-end)
+            (fx<= 0 d-start (fx+ d-start (fx- s-end s-start)) (bytevector-length dest))
+            (fx<= 0 s-start s-end (bytevector-length src)))
+       (bytevector-copy! src s-start dest d-start (fx- s-end s-start))]
+      [else
+       (check who mutable-bytevector? :contract "(and/c bytes? (not/c immutable?))" dest)
+       (check who exact-nonnegative-integer? d-start)
+       (check who bytes? src)
+       (check who exact-nonnegative-integer? s-start)
+       (check who exact-nonnegative-integer? s-end)
+       (let ([d-len (bytevector-length dest)])
+         (check-range who "byte string" dest d-start #f d-len)
+         (check-range who "byte string" src s-start s-end (bytevector-length src))
+         (let ([s-len (fx- s-end s-start)])
+           (check-space who "byte string" d-start d-len s-len)
+           (bytevector-copy! src s-start dest d-start s-len)))])]))
 
 (define/who (bytes-fill! bstr b)
   (check who mutable-bytevector? :contract "(and/c bytes? (not/c immutable?))" bstr)
   (check who byte? b)
   (bytevector-fill! bstr b))
 
-(define bytes-copy #2%bytevector-copy)
+(define (bytes-copy bstr)
+  (#2%bytevector-copy bstr))
 
 (define-syntax-rule (define-bytes-compare name do-name)
   (define/who name
@@ -101,8 +117,8 @@
 (define-bytes-compare bytes=? bytevector=?)
 
 (define (do-bytes<? a b)
-  (let ([alen (bytes-length a)]
-        [blen (bytes-length b)])
+  (let ([alen (bytevector-length a)]
+        [blen (bytevector-length b)])
     (let loop ([i 0])
       (cond
        [(= i alen) (if (= i blen)
@@ -118,8 +134,8 @@
            [else #f]))]))))
 
 (define (do-bytes>? a b)
-  (let ([alen (bytes-length a)]
-        [blen (bytes-length b)])
+  (let ([alen (bytevector-length a)]
+        [blen (bytevector-length b)])
     (let loop ([i 0])
       (cond
        [(= i alen) #f]
@@ -180,4 +196,4 @@
       (bytevector-copy! bstr start c 0 len)
       c)]
    [(bstr start)
-    (subbytes bstr start (bytes-length bstr))]))
+    (subbytes bstr start (if (bytes? bstr) (bytevector-length bstr) 0))]))

@@ -51,13 +51,10 @@ operations can be prevented by adjusting the code inspector (see
 @defproc[(unsafe-fxabs       [a fixnum?]) fixnum?]
 )]{
 
-For @tech{fixnums}: Like @racket[+], @racket[-], @racket[*],
-@racket[quotient], @racket[remainder], @racket[modulo], and
-@racket[abs], but constrained to consume @tech{fixnums} and produce a
-@tech{fixnum} result. The mathematical operation on @racket[a] and
-@racket[b] must be representable as a @tech{fixnum}. In the case of
-@racket[unsafe-fxquotient], @racket[unsafe-fxremainder], and
-@racket[unsafe-fxmodulo], @racket[b] must not be @racket[0].
+For @tech{fixnums}: Unchecked versions of @racket[fx+], @racket[fx-],
+@racket[fx*], @racket[fxquotient],
+@racket[fxremainder], @racket[fxmodulo], and
+@racket[fxabs].
 
 @history[#:changed "7.0.0.13" @elem{Allow zero or more arguments for @racket[unsafe-fx+] and @racket[unsafe-fx*]
                                     and allow one or more arguments for @racket[unsafe-fx-].}]}
@@ -70,24 +67,41 @@ For @tech{fixnums}: Like @racket[+], @racket[-], @racket[*],
 @defproc[(unsafe-fxnot [a fixnum?]) fixnum?]
 @defproc[(unsafe-fxlshift [a fixnum?] [b fixnum?]) fixnum?]
 @defproc[(unsafe-fxrshift [a fixnum?] [b fixnum?]) fixnum?]
+@defproc[(unsafe-fxrshift/logical [a fixnum?] [b fixnum?]) fixnum?]
 )]{
 
-For @tech{fixnums}: Like @racket[bitwise-and], @racket[bitwise-ior],
-@racket[bitwise-xor], @racket[bitwise-not], and
-@racket[arithmetic-shift], but constrained to consume @tech{fixnums};
-the result is always a @tech{fixnum}. The @racket[unsafe-fxlshift] and
-@racket[unsafe-fxrshift] operations correspond to
-@racket[arithmetic-shift], but require non-negative arguments;
-@racket[unsafe-fxlshift] is a positive (i.e., left) shift, and
-@racket[unsafe-fxrshift] is a negative (i.e., right) shift, where the
-number of bits to shift must be no more than the number of bits used to
-represent a @tech{fixnum}. In the case of @racket[unsafe-fxlshift],
-bits in the result beyond the number of bits used to represent a
-@tech{fixnum} are effectively replaced with a copy of the high bit.
+For @tech{fixnums}: Unchecked versions of @racket[fxand], @racket[fxior], @racket[fxxor],
+@racket[fxnot], @racket[fxlshift], @racket[fxrshift], and @racket[fxrshift/logical].
 
 @history[#:changed "7.0.0.13" @elem{Allow zero or more arguments for
                                     @racket[unsafe-fxand], @racket[unsafe-fxior],
-                                    and @racket[unsafe-fxxor].}]}
+                                    and @racket[unsafe-fxxor].}
+        #:changed "8.8.0.5" @elem{Added @racket[unsafe-fxrshift/logical].}]}
+
+@deftogether[(
+@defproc[(unsafe-fxpopcount [a (and/c fixnum? (not/c negative?))]) fixnum?]
+@defproc[(unsafe-fxpopcount32 [a (and/c fixnum? (integer-in 0 @#,racketvalfont{#xFFFFFFFF}))]) fixnum?]
+@defproc[(unsafe-fxpopcount16 [a (and/c fixnum? (integer-in 0 @#,racketvalfont{#xFFFF})) ]) fixnum?]
+)]{
+
+For @tech{fixnums}: Unchecked versions of @racket[fxpopcount],
+@racket[fxpopcount32], and @racket[fxpopcount16].
+
+@history[#:added "8.5.0.6"]}
+
+
+@deftogether[(
+@defproc[(unsafe-fx+/wraparound [a fixnum?] [b fixnum?]) fixnum?]
+@defproc[(unsafe-fx-/wraparound [a fixnum?] [b fixnum?]) fixnum?]
+@defproc[(unsafe-fx*/wraparound [a fixnum?] [b fixnum?]) fixnum?]
+@defproc[(unsafe-fxlshift/wraparound [a fixnum?] [b fixnum?]) fixnum?]
+)]{
+
+For @tech{fixnums}: Unchecked versions of @racket[fx+/wraparound],
+@racket[fx-/wraparound], @racket[fx*/wraparound], and
+@racket[fxlshift/wraparound].
+
+@history[#:added "7.9.0.6"]}
 
 
 @deftogether[(
@@ -100,9 +114,9 @@ bits in the result beyond the number of bits used to represent a
 @defproc[(unsafe-fxmax [a fixnum?] [b fixnum?] ...) fixnum?]
 )]{
 
-For @tech{fixnums}: Like @racket[=], @racket[<], @racket[>],
-@racket[<=], @racket[>=], @racket[min], and @racket[max], but
-constrained to consume @tech{fixnums}.
+For @tech{fixnums}: Unchecked versions of @racket[fx=], @racket[fx<],
+ @racket[fx>], @racket[fx<=], @racket[fx>=],
+ @racket[fxmin], and @racket[fxmax].
 
 @history[#:changed "7.0.0.13" @elem{Allow one or more argument,
                                     instead of allowing just two.}]}
@@ -154,6 +168,14 @@ For @tech{flonums}: Unchecked (potentially) versions of
 the corresponding safe bindings.}
 
 
+@defproc[(unsafe-flsingle [a flonum?]) flonum?]{
+
+For @tech{flonums}: Unchecked (potentially) version of
+@racket[flsingle].
+
+@history[#:added "7.8.0.7"]}
+
+
 @deftogether[(
 @defproc[(unsafe-flsin [a flonum?]) flonum?]
 @defproc[(unsafe-flcos [a flonum?]) flonum?]
@@ -172,6 +194,7 @@ For @tech{flonums}: Unchecked (potentially) versions of
 @racket[flacos], @racket[flatan], @racket[fllog], @racket[flexp],
 @racket[flsqrt], and @racket[flexpt]. Currently, some of these
 bindings are simply aliases for the corresponding safe bindings.}
+
 
 @deftogether[(
 @defproc[(unsafe-make-flrectangular [a flonum?] [b flonum?])
@@ -196,10 +219,10 @@ For @tech{flonums}: Unchecked versions of @racket[make-flrectangular],
 @defproc[(unsafe-fx->fl [a fixnum?]) flonum?]
 @defproc[(unsafe-fl->fx [a flonum?]) fixnum?]
 )]{
-Unchecked conversion of a fixnum to an integer flonum and vice versa.
-These are similar to the safe bindings @racket[->fl] and @racket[fl->exact-integer],
-but further constrained to consume or produce a fixnum.
-}
+Unchecked versions of @racket[fx->fl] and @racket[fl->fx].
+
+@history[#:changed "7.7.0.8" @elem{Changed @racket[unsafe-fl->fx] to truncate.}]}
+
 
 @defproc[(unsafe-flrandom [rand-gen pseudo-random-generator?]) (and flonum? (>/c 0) (</c 1))]{
 
@@ -225,7 +248,7 @@ Unchecked versions of @racket[char=?], @racket[char<?], @racket[char>?],
 
 
 
-@section{Unsafe Data Extraction}
+@section[#:tag "Unsafe Data Extraction"]{Unsafe Compound-Data Operations}
 
 @deftogether[(
 @defproc[(unsafe-car [p pair?]) any/c]
@@ -256,6 +279,44 @@ Unsafe variants of @racket[list-ref] and @racket[list-tail], where
 at least @racket[(add1 pos)] (for @racket[unsafe-list-ref]) or
 @racket[pos] (for @racket[unsafe-list-tail]) pairs.}
 
+
+@deftogether[(
+@defproc[(unsafe-set-immutable-car! [p pair?] [v any/c]) void?]
+@defproc[(unsafe-set-immutable-cdr! [p pair?] [v any/c]) void?]
+)]{
+
+As their oxymoronic names should suggest, there is @emph{no generally
+correct way} to use these functions. They may be useful nevertheless,
+as a last resort, in settings where pairs are used in a constrained
+way and when making correct assumptions about Racket's implementation
+(including limits on the compiler's optimizations).
+
+Some pitfalls of using @racket[unsafe-set-immutable-car!] and
+@racket[unsafe-set-immutable-cdr!]:
+
+@itemlist[
+
+ @item{Functions that consume a pair may take advantage of
+       immutability, such as computing a list's length once and
+       expecting the list to retain that length, or checking a list
+       against a contract and expecting the contract to hold
+       thereafter.}
+
+ @item{The result of @racket[list?] for a pair may be cached
+       internally, so that changing the @racket[cdr] of a pair from a
+       list to a non-list or vice versa may cause @racket[list?] to
+       produce the wrong value---for the mutated pair or for another
+       pair that reaches the mutated pair.}
+
+ @item{The compiler may reorder or even optimize away a call to
+       @racket[car] or @racket[cdr] on the grounds that pairs are
+       immutable, in which case a @racket[unsafe-set-immutable-car!]
+       or @racket[unsafe-set-immutable-cdr!] may not have an effect on
+       the use of @racket[car] or @racket[cdr].}
+
+]
+
+@history[#:added "7.9.0.18"]}
 
 @deftogether[(
 @defproc[(unsafe-unbox [b box?]) fixnum?]
@@ -292,6 +353,16 @@ A vector's size can never be larger than a @tech{fixnum}, so even
 
 @history[#:changed "6.11.0.2" @elem{Added @racket[unsafe-vector*-cas!].}]}
 
+
+@defproc[(unsafe-vector*->immutable-vector! [v (and/c vector? (not/c impersonator?))]) (and/c vector? immutable?)]{
+
+Similar to @racket[vector->immutable-vector], but potentially destroys
+@racket[v] and reuses it space, so @racket[v] must not be used after
+calling @racket[unsafe-vector*->immutable-vector!].
+
+@history[#:added "7.7.0.6"]}
+
+
 @deftogether[(
 @defproc[(unsafe-string-length [str string?]) fixnum?]
 @defproc[(unsafe-string-ref [str string?] [k fixnum?])
@@ -305,17 +376,43 @@ only when the result will be a Latin-1 character. A string's size can
 never be larger than a @tech{fixnum} (so even @racket[string-length]
 always returns a fixnum).}
 
+@defproc[(unsafe-string->immutable-string! [str string?]) (and/c string? immutable?)]{
+
+Similar to @racket[string->immutable-string], but potentially destroys
+@racket[str] and reuses it space, so @racket[str] must not be used
+after calling @racket[unsafe-string->immutable-string!].
+
+@history[#:added "7.7.0.6"]}
+
 
 @deftogether[(
 @defproc[(unsafe-bytes-length [bstr bytes?]) fixnum?]
 @defproc[(unsafe-bytes-ref [bstr bytes?] [k fixnum?]) byte?]
 @defproc[(unsafe-bytes-set! [bstr (and/c bytes? (not/c immutable?))] [k fixnum?] [b byte?]) void?]
+@defproc[(unsafe-bytes-copy! [dest (and/c bytes? (not/c immutable?))]
+                             [dest-start fixnum?]
+                             [src bytes?]
+                             [src-start fixnum? 0]
+                             [src-end fixnum? (bytes-length src)])
+         void?]
 )]{
 
-Unsafe versions of @racket[bytes-length], @racket[bytes-ref], and
-@racket[bytes-set!]. A bytes's size can never be larger than a
+Unsafe versions of @racket[bytes-length], @racket[bytes-ref],
+@racket[bytes-set!], and @racket[bytes-copy!].
+A bytes's size can never be larger than a
 @tech{fixnum} (so even @racket[bytes-length] always returns a
-fixnum).}
+fixnum).
+
+@history[#:changed "7.5.0.15" @elem{Added @racket[unsafe-bytes-copy!].}]}
+
+
+@defproc[(unsafe-bytes->immutable-bytes! [bstr bytes?]) (and/c bytes? immutable?)]{
+
+Similar to @racket[bytes->immutable-bytes], but potentially destroys
+@racket[bstr] and reuses it space, so @racket[bstr] must not be used
+after calling @racket[unsafe-bytes->immutable-bytes!].
+
+@history[#:added "7.7.0.6"]}
 
 
 @deftogether[(
@@ -370,6 +467,37 @@ Unsafe versions of @racket[u16vector-ref] and
 
 
 @deftogether[(
+@defproc[(unsafe-stencil-vector [mask (integer-in 0 (sub1 (expt 2 (stencil-vector-mask-width))))]
+                                [v any/c]
+                                ...)
+         stencil-vector?]
+@defproc[(unsafe-stencil-vector-mask [vec stencil-vector?])
+         (integer-in 0 (sub1 (expt 2 (stencil-vector-mask-width))))]
+@defproc[(unsafe-stencil-vector-length [vec stencil-vector?])
+         (integer-in 0 (sub1 (stencil-vector-mask-width)))]
+@defproc[(unsafe-stencil-vector-ref [vec stencil-vector?]
+                                    [pos exact-nonnegative-integer?])
+         any/c]
+@defproc[(unsafe-stencil-vector-set! [vec stencil-vector?]
+                                     [pos exact-nonnegative-integer?]
+                                     [v any/c])
+         void?]
+@defproc[(unsafe-stencil-vector-update [vec stencil-vector?]
+                                       [remove-mask (integer-in 0 (sub1 (expt 2 (stencil-vector-mask-width))))]
+                                       [add-mask (integer-in 0 (sub1 (expt 2 (stencil-vector-mask-width))))]
+                                       [v any/c]
+                                       ...)
+         stencil-vector?]
+)]{
+
+Unsafe variants of @racket[stencil-vector], @racket[stencil-vector-mask], @racket[stencil-vector-length],
+@racket[stencil-vector-ref], @racket[stencil-vector-set!],
+and @racket[stencil-vector-update].
+
+@history[#:added "8.5.0.7"]}
+
+
+@deftogether[(
 @defproc[(unsafe-struct-ref [v any/c] [k fixnum?]) any/c]
 @defproc[(unsafe-struct-set! [v any/c] [k fixnum?] [val any/c]) void?]
 @defproc[(unsafe-struct*-ref [v (not/c impersonator?)] [k fixnum?]) any/c]
@@ -388,51 +516,61 @@ is analogous to @racket[box-cas!] to perform an atomic compare-and-set.
 
 @history[#:changed "6.11.0.2" @elem{Added @racket[unsafe-struct*-cas!].}]}
 
+
+@defproc[(unsafe-struct*-type [v any/c]) struct-type?]{
+
+Similar to @racket[struct-info], but without an inspector check,
+returning only the first result, and without support for
+@tech{impersonators}.
+
+@history[#:added "8.8.0.3"]}
+
+
 @deftogether[(
 @defproc[(unsafe-mutable-hash-iterate-first
-          [hash (and/c hash? (not/c immutable?) (not/c hash-weak?))])
+          [hash (and/c hash? (not/c immutable?) hash-strong?)])
 	  (or/c #f any/c)]
 @defproc[(unsafe-mutable-hash-iterate-next
-          [hash (and/c hash? (not/c immutable?) (not/c hash-weak?))]
+          [hash (and/c hash? (not/c immutable?) hash-strong?)]
 	  [pos any/c])
 	  (or/c #f any/c)]
 @defproc[(unsafe-mutable-hash-iterate-key
-          [hash (and/c hash? (not/c immutable?) (not/c hash-weak?))]
+          [hash (and/c hash? (not/c immutable?) hash-strong?)]
 	  [pos any/c]) 
 	  any/c]
 @defproc[#:link-target? #f
          (unsafe-mutable-hash-iterate-key
-          [hash (and/c hash? (not/c immutable?) (not/c hash-weak?))]
+          [hash (and/c hash? (not/c immutable?) hash-strong?)]
 	  [pos any/c]
           [bad-index-v any/c]) 
 	  any/c]
 @defproc[(unsafe-mutable-hash-iterate-value
-          [hash (and/c hash? (not/c immutable?) (not/c hash-weak?))]
+          [hash (and/c hash? (not/c immutable?) hash-strong?)]
 	  [pos any/c]) 
 	  any/c]
 @defproc[#:link-target? #f
          (unsafe-mutable-hash-iterate-value
-          [hash (and/c hash? (not/c immutable?) (not/c hash-weak?))]
+          [hash (and/c hash? (not/c immutable?) hash-strong?)]
 	  [pos any/c]
           [bad-index-v any/c]) 
 	  any/c]
 @defproc[(unsafe-mutable-hash-iterate-key+value
-          [hash (and/c hash? (not/c immutable?) (not/c hash-weak?))]
+          [hash (and/c hash? (not/c immutable?) hash-strong?)]
 	  [pos any/c]) 
 	  (values any/c any/c)]
 @defproc[#:link-target? #f
          (unsafe-mutable-hash-iterate-key+value
-          [hash (and/c hash? (not/c immutable?) (not/c hash-weak?))]
+          [hash (and/c hash? (not/c immutable?) hash-strong?)]
 	  [pos any/c]
           [bad-index-v any/c])
 	  (values any/c any/c)]
 @defproc[(unsafe-mutable-hash-iterate-pair
-          [hash (and/c hash? (not/c immutable?) (not/c hash-weak?))]
+          [hash (and/c hash? (not/c immutable?) hash-strong?)]
 	  [pos any/c]) 
 	  pair?]
 @defproc[#:link-target? #f
          (unsafe-mutable-hash-iterate-pair
-          [hash (and/c hash? (not/c immutable?) (not/c hash-weak?))]
+          [hash (and/c hash? (not/c immutable?) hash-strong?)]
 	  [pos any/c]
           [bad-index-v any/c]) 
 	  pair?]
@@ -530,6 +668,53 @@ is analogous to @racket[box-cas!] to perform an atomic compare-and-set.
 	  [pos any/c]
           [bad-index-v any/c]) 
 	  pair?]
+@defproc[(unsafe-ephemeron-hash-iterate-first
+          [hash (and/c hash? hash-ephemeron?)])
+	  (or/c #f any/c)]
+@defproc[(unsafe-ephemeron-hash-iterate-next
+          [hash (and/c hash? hash-ephemeron?)]
+	  [pos any/c])
+	  (or/c #f any/c)]
+@defproc[(unsafe-ephemeron-hash-iterate-key
+          [hash (and/c hash? hash-ephemeron?)]
+	  [pos any/c]) 
+	  any/c]
+@defproc[#:link-target? #f
+         (unsafe-ephemeron-hash-iterate-key
+          [hash (and/c hash? hash-ephemeron?)]
+	  [pos any/c]
+          [bad-index-v any/c]) 
+	  any/c]
+@defproc[(unsafe-ephemeron-hash-iterate-value
+          [hash (and/c hash? hash-ephemeron?)]
+	  [pos any/c]) 
+	  any/c]
+@defproc[#:link-target? #f
+         (unsafe-ephemeron-hash-iterate-value
+          [hash (and/c hash? hash-ephemeron?)]
+	  [pos any/c]
+          [bad-index-v any/c]) 
+	  any/c]
+@defproc[(unsafe-ephemeron-hash-iterate-key+value
+          [hash (and/c hash? hash-ephemeron?)]
+	  [pos any/c]) 
+	  (values any/c any/c)]
+@defproc[#:link-target? #f
+         (unsafe-ephemeron-hash-iterate-key+value
+          [hash (and/c hash? hash-ephemeron?)]
+	  [pos any/c]
+          [bad-index-v any/c]) 
+	  (values any/c any/c)]
+@defproc[(unsafe-ephemeron-hash-iterate-pair
+          [hash (and/c hash? hash-ephemeron?)]
+	  [pos any/c]) 
+	  pair?]
+@defproc[#:link-target? #f
+         (unsafe-ephemeron-hash-iterate-pair
+          [hash (and/c hash? hash-ephemeron?)]
+	  [pos any/c]
+          [bad-index-v any/c]) 
+	  pair?]
 )]{
 Unsafe versions of @racket[hash-iterate-key] and similar procedures.
 These operations support @tech{chaperones} and @tech{impersonators}.
@@ -551,7 +736,8 @@ not useful for the @code{unsafe-immutable-hash-iterate-} functions,
 since an index cannot become invalid for an immutable @racket[hash].
 
 @history[#:added "6.4.0.6"
-         #:changed "7.0.0.10" @elem{Added the optional @racket[bad-index-v] argument.}]}
+         #:changed "7.0.0.10" @elem{Added the optional @racket[bad-index-v] argument.}
+         #:changed "8.0.0.10" @elem{Added @schemeidfont{ephemeron} variants.}]}
 
 @defproc[(unsafe-make-srcloc [source any/c]
                              [line (or/c exact-positive-integer? #f)]
@@ -633,10 +819,9 @@ aliases for the corresponding safe bindings.}
 @defproc[(unsafe-fx->extfl [a fixnum?]) extflonum?]
 @defproc[(unsafe-extfl->fx [a extflonum?]) fixnum?]
 )]{
-Unchecked conversion of a @tech{fixnum} to an integer @tech{extflonum} and vice versa.
-These are similar to the safe bindings @racket[->extfl] and @racket[extfl->exact-integer],
-but further constrained to consume or produce a fixnum.
-}
+Unchecked (potentially) versions of @racket[fx->extfl] and @racket[extfl->fx].
+
+@history[#:changed "7.7.0.8" @elem{Changed @racket[unsafe-fl->fx] to truncate.}]}
 
 @deftogether[(
 @defproc[(unsafe-extflvector-length [v extflvector?]) fixnum?]
@@ -780,4 +965,39 @@ fixnum).}
 
 @; ------------------------------------------------------------------------
 
+@section[#:tag "unsafeassert"]{Unsafe Assertions}
+
+@defproc[(unsafe-assert-unreachable) none/c]{
+
+Like @racket[assert-unreachable], but the contract of
+@racket[unsafe-assert-unreachable] is never satisfied, and the
+``unsafe'' implication is that anything at all can happen if a call to
+@racket[unsafe-assert-unreachable] is reached.
+
+The compiler may take advantage of its liberty to pick convenient or
+efficient behavior in place of a call to
+@racket[unsafe-assert-unreachable]. For example, the expression
+
+@racketblock[
+(lambda (x)
+  (if (pair? x)
+      (car x)
+      (unsafe-assert-unreachable)))
+]
+
+may be compiled to code equivalent to
+
+@racketblock[
+(lambda (x) (unsafe-car x))
+]
+
+because choosing to make @racket[(unsafe-assert-unreachable)] behave
+the same as @racket[(unsafe-car x)] makes both branches of the
+@racket[if] the same, and then @racket[pair?] test can be eliminated.
+
+@history[#:added "8.0.0.11"]}
+
+@; ------------------------------------------------------------------------
+
 @include-section["unsafe-undefined.scrbl"]
+

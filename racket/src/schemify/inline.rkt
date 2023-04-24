@@ -4,7 +4,8 @@
          "known.rkt"
          "import.rkt"
          "export.rkt"
-         "wrap-path.rkt")
+         "wrap-path.rkt"
+         "gensym.rkt")
 
 (provide init-inline-fuel
          can-inline?
@@ -39,10 +40,13 @@
        [(wrap-pair? v)
         (cond
           [(eq? (unwrap (wrap-car v)) 'quote)
-           ;; don't copy quoted values other than symbols
-           (if (symbol? (unwrap (wrap-car (wrap-cdr v))))
-               (sub1 size)
-               0)]
+           ;; don't copy quoted values other than interned or unreadable symbols
+           (let ([v (unwrap (wrap-car (wrap-cdr v)))])
+             (if (and (symbol? v)
+                      (or (symbol-interned? v)
+                          (symbol-unreadable? v)))
+                 (sub1 size)
+                 0))]
           [else
            (loop (wrap-cdr v) (loop (wrap-car v) size))])]
        [else (sub1 size)]))))
@@ -84,6 +88,10 @@
 
 (define (inline-type-id k im add-import! mutated imports)
   (define type-id (cond
+                    [(known-struct-constructor? k)
+                     (known-struct-constructor-type-id k)]
+                    [(known-struct-predicate? k)
+                     (known-struct-predicate-type-id k)]
                     [(known-field-accessor? k)
                      (known-field-accessor-type-id k)]
                     [(known-field-mutator? k)
@@ -95,6 +103,14 @@
     (cond
       [(not type-id) #f]
       [(not im) '()]
+      [(known-struct-constructor/need-imports? k)
+       (needed->env (known-struct-constructor/need-imports-needed k)
+                    add-import!
+                    im)]
+      [(known-struct-predicate/need-imports? k)
+       (needed->env (known-struct-predicate/need-imports-needed k)
+                    add-import!
+                    im)]
       [(known-field-accessor/need-imports? k)
        (needed->env (known-field-accessor/need-imports-needed k)
                     add-import!
@@ -127,7 +143,7 @@
         [(wrap-null? args) base-env]
         [(wrap-pair? args)
          (define u (unwrap (wrap-car args)))
-         (define g (gensym u))
+         (define g (deterministic-gensym u))
          (define m (hash-ref mutated u #f))
          (when m
            (hash-set! mutated g m))
@@ -135,7 +151,7 @@
                (loop (wrap-cdr args)))]
         [else
          (define u (unwrap args))
-         (cons (cons u (gensym u)) base-env)])))
+         (cons (cons u (deterministic-gensym u)) base-env)])))
   (values (let loop ([args args] [env env])
             (cond
               [(wrap-null? args) '()]
@@ -188,8 +204,10 @@
       `(begin . ,(clone-body exps env mutated))]
      [`(begin0 ,exps ...)
       `(begin0 . ,(clone-body exps env mutated))]
+     [`(begin-unsafe ,exps ...)
+      `(begin-unsafe . ,(clone-body exps env mutated))]
      [`(set! ,id ,rhs)
-      `(set! ,id ,(clone-expr rhs env mutated))]
+      `(set! ,(clone-expr id env mutated) ,(clone-expr rhs env mutated))]
      [`(#%variable-reference) v]
      [`(#%variable-reference ,id)
       `(#%variable-reference ,(clone-expr id env mutated))]
@@ -228,7 +246,31 @@
         (known-procedure/can-inline/need-imports
          (known-procedure-arity-mask k)
          (if serializable? (wrap-truncate-paths expr) expr)
-         (hash->list needed))])]
+         (needed->list needed))])]
+    [(known-struct-constructor? k)
+     (define needed (needed-imports (known-struct-constructor-type-id k) prim-knowns imports exports '() '#hasheq()))
+     (cond
+       [needed
+        (known-struct-constructor/need-imports (known-procedure-arity-mask k)
+                                               (known-constructor-type k)
+                                               (known-struct-constructor-type-id k)
+                                               (needed->list needed))]
+       [else
+        (known-constructor (known-procedure-arity-mask k)
+                           (known-constructor-type k))])]
+    [(known-struct-predicate? k)
+     (define needed (needed-imports (known-struct-predicate-type-id k) prim-knowns imports exports '() '#hasheq()))
+     (cond
+       [needed
+        (known-struct-predicate/need-imports (known-procedure-arity-mask k)
+                                             (known-predicate-type k)
+                                             (known-struct-predicate-type-id k)
+                                             (known-struct-predicate-authentic? k)
+                                             (known-struct-predicate-sealed? k)
+                                             (needed->list needed))]
+       [else
+        (known-predicate (known-procedure-arity-mask k)
+                         (known-predicate-type k))])]
     [(known-field-accessor? k)
      (define needed (needed-imports (known-field-accessor-type-id k) prim-knowns imports exports '() '#hasheq()))
      (cond
@@ -236,8 +278,10 @@
         (known-field-accessor/need-imports (known-procedure-arity-mask k)
                                            (known-accessor-type k)
                                            (known-field-accessor-type-id k)
+                                           (known-field-accessor-authentic? k)
                                            (known-field-accessor-pos k)
-                                           (hash->list needed))]
+                                           (known-field-accessor-known-immutable? k)
+                                           (needed->list needed))]
        [else
         (known-accessor (known-procedure-arity-mask k)
                         (known-accessor-type k))])]
@@ -248,8 +292,9 @@
         (known-field-mutator/need-imports (known-procedure-arity-mask k)
                                           (known-mutator-type k)
                                           (known-field-mutator-type-id k)
+                                          (known-field-mutator-authentic? k)
                                           (known-field-mutator-pos k)
-                                          (hash->list needed))]
+                                          (needed->list needed))]
        [else
         (known-mutator (known-procedure-arity-mask k)
                        (known-mutator-type k))])]
@@ -281,6 +326,8 @@
      [`(begin ,exps ...)
       (body-needed-imports exps prim-knowns imports exports env needed)]
      [`(begin0 ,exps ...)
+      (body-needed-imports exps prim-knowns imports exports env needed)]
+     [`(begin-unsafe ,exps ...)
       (body-needed-imports exps prim-knowns imports exports env needed)]
      [`(set! ,id ,rhs)
       (define u (unwrap id))
@@ -342,6 +389,5 @@
     [else
      (cons (unwrap args) env)]))
 
-(define (hash->list needed)
-  (for/list ([(k v) (in-hash needed)])
-    (cons k v)))
+(define (needed->list needed)
+  (hash-map needed cons #t))

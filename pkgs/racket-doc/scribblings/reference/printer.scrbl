@@ -264,11 +264,13 @@ All @tech{strings} @racket[display] as their literal character sequences.
 
 The @racket[write] or @racket[print] form of a string starts with @litchar{"} and ends
 with another @litchar{"}. Between the @litchar{"}s, each character is
-represented. Each graphic or blank character is represented as itself,
+represented. Each graphic or blank character (according to @racket[char-graphic?] and
+@racket[char-blank?]) is represented as itself,
 with two exceptions: @litchar{"} is printed as @litchar{\"}, and
-@litchar{\} is printed as @litchar{\\}. Each non-graphic, non-blank
-character (according to @racket[char-graphic?] and
-@racket[char-blank?]) is printed using the escape sequences described
+@litchar{\} is printed as @litchar{\\}. A non-graphic, non-blank character
+that is part of a grapheme sequence that starts with a graphic character
+is also represented as itself. Each other non-graphic, non-blank
+character is printed using the escape sequences described
 in @secref["parse-string"], using @litchar{\a}, @litchar{\b},
 @litchar{\t}, @litchar{\n}, @litchar{\v}, @litchar{\f}, @litchar{\r},
 or @litchar{\e} if possible, otherwise using @litchar{\u} with four
@@ -588,19 +590,25 @@ identifier; those functions lead to top-level and module variables
 with @tech{unreadable symbol}ic names, and the names are deterministic
 as long as expansion is otherwise deterministic.
 
+When a compiled-form object has string and byte string literals, they
+are @tech{interned} using @racket[datum-intern-literal] when the
+compiled-object for is read back in. Numbers and other values that
+@racket[read-syntax] would intern, however, are not interned when read
+back as quoted literals in a compiled object.
+
 A compiled form may contain path literals. Although paths are
 not normally printed in a way that can be read back in, path literals
 can be written and read as part of compiled code. The
 @racket[current-write-relative-directory] parameter is used to convert
 the path to a relative path as is it written, and then
-@racket[current-load-relative-directory] parameter is used to convert
-any relative path back as it is read. The relative-path conversion
-applies on reading whether the path was originally relative or not.
+@racket[current-load-relative-directory] parameter (falling back to
+@racket[current-directory]) is used to convert
+any relative path back as it is read.
 
 For a path in a syntax object's source, if the
-@racket[current-load-relative-directory] parameter is not set of the
+@racket[current-write-relative-directory] parameter is not set or the
 path is not relative to the value of the
-@racket[current-load-relative-directory] parameter, then the path is
+@racket[current-write-relative-directory] parameter, then the path is
 coerced to a string that preserves only part of the path (an in effort
 to make it less tied to the build-time filesystem, which can be
 different than the run-time filesystem).
@@ -618,7 +626,7 @@ the conversion of the source field is to preserve some source
 information but not expose or record a path that makes no sense on
 a different filesystem or platform.
 
-For internal testing purposes, when the
+For internal testing purposes in the @tech{BC} implementation of Racket, when the
 @as-index{@envvar{PLT_VALIDATE_LOAD}} environment variable is set, the
 reader runs a validator on bytecode parsed from @litchar{#~}. The
 validator may catch miscompilations or bytecode-file corruption. The

@@ -9,9 +9,11 @@
 (provide fx->fl fl->fx
          fxabs
          fx+ fx- fx*
+         fx+/wraparound fx-/wraparound fx*/wraparound
          fxquotient fxremainder fxmodulo 
          fxand fxior fxxor
-         fxnot fxrshift fxlshift
+         fxnot fxrshift fxlshift fxlshift/wraparound fxrshift/logical
+         fxpopcount fxpopcount32 fxpopcount16
          fx>= fx> fx= fx< fx<=
          fxmin fxmax
          fixnum-for-every-system?
@@ -19,7 +21,9 @@
          shared-fxvector make-shared-fxvector
          fxvector-length fxvector-ref fxvector-set!
          fxvector-copy
-         in-fxvector for/fxvector for*/fxvector)
+         in-fxvector for/fxvector for*/fxvector
+         most-positive-fixnum
+         most-negative-fixnum)
 
 (define-vector-wraps "fxvector"
   "fixnum?" fixnum?

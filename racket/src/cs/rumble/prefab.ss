@@ -1,9 +1,12 @@
 (define (prefab-struct-key v)
   (let ([v (strip-impersonator v)])
     (and (record? v)
-         (let ([p (with-global-lock*
-                   (getprop (record-type-uid (record-rtd v)) 'prefab-key+count #f))])
+         (let ([p (getprop (record-type-uid (record-rtd v)) 'prefab-key+count #f)])
            (and p (car p))))))
+
+(define/who (prefab-struct-type-key+field-count rtd)
+  (check who struct-type? rtd)
+  (getprop (record-type-uid rtd) 'prefab-key+count #f))
 
 (define/who (prefab-key->struct-type key field-count)
   (prefab-key+count->rtd
@@ -292,21 +295,38 @@
         name
         (cons name l))))
 
-(define (prefab-key-mutables prefab-key)
-  (if (pair? prefab-key)
-      (if (vector? (cadr prefab-key))
-          (cadr prefab-key)
-          (if (and (pair? (cddr prefab-key))
-                   (vector? (caddr prefab-key)))
-              (caddr prefab-key)
-              '#()))
-      '#()))
-
+;; assuming a normalized key, which means it has no
+;; non-auto count
+(define (prefab-key-mutables prefab-key init+auto-count)
+  (let ([vec (if (pair? prefab-key)
+                 (if (vector? (cadr prefab-key))
+                     (cadr prefab-key)
+                     (if (pair? (cddr prefab-key))
+                         (if (vector? (caddr prefab-key))
+                             (caddr prefab-key)
+                             '#())
+                         '#()))
+                 '#())]
+        [auto (if (pair? prefab-key)
+                  (if (pair? (cadr prefab-key))
+                      (caadr prefab-key)
+                      0)
+                  0)])
+    (if (eqv? auto 0)
+        vec
+        (list->vector
+         (append (vector->list vec)
+                 (let loop ([auto auto] [pos (fx- init+auto-count auto)])
+                   (if (fx= auto 0)
+                       '()
+                       (cons pos (loop (fx- auto 1) (fx+ pos 1))))))))))
+  
 (define (encode-prefab-key+count-as-symbol prefab-key+count)
   ;; The symbol has to be uninterned, because we're going to attach
   ;; properties to it, and an interned symbol with properties is never
-  ;; reclaimed by the garbage collector
-  (#%gensym (#%format "~s" prefab-key+count)))
+  ;; reclaimed by the garbage collector. Beware that a gensym is
+  ;; retained, too, if its unique name is forced.
+  (#%string->uninterned-symbol (#%format "~s" prefab-key+count)))
 
 (define (immutables->mutables immutables init-count auto-count)
   (vector->immutable-vector

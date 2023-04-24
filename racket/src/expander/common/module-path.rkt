@@ -1,6 +1,7 @@
 #lang racket/base
 (require racket/private/place-local
          ffi/unsafe/atomic
+         racket/fixnum
          "../compile/serialize-property.rkt"
          "../common/performance.rkt"
          "contract.rkt"
@@ -12,12 +13,13 @@
          resolved-module-path?
          make-resolved-module-path
          resolved-module-path-name
+         safe-resolved-module-path-name
          resolved-module-path-root-name
          resolved-module-path->module-path
          
          module-path-index?
          module-path-index-resolve
-         module-path-index-unresolve
+         module-path-index-fresh
          module-path-index-join
          module-path-index-split
          module-path-index-submodule
@@ -95,6 +97,16 @@
           base
           (apply string-append (for/list ([i (in-list syms)])
                                  (format " ~s" i)))))
+
+(define safe-resolved-module-path-name
+  (let ([resolved-module-path-name
+         (lambda (v)
+           (unless (resolved-module-path? v)
+             (raise-argument-error 'resolved-module-path-name
+                                   "resolved-module-path?"
+                                   v))
+           (resolved-module-path-name v))])
+    resolved-module-path-name))
 
 (define (resolved-module-path-root-name r)
   (define name (resolved-module-path-name r))
@@ -190,6 +202,8 @@
        (fprintf port "=~a" (module-path-index-resolved r))])
     (write-string ">" port)))
 
+(define empty-shift-cache '())
+
 ;; Serialization of a module path index is handled specially, because they
 ;; must be shared across phases of a module
 (define deserialize-module-path-index
@@ -198,31 +212,34 @@
     [(name) (make-self-module-path-index (make-resolved-module-path name))]
     [() top-level-module-path-index]))
 
-(define/who (module-path-index-resolve mpi [load? #f])
+(define/who (module-path-index-resolve mpi [load? #f] [stx #f])
   (check who module-path-index? mpi)
   (or (module-path-index-resolved mpi)
-      (let ([mod-name (performance-region
-                       ['eval 'resolver]
-                       ((current-module-name-resolver)
-                        (module-path-index-path mpi)
-                        (module-path-index-resolve/maybe
-                         (module-path-index-base mpi)
-                         load?)
-                        #f
-                        load?))])
-        (unless (resolved-module-path? mod-name)
-          (raise-arguments-error 'module-path-index-resolve
-                                 "current module name resolver's result is not a resolved module path"
-                                 "result" mod-name))
-        (set-module-path-index-resolved! mpi mod-name)
-        mod-name)))
+      (cond
+        [(module-path-index-path mpi)
+         (let ([mod-name (performance-region
+                          ['eval 'resolver]
+                          ((current-module-name-resolver)
+                           (module-path-index-path mpi)
+                           (module-path-index-resolve/maybe
+                            (module-path-index-base mpi)
+                            load?)
+                           stx
+                           load?))])
+           (unless (resolved-module-path? mod-name)
+             (raise-arguments-error 'module-path-index-resolve
+                                    "current module name resolver's result is not a resolved module path"
+                                    "result" mod-name))
+           (set-module-path-index-resolved! mpi mod-name)
+           mod-name)]
+        [else
+         (raise-arguments-error who
+                                "\"self\" index has no resolution"
+                                "module path index" mpi)])))
 
-(define (module-path-index-unresolve mpi)
-  (cond
-   [(module-path-index-resolved mpi)
-    (define-values (path base) (module-path-index-split mpi))
-    (module-path-index-join path base)]
-   [else mpi]))
+(define (module-path-index-fresh mpi)
+  (define-values (path base) (module-path-index-split mpi))
+  (module-path-index-join path base))
 
 (define/who (module-path-index-join mod-path base [submod #f])
   (check who #:or-false module-path? mod-path)
@@ -259,7 +276,7 @@
          [(and (pair? mod-path) (eq? 'submod (car mod-path)))
           (loop (cadr mod-path))]
          [else base])))
-    (module-path-index mod-path keep-base #f #f)]))
+    (module-path-index mod-path keep-base #f empty-shift-cache)]))
 
 (define (module-path-index-resolve/maybe base load?)
   (if (module-path-index? base)
@@ -282,7 +299,7 @@
 
 (define make-self-module-path-index
   (case-lambda
-    [(name) (module-path-index #f #f name #f)]
+    [(name) (module-path-index #f #f name empty-shift-cache)]
     [(name enclosing)
      (make-self-module-path-index (build-module-name name
                                                      (and enclosing
@@ -310,7 +327,7 @@
   (begin0
     (or (let ([e (hash-ref generic-self-mpis r #f)])
           (and e (ephemeron-value e)))
-        (let ([mpi (module-path-index #f #f r #f)])
+        (let ([mpi (module-path-index #f #f r empty-shift-cache)])
           (hash-set! generic-self-mpis r (make-ephemeron r mpi))
           mpi))
     (end-atomic)))
@@ -346,28 +363,35 @@
        [(shift-cache-ref (module-path-index-shift-cache shifted-base) mpi)]
        [else
         (define shifted-mpi
-          (module-path-index (module-path-index-path mpi) shifted-base #f #f))
-        (shift-cache-set! (module-path-index-shift-cache! shifted-base) mpi shifted-mpi)
+          (module-path-index (module-path-index-path mpi) shifted-base #f empty-shift-cache))
+        (shift-cache-set! shifted-base shifted-mpi)
         shifted-mpi])])]))
 
-(define (module-path-index-shift-cache! mpi)
-  (or (let ([cache (module-path-index-shift-cache mpi)])
-        (and cache
-             (weak-box-value cache)
-             cache))
-      (let ([cache (make-weak-box (box #hasheq()))])
-        (set-module-path-index-shift-cache! mpi cache)
-        cache)))
+(define (shift-cache-ref cache mpi)
+  (for/or ([wb (in-list cache)])
+    (define v (weak-box-value wb))
+    (and v
+         (equal? (module-path-index-path v)
+                 (module-path-index-path mpi))
+         v)))
 
-(define (shift-cache-ref cache v)
-  (and cache
-       (let ([b (weak-box-value cache)])
-         (and b (hash-ref (unbox b) v #f)))))
-
-(define (shift-cache-set! cache v r)
-  (define b (weak-box-value cache))
-  (when b
-    (set-box! b (hash-set (unbox b) v r))))
+(define (shift-cache-set! base v)
+  (define new-cache
+    (cons (make-weak-box v)
+          ;; Prune empty cache entries, and keep only up to a certain
+          ;; number of cached values to avoid quadratic behavior.
+          (let loop ([n 32] [l (module-path-index-shift-cache base)])
+            (cond
+              [(null? l) null]
+              [(eqv? n 0) null]
+              [(not (weak-box-value (car l)))
+               (loop n (cdr l))]
+              [else
+               (let ([r (loop (fx- n 1) (cdr l))])
+                 (if (eq? r (cdr l))
+                     l
+                     (cons (car l) r)))]))))
+  (set-module-path-index-shift-cache! base new-cache))
 
 ;; A constant module path index to represent the top level
 (define top-level-module-path-index

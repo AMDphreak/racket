@@ -52,52 +52,67 @@ Non-interactive mode should be used instead of the
 
 @section[#:tag "virtual-machines"]{Racket Virtual Machine Implementations}
 
-Racket is available in three implementation variants: @deftech{3m},
-@deftech{CGC}, and @deftech{CS}:
+Racket is available in two implementations, @deftech{CS} and
+@deftech{BC}:
 
 @itemlist[
 
- @item{@tech{3m} is the current default implementation, so it's
-       probably the one that you're using.
-
-       For this variant, @racket[(system-type 'vm)] reports
-       @racket['racket] and @racket[(system-type 'gc)] reports
-       @racket['3m].}
-
- @item{@tech{CGC} is an older variant. It's the same basic
-       implementation as @tech{3m} (i.e., the same virtual machine),
-       but compiled to rely on a ``conservative'' garbage collector,
-       which affects the way that Racket interacts with C code. (See
-       @secref["CGC versus 3m" #:doc inside-doc] in
-       @other-manual[inside-doc] for more information.)
-
-       For this variant, @racket[(system-type 'vm)] reports
-       @racket['racket] and @racket[(system-type 'gc)] reports
-       @racket['cgc].}
-
- @item{@tech{CS} is a newer implementation that builds on
+ @item{@tech{CS} is the current default implementation. It is
+       a newer implementation that builds on
        @hyperlink["https://www.scheme.com/"]{Chez Scheme} as its core
-       virtual machine. This implementation performs better for some
-       programs, and it is likely to improve and eventually replace
-       the @tech{3m} implementation as the default.
+       virtual machine. This implementation performs better than
+       the @tech{BC} implementation for most programs.
 
-       For this variant, @racket[(system-type 'vm)] reports
+       For this implementation, @racket[(system-type 'vm)] reports
        @racket['chez-scheme] and @racket[(system-type 'gc)] reports
        @racket['cs].}
+
+ @item{@tech{BC} is an older implementation, and was the default until version 8.0.
+       The implementation features a compiler and runtime written in C,
+       with a precise garbage collector and a just-in-time compiler (JIT)
+       on most platforms.
+
+       For this implementation, @racket[(system-type 'vm)] reports
+       @racket['racket].
+
+       The BC implementation itself has two variants, @deftech{3m} and
+       @deftech{CGC}:
+
+       @itemlist[
+
+        @item{@tech{3m} is the normal BC variant with a precise
+             garbage collector.
+
+             For this variant, @racket[(system-type 'gc)] reports
+            @racket['3m].}
+
+
+        @item{@tech{CGC} is the oldest variant. It's the same basic
+              implementation as @tech{3m} (i.e., the same virtual
+              machine), but compiled to rely on a ``conservative''
+              garbage collector, which affects the way that Racket
+              interacts with C code. See @secref["CGC versus 3m"
+              #:doc inside-doc] in @other-manual[inside-doc] for more
+              information.
+
+              For this variant, @racket[(system-type 'gc)] reports
+              @racket['cgc].}
+
+       ]}
 
 ]
 
 In general, Racket programs should run the same in all variants.
 Furthermore, the performance characteristics of Racket program should
-be similar in the @tech{3m} and @tech{CS} variants. The cases where a
-program may depends on the variant will typically involve interactions
-with foreign libraries; in particular, the Racket C API described in
-@other-doc[inside-doc] is available only for the virtual machine of
-the @tech{3m} and @tech{CGC} variants.
+be similar in the @tech{CS} and @tech{BC} implementations. The cases
+where a program may depend on the implementation will typically
+involve interactions with foreign libraries; in particular, the Racket
+C API described in @other-doc[inside-doc] is different for the
+@tech{CS} implementation versus the @tech{BC} implementation.
 
 @; ----------------------------------------------------------------------
 
-@section[#:tag "JIT"]{The Bytecode and Just-in-Time (JIT) Compilers}
+@section[#:tag "JIT"]{Bytecode, Machine Code, and Just-in-Time (JIT) Compilers}
 
 Every definition or expression to be evaluated by Racket is compiled
 to an internal bytecode format, although ``bytecode'' may actually be
@@ -114,25 +129,25 @@ elimination. For example, in an environment where @racket[+] has its
 usual binding, the expression @racket[(let ([x 1] [y (lambda () 4)]) (+
 1 (y)))] is compiled the same as the constant @racket[5].
 
-For the @tech{CS} variant of Racket, the main bytecode format is
-non-portable machine code. For the @tech{3m} and @tech{CGC} variants
-of Racket, bytecode is portable in the sense that it is
+For the @tech{CS} implementation of Racket, the main bytecode format
+is non-portable machine code. For the @tech{BC} implementation of
+Racket, bytecode is portable in the sense that it is
 machine-independent. Setting @racket[current-compile-target-machine]
 to @racket[#f] selects a separate machine-independent and
-variant-independent format on all Racket variants, but running code in
-that format requires an additional internal conversion step to the
-variant's main bytecode format.
+variant-independent format on all Racket implementations, but running
+code in that format requires an additional internal conversion step to
+the implementation's main bytecode format.
 
-Machine-independent bytecode for @tech{3m} or @tech{CGC} is further
+Machine-independent bytecode for the @tech{BC} implementation is further
 compiled to native code via a @deftech{just-in-time} or @deftech{JIT}
 compiler. The @tech{JIT} compiler substantially speeds programs that
 execute tight loops, arithmetic on small integers, and arithmetic on
 inexact real numbers. Currently, @tech{JIT} compilation is supported
-for x86, x86_64 (a.k.a. AMD64), ARM, and 32-bit PowerPC processors.
+for x86, x86_64 (a.k.a. AMD64), 32-bit ARM, and 32-bit PowerPC processors.
 The @tech{JIT} compiler can be disabled via the
 @racket[eval-jit-enabled] parameter or the @DFlag{no-jit}/@Flag{j}
 command-line flag for @exec{racket}. Setting @racket[eval-jit-enabled]
-to @racket[#f] has not effect on the @tech{CS} variant of Racket.
+to @racket[#f] has no effect on the @tech{CS} implementation of Racket.
 
 The @tech{JIT} compiler works incrementally as functions are applied,
 but the @tech{JIT} compiler makes only limited use of run-time
@@ -142,6 +157,10 @@ module body or @racket[lambda] abstraction is compiled only once. The
 not counting the bodies of any lexically nested procedures. The
 overhead for @tech{JIT} compilation is normally so small that it is
 difficult to detect.
+
+For information about viewing intermediate Racket code
+representations, especially for the @tech{CS} implementation, see
+@refsecref["compiler-inspect"].
 
 @; ----------------------------------------------------------------------
 
@@ -347,8 +366,8 @@ bindings.
 
 A @deftech{fixnum} is a small exact integer. In this case, ``small''
 depends on the platform. For a 32-bit machine, numbers that can be
-expressed in 30 bits plus a sign bit are represented as fixnums. On a
-64-bit machine, 62 bits plus a sign bit are available.
+expressed in 29-30 bits plus a sign bit are represented as fixnums. On
+a 64-bit machine, 60-62 bits plus a sign bit are available.
 
 A @deftech{flonum} is used to represent any inexact real number. They
 correspond to 64-bit IEEE floating-point numbers on all platforms.
@@ -376,8 +395,7 @@ typically cheap to use.
 @tech{flonum}-specific operations.}
 
 The @racketmodname[racket/flonum] library provides flonum-specific
-operations, and combinations of flonum operations allow the @tech{JIT}
-compiler for the @tech{3m} and @tech{CGC} variants of Racket
+operations, and combinations of flonum operations allow the compiler
 to generate code that avoids boxing and unboxing intermediate
 results. Besides results within immediate combinations,
 flonum-specific results that are bound with @racket[let] and consumed
@@ -385,14 +403,37 @@ by a later flonum-specific operation are unboxed within temporary
 storage. @margin-note*{Unboxing applies most reliably to uses of a
 flonum-specific operation with two arguments.}
 Finally, the compiler can detect some flonum-valued loop
-accumulators and avoid boxing of the accumulator. The bytecode
-decompiler (see @secref[#:doc '(lib "scribblings/raco/raco.scrbl")
-"decompile"]) annotates combinations where the JIT can avoid boxes with
-@racketidfont{#%flonum}, @racketidfont{#%as-flonum}, and
-@racketidfont{#%from-flonum}.
+accumulators and avoid boxing of the accumulator.
+@margin-note*{Unboxing of local bindings and accumulators is not
+supported by the @tech{BC} implementation's JIT for PowerPC.}
 
-@margin-note{Unboxing of local bindings and accumulators is not
-supported by the JIT for PowerPC.}
+For some loop patterns, the compiler may need hints to enable
+unboxing. For example:
+
+@racketblock[
+(define (flvector-sum vec init)
+  (let loop ([i 0] [sum init])
+    (if (fx= i (flvector-length vec))
+        sum
+        (loop (fx+ i 1) (fl+ sum (flvector-ref vec i))))))
+]
+
+The compiler may not be able to unbox @racket[sum] in this example for
+two reasons: it cannot determine locally that its initial value from
+@racket[init] will be a flonum, and it cannot tell locally that the
+@racket[eq?] identity of the result @racket[sum] is irrelevant.
+Changing the reference @racket[init] to @racket[(fl+ init)] and
+changing the result @racket[sum] to @racket[(fl+ sum)] gives the
+compiler hints and license to unbox @racket[sum].
+
+The bytecode decompiler (see @secref[#:doc '(lib
+"scribblings/raco/raco.scrbl") "decompile"]) for the @tech{BC} implementation
+annotates combinations where the JIT can avoid boxes with
+@racketidfont{#%flonum}, @racketidfont{#%as-flonum}, and
+@racketidfont{#%from-flonum}. For the @tech{CS} variant, the
+``bytecode'' decompiler shows machine code, but install the
+@filepath{disassemble} package to potentially see the machine code as
+machine-specific assembly code. See also @refsecref["compiler-inspect"].
 
 The @racketmodname[racket/unsafe/ops] library provides unchecked
 fixnum- and flonum-specific operations. Unchecked flonum-specific
@@ -472,15 +513,14 @@ string or byte string, write a constant @tech{regexp} using an
     (regexp-match? pattern-rx str)))
 ]
 
-
 @; ----------------------------------------------------------------------
 
 @section[#:tag "gc-perf"]{Memory Management}
 
-The @tech{3m} (default) and @tech{CS} Racket
+The @tech{CS} (default) and @tech{BC} Racket
 @seclink["virtual-machines"]{virtual machines} each use a modern,
 @deftech{generational garbage collector} that makes allocation
-relatively cheap for short-lived objects. The @tech{CGC} variant uses
+relatively cheap for short-lived objects. The @tech{CGC} variant of @tech{BC} uses
 a @deftech{conservative garbage collector} which facilitates
 interaction with C code at the expense of both precision and speed for
 Racket memory management.
@@ -533,15 +573,13 @@ argument instead.
 
 @section[#:tag "Reachability and Garbage Collection"]{Reachability and Garbage Collection}
 
-In general, Racket re-uses the storage for a value when the
-garbage collector can prove that the object is unreachable from
-any other (reachable) value. Reachability is a low-level, 
-abstraction breaking concept (and thus one must understand many
-details of the runtime system's implementation to accurate predicate
-precisely when values are reachable from each other),
-but generally speaking one value is reachable from a second one when 
-there is some operation to recover the original value from the second
-one.
+In general, Racket re-uses the storage for a value when the garbage
+collector can prove that the object is unreachable from any other
+(reachable) value. Reachability is a low-level, abstraction-breaking
+concept, and thus it requires detailed knowledge of the runtime system
+to predict exactly when values are reachable from each other. But
+generally one value is reachable from a second one when there is some
+operation to recover the original value from the second one.
 
 To help programmers understand when an object is no longer reachable and its
 storage can be reused,
@@ -608,7 +646,7 @@ Imagine you're designing a data structure that needs to
 hold onto some value temporarily but then should clear a field or
 somehow break a link to avoid referencing that value so it can be
 collected. Weak boxes are a good way to test that your data structure
-properly clears the value. This is, you might write a test case
+properly clears the value. That is, you might write a test case
 that builds a value, extracts some other value from it
 (that you hope becomes unreachable), puts the extracted value into a weak-box,
 and then checks to see if the value disappears from the box.
@@ -648,31 +686,51 @@ only the most recently allocated objects, and long pauses for infrequent
 For some applications, such as animations and games,
 long pauses due to a major collection can interfere
 unacceptably with a program's operation. To reduce major-collection
-pauses, the Racket garbage collector supports @deftech{incremental
-garbage-collection} mode. In incremental mode, minor collections
-create longer (but still relatively short) pauses by performing extra
-work toward the next major collection. If all goes well, most of a
-major collection's work has been performed by minor collections the
-time that a major collection is needed, so the major collection's
-pause is as short as a minor collection's pause. Incremental mode
-tends to run more slowly overall, but it can
-provide much more consistent real-time behavior.
+pauses, the @tech{3m} garbage collector supports @deftech{incremental
+garbage-collection} mode, and the @tech{CS} garbage collector supports
+a useful approximation:
 
-If the @envvar{PLT_INCREMENTAL_GC} environment variable is set
-to a value that starts with @litchar{1}, @litchar{y}, or @litchar{Y}
-when Racket starts, incremental mode is permanently enabled. Since
-incremental mode is only useful for certain parts of some programs,
-however, and since the need for incremental mode is a property of a
-program rather than its environment, the preferred way to enable
-incremental mode is with @racket[(collect-garbage 'incremental)].
+@itemlist[
+
+@item{In @tech{3m}'s incremental mode, minor collections create longer
+      (but still relatively short) pauses by performing extra work
+      toward the next major collection. If all goes well, most of a
+      major collection's work has been performed by minor collections
+      the time that a major collection is needed, so the major
+      collection's pause is as short as a minor collection's pause.
+      Incremental mode tends to run more slowly overall, but it can
+      provide much more consistent real-time behavior.}
+
+@item{In @tech{CS}'s incremental mode, objects are never promoted out
+      of the category of ``recently allocated,'' although there are
+      degrees of ``recently'' so that most minor collections can still
+      skip recent-but-not-too-recent objects. In the common case that
+      most of the memory use for animation or game is allocated on
+      startup (including its code and the code of the Racket runtime
+      system), a major collection may never become necessary.}
+
+]
+
+If the @envvar{PLT_INCREMENTAL_GC} environment variable is set to a
+value that starts with @litchar{0}, @litchar{n}, or @litchar{N} when
+Racket starts, incremental mode is permanently disabled. For
+@tech{3m}, if the @envvar{PLT_INCREMENTAL_GC} environment variable is
+set to a value that starts with @litchar{1}, @litchar{y}, or
+@litchar{Y} when Racket starts, incremental mode is permanently
+enabled. Since incremental mode is only useful for certain parts of
+some programs, however, and since the need for incremental mode is a
+property of a program rather than its environment, the preferred way
+to enable incremental mode is with @racket[(collect-garbage
+'incremental)].
 
 Calling @racket[(collect-garbage 'incremental)] does not perform an
 immediate garbage collection, but instead requests that each minor
-collection perform incremental work up to the next major collection.
-The request expires with the next major collection. Make a call to
+collection perform incremental work up to the next major collection
+(unless incremental model is permanently disabled). The request
+expires with the next major collection. Make a call to
 @racket[(collect-garbage 'incremental)] in any repeating task within
-an application that needs to be responsive in real time. Force a
-full collection with @racket[(collect-garbage)] just before an initial
+an application that needs to be responsive in real time. Force a full
+collection with @racket[(collect-garbage)] just before an initial
 @racket[(collect-garbage 'incremental)] to initiate incremental mode
 from an optimal state.
 
@@ -685,5 +743,5 @@ times, enable @tt{debug}-level logging output for the
 runs @filepath{main.rkt} with garbage-collection logging to stderr
 (while preserving @tt{error}-level logging for all topics). Minor
 collections are reported by @litchar{min} lines, increment-mode minor
-collection are reported with @litchar{mIn} lines, and major
+collections on @tech{3m} are reported with @litchar{mIn} lines, and major
 collections are reported with @litchar{MAJ} lines.

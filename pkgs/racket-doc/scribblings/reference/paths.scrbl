@@ -87,8 +87,8 @@ on how strings encode paths.
          path?]{
 
 Produces a path (for some platform) whose byte-string encoding is
-@racket[bstr]. The optional @racket[type] specifies the convention to
-use for the path.
+@racket[bstr], where @racket[bstr] must not contain a nul byte. The
+optional @racket[type] specifies the convention to use for the path.
 
 For converting relative @tech{path elements} from literals, use instead
 @racket[bytes->path-element], which applies a suitable encoding for
@@ -143,7 +143,9 @@ For information on how byte strings encode paths, see
 @secref["unixpathrep"] and @secref["windowspathrep"].}
 
 
-@defproc[(string->path-element [str string?]) path?]{
+@defproc[(string->path-element [str string?]
+                               [false-on-non-element? any/c #f])
+         (or/c (and/c path? path-element?) #f)]{
 
 Like @racket[string->path], except that @racket[str] corresponds to a
 single relative element in a path, and it is encoded as necessary to
@@ -154,26 +156,33 @@ paths.
 If @racket[str] does not correspond to any @tech{path element}
 (e.g., it is an absolute path, or it can be split), or if it
 corresponds to an up-directory or same-directory indicator on
-@|AllUnix|, then @exnraise[exn:fail:contract].
+@|AllUnix|, then either @racket[#f] is returned or @exnraise[exn:fail:contract].
+A @racket[#f] is returned only when @racket[false-on-non-element?]
+is true.
 
 Like @racket[path->string], information can be lost from
-@racket[str] in the locale-specific conversion to a path.}
+@racket[str] in the locale-specific conversion to a path.
+
+@history[#:changed "8.1.0.6" @elem{Added the @racket[false-on-non-element?] argument.}]}
 
 
 @defproc[(bytes->path-element [bstr bytes?]
-                              [type (or/c 'unix 'windows) (system-path-convention-type)]) 
-         path-for-some-system?]{
+                              [type (or/c 'unix 'windows) (system-path-convention-type)]
+                              [false-on-non-element? any/c #f])
+         (or/c path-element? #f)]{
 
 Like @racket[bytes->path], except that @racket[bstr] corresponds to a
-single relative element in a path. In terms of conversions and
-restrictions on @racket[bstr], @racket[bytes->path-element] is like
-@racket[string->path-element].
+single relative element in a path. In terms of conversions,
+restrictions on @racket[bstr], and the treatment of @racket[false-on-non-element?],
+@racket[bytes->path-element] is like @racket[string->path-element].
 
 The @racket[bytes->path-element] procedure is generally the best
 choice for reconstructing a path based on another path (where the
 other path is deconstructed with @racket[split-path] and
 @racket[path-element->bytes]) when ASCII-level manipulation of
-@tech{path elements} is necessary.}
+@tech{path elements} is necessary.
+
+@history[#:changed "8.1.0.6" @elem{Added the @racket[false-on-non-element?] argument.}]}
 
 
 @defproc[(path-element->string [path path-element?]) string?]{
@@ -302,7 +311,20 @@ Windows examples.
          path-for-some-system?]{
 
 Like @racket[build-path], except a path convention type is specified
-explicitly.}
+explicitly.
+
+Note that, just as with @racket[build-path], any string arguments for either
+@racket[base] or @racket[sub] will be implicitly converted into a path for the
+current platform before being combined with the others. For this reason, you
+cannot use this function to build paths from strings for any platform other
+than the current one; in such attempts, @racket[type] does not match the
+inferred convention type for the strings and an @exnraise[exn:fail:contract].
+(To create paths for foreign platforms, see @racket[bytes->path].)
+
+The usefulness of @racket[build-path/convention-type] over @racket[build-path]
+is limited to cases where the sub-paths contain @racket['same] or @racket['up]
+elements.}
+
 
 @defproc[(absolute-path? [path (or/c path? string? path-for-some-system?)]) boolean?]{
 
@@ -374,7 +396,7 @@ same file or directory as @racket[path]. If
 @racket[path] is a soft link to another path, then the referenced path
 is returned (this may be a relative path with respect to the directory
 owning @racket[path]), otherwise @racket[path] is returned (after
-expansion).
+cleansing).
 
 On Windows, the path for a link should be simplified syntactically, so
 that an up-directory indicator removes a preceding path element
@@ -422,7 +444,8 @@ and (on Windows) without changing the case of letters within the
 path.  If @racket[path] syntactically refers to a directory, the
 result ends with a directory separator.
 
-When @racket[path] is simplified and @racket[use-filesystem?] is true
+When @racket[path] is simplified other than just converting slashes
+to backslashes and @racket[use-filesystem?] is true
 (the default), a complete path is returned. If @racket[path] is
 relative, it is resolved with respect to the current directory.
 On @|AllUnix|, up-directory indicators are removed taking into account soft links (so
@@ -673,13 +696,13 @@ extension.
 
 @defproc[(path-has-extension? [path (or/c path-string? path-for-some-system?)]
                               [ext (or/c bytes? string?)])
-         (or/c bytes? #f)]{
+         boolean?]{
 
 Determines whether the last element of @racket[path] ends with
 @racket[ext] but is not exactly the same as @racket[ext].
 
 If @racket[ext] is a @tech{byte string} with the shape of an extension
-(i.e., starting with @litchar{.}), this check is equivalent to
+(i.e., starting with @litchar{.} and not including another @litchar{.}), this check is equivalent to
 checking whether @racket[(path-get-extension path)] produces @racket[ext].
 
 @examples[#:eval path-eval
@@ -724,13 +747,13 @@ If @racket[more-than-root?] is true, if @racket[base] and
 
 If @racket[path] is the same as @racket[base], then
 @racket[(build-path 'same)] is returned only if
-@racket[more-than-same?] is true. Otherwise, @racket[path] is
-returned when @racket[path] is the same as @racket[base].
+@racket[more-than-same?] is @racket[#f]. Otherwise, and by default,
+@racket[path] is returned when @racket[path] is the same as @racket[base].
 
 If @racket[normalize-case?] is true (the default), then pairs of path
 elements to be compared are first converted via
 @racket[normal-case-path], which means that path elements are
-comparsed case-insentively on Windows. If @racket[normalize-case?] is
+compared case-insentively on Windows. If @racket[normalize-case?] is
 @racket[#f], then path elements and the path roots match only if they
 have the same case.
 

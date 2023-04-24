@@ -1,7 +1,7 @@
 #lang racket/base
 (require (for-syntax racket/base
                      racket/stxparam
-                     syntax/parse)
+                     syntax/parse/pre)
          racket/stxparam
          racket/undefined
          "class-wrapped.rkt"
@@ -1393,20 +1393,29 @@
                       [next-ctcs (cdr all-new-ctcs)]
                       [this-proj (car all-new-projs)]
                       [next-projs (cdr all-new-projs)]
-                      [dropped-something? #f])
+                      [dropped-something? #f]
+                      [n 0])
              (cond
-               [(null? next-ctcs) (values (cons this-ctc prior-ctcs)
-                                          (cons this-proj prior-projs)
-                                          dropped-something?)]
+               [(null? next-ctcs)
+                (when (n . > . 10)
+                  (log-racket/contract-info
+                   "class-c-old.rkt: wrappers seem to be accumulating; found ~a; here is one of them:\n  ~.s"
+                   n
+                   this-ctc))
+                (values (cons this-ctc prior-ctcs)
+                        (cons this-proj prior-projs)
+                        dropped-something?)]
                [else
                 (if (and (ormap (λ (x) (stronger? x this-ctc)) prior-ctcs)
                          (ormap (λ (x) (stronger? this-ctc x)) next-ctcs))
                     (loop prior-ctcs prior-projs
                           (car next-ctcs) (cdr next-ctcs) (car next-projs) (cdr next-projs)
-                          #t)
+                          #t
+                          (+ n 1))
                     (loop (cons this-ctc prior-ctcs) (cons this-proj prior-projs)
                           (car next-ctcs) (cdr next-ctcs) (car next-projs) (cdr next-projs)
-                          dropped-something?))])))
+                          dropped-something?
+                          (+ n 1)))])))
 
          (define unwrapped-class
            (if (has-impersonator-prop:instanceof/c-unwrapped-class? val)
@@ -1434,6 +1443,8 @@
           impersonator-prop:instanceof/c-unwrapped-class unwrapped-class
           impersonator-prop:contracted ctc
           impersonator-prop:original-object original-obj)]))))
+
+(define-logger racket/contract)
 
 (define-values (impersonator-prop:instanceof/c-ctcs
                 has-impersonator-prop:instanceof/c-ctcs?
@@ -1540,11 +1551,11 @@
     (fail '(expected: "an object" given: "~e") obj))
   (let ([cls (object-ref/unwrap obj)])
     (let ([method-ht (class-method-ht cls)])
-      (for ([m methods])
+      (for ([m (in-list methods)])
         (unless (hash-ref method-ht m #f)
           (fail "no public method ~a" m))))
     (let ([field-ht (class-field-ht cls)])
-      (for ([m fields])
+      (for ([m (in-list fields)])
         (unless (hash-ref field-ht m #f)
           (fail "no public field ~a" m)))))
   #t)
@@ -1668,7 +1679,18 @@
                      [bindings bindings])
          (syntax/loc stx
            (let bindings
-             (make-base-object/c methods method-ctcs fields field-ctcs)))))]))
+             (build-base-object/c methods method-ctcs fields field-ctcs)))))]))
+
+(define (build-base-object/c methods method-ctcs fields field-ctcs)
+  (make-base-object/c
+   methods
+   (for/list ([method-ctc (in-list method-ctcs)])
+     (cond [(just-check-existence? method-ctc) method-ctc]
+           [else (coerce-contract 'object/c method-ctc)]))
+   fields
+   (for/list ([field-ctc (in-list field-ctcs)])
+     (cond [(just-check-existence? field-ctc) field-ctc]
+           [else (coerce-contract 'object/c field-ctc)]))))
 
 ;; make-wrapper-object: contract object blame neg-party
 ;;                      (listof symbol) (listof contract?) (listof symbol) (listof contract?)

@@ -29,10 +29,17 @@
 ;; The attached values are (parallel-compile-event <worker-id> <original-data>).
 (define pb-logger (make-logger 'setup/parallel-build (current-logger)))
 
+(define-logger concurrentometer)
+
 (define lock-manager% 
   (class object%
+    (init-field worker-count)
     (field (locks (make-hash)))
     (define depends (make-hash))
+    (define currently-idle 0)
+    (define/private (idle! delta)
+      (set! currently-idle (+ currently-idle delta))
+      (log-concurrentometer-debug "~s" (- worker-count currently-idle)))
     (define/public (lock fn wrkr)
       (let ([v (hash-ref locks fn #f)])
         (hash-set!
@@ -48,16 +55,18 @@
                 (wrkr/send wrkr (list 'cycle (cons fn fns)))
                 v]
                [else
+                (idle! +1)
                 (hash-set! depends wrkr (cons w fn))
                 (list w (append waitlst (list wrkr)))]))]
-           [else
+           [_
             (wrkr/send wrkr (list 'locked))
             (list wrkr null)]))
         (not v)))
     (define/public (unlock fn)
       (match (hash-ref locks fn)
         [(list w waitlst)
-          (for ([x (second (hash-ref locks fn))])
+         (for ([x (second (hash-ref locks fn))])
+            (idle! -1)
             (hash-remove! depends x)
             (wrkr/send x (list 'compiled)))
           (hash-set! locks fn 'done)]))
@@ -87,7 +96,8 @@
 (define collects-queue% 
   (class* object% (work-queue<%>) 
     (init-field cclst printer append-error options)
-    (field (lock-mgr (new lock-manager%)))
+    (init worker-count)
+    (field (lock-mgr (new lock-manager% [worker-count worker-count])))
     (field (hash (make-hash)))
     (inspect #f)
 
@@ -107,23 +117,30 @@
                  (log-message pb-logger level msg (parallel-compile-event id data)))
                #f]
               ['DONE
-                (define (string-!empty? s) (not (zero? (string-length s))))
-                (when (ormap string-!empty? (list out err))
-                  (append-error cc "making" #f out err "output"))
-                ;(when last (printer (current-output-port) "made" "~a" (cc-name cc)))
-                #t]
-              [else (eprintf "Failed trying to match:\n~s\n" result-type)]))]
+               (cond
+                 [#f
+                  ;; treat output as an error:
+                  (define (string-!empty? s) (not (zero? (string-length s))))
+                  (when (ormap string-!empty? (list out err))
+                    (append-error cc "making" #f out err "output"))]
+                 [else
+                  ;; copy output to here:
+                  (display out)
+                  (display err (current-error-port))])
+               ;(when last (printer (current-output-port) "made" "~a" (cc-name cc)))
+               #t]
+              [_ (eprintf "Failed trying to match:\n~s\n" result-type)]))]
         [(list _ (list 'ADD fn))
          ;; Currently ignoring queued individual files
          #f]
-        [else
+        [_
           (match work 
             [(list-rest (list cc file last) message)
               (append-error cc "making" #f "" "" "error")
               (eprintf "work-done match cc failed.\n")
               (eprintf "trying to match:\n~e\n" (list work msg))
               #t]
-            [else
+            [_
               (eprintf "work-done match cc failed.\n")
               (eprintf "trying to match:\n~e\n" (list work msg))
               (eprintf "FATAL\n")
@@ -166,7 +183,7 @@
             [(cons (list cc (cons file ft) subs) tail)
               (hash-set! hash id (cons (list cc ft subs) tail))
               (build-job cc file #f)]
-            [else
+            [_
               (eprintf "get-job match cc failed.\n")
               (eprintf "trying to match:\n~v\n" cc)]))
 
@@ -213,7 +230,8 @@
 (define file-list-queue% 
   (class* object% (work-queue<%>) 
     (init-field filelist handler options)
-    (field (lock-mgr (new lock-manager%)))
+    (init worker-count)
+    (field (lock-mgr (new lock-manager% [worker-count worker-count])))
     (field [results (void)])
     (inspect #f)
 
@@ -247,7 +265,7 @@
            (set! filelist (cons fn filelist))
            (set! seen (hash-set seen fn #t)))
          #f]
-        [else
+        [_
           (handler id 'fatalerror (format "Error matching work: ~a queue ~a" work filelist) "" "") #t]))
            
       (define/public (get-job workerid)
@@ -256,7 +274,7 @@
            (define-values (dir file b) (split-path hd))
            (set! filelist tail)
            (handler workerid 'start hd "" "" "")
-           (values hd (list (->bytes hd) (->bytes (path->complete-path hd)) null))]))
+           (values hd (list (->bytes hd) (->bytes (path->complete-path hd)) options))]))
 
       (define/public (has-jobs?) (not (null? filelist)))
       (define/public (jobs-cnt) (length filelist))
@@ -305,12 +323,12 @@
                  [(list 'compiled) #f]
                  [(list 'DIE) (worker/die 1)]
                  [x (send/error (format "DIDNT MATCH B ~v\n" x))]
-                 [else (send/error (format "DIDNT MATCH B\n"))])]
+                 [_ (send/error (format "DIDNT MATCH B\n"))])]
              ['unlock 
                (DEBUG_COMM (eprintf "UNLOCKING ~a ~a ~a\n" worker-id name _full-file))
               (send/msg (list (list 'UNLOCK (path->bytes fn)) "" ""))]
              [x (send/error (format "DIDNT MATCH C ~v\n" x))]
-             [else (send/error (format "DIDNT MATCH C\n"))]))
+             [_ (send/error (format "DIDNT MATCH C\n"))]))
          (with-handlers ([exn:fail? (lambda (x)             
                                       (send/resp (list 'ERROR
                                                        ;; Long form shows context:
@@ -319,6 +337,7 @@
                                                        (format-error x #:long? #f #:to-string? #t))))])
            (parameterize ([parallel-lock-client lock-client]
                           [compile-context-preservation-enabled (member 'disable-inlining options )]
+                          [compile-enforce-module-constants (not (memq 'disable-constant options))]
                           [manager-trace-handler (if (member 'very-verbose options)
                                                      (lambda (p) (printf "  ~a\n" p))
                                                      (manager-trace-handler))]
@@ -353,7 +372,7 @@
              (stop-logging-thread))
            (send/resp 'DONE))]
         [x (send/error (format "DIDNT MATCH A ~v\n" x))]
-        [else (send/error (format "DIDNT MATCH A\n"))]))))
+        [_ (send/error (format "DIDNT MATCH A\n"))]))))
   
 (define (parallel-compile-files list-of-files
                                 #:worker-count [worker-count (processor-count)]
@@ -366,7 +385,7 @@
     (raise-argument-error 'parallel-compile-files "(listof path-string?)" list-of-files))
   (unless (and (procedure? handler) (procedure-arity-includes? handler 6))
     (raise-argument-error 'parallel-compile-files "(procedure-arity-includes/c 6)" handler))
-  (parallel-build (make-object file-list-queue% list-of-files handler options) worker-count
+  (parallel-build (make-object file-list-queue% list-of-files handler options worker-count) worker-count
                   #:use-places? use-places?))
 
 (define (parallel-compile worker-count setup-fprintf append-error collects-tree
@@ -375,7 +394,8 @@
   (setup-fprintf (current-output-port) #f (add-time
                                            (format "--- parallel build using ~a jobs ---" worker-count)))
   (define collects-queue (make-object collects-queue% collects-tree setup-fprintf append-error
-                                      (append options '(set-directory))))
+                                      (append options '(set-directory))
+                                      worker-count))
   (parallel-build collects-queue worker-count
                   #:use-places? use-places?))
 

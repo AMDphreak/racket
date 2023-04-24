@@ -164,6 +164,30 @@
 	     exn:fail?)
 (err/rt-test (port-commit-peeked 100 never-evt always-evt /dev/null-in))
 
+;; A port that produces a stream of 1s, but always
+;; though an evt:
+(let ()
+  (define stubborn-infinite-ones
+    (make-input-port
+     'ones
+     (lambda (s)
+       (wrap-evt always-evt
+                 (lambda (ae)
+                   (bytes-set! s 0 (char->integer #\1))
+                   1)))
+     (lambda (s skip-n progress-evt)
+       (wrap-evt always-evt
+                 (lambda (ae)
+                   (bytes-set! s 0 (char->integer #\1))
+                   1)))
+     void))
+  (test "11111" read-string 5 stubborn-infinite-ones)
+  (test "11111" peek-string 5 0 stubborn-infinite-ones)
+  (test #t byte-ready? stubborn-infinite-ones)
+  (test #t char-ready? stubborn-infinite-ones)
+  (test "11111" read-string 5 stubborn-infinite-ones)
+  (test stubborn-infinite-ones sync/timeout 0 stubborn-infinite-ones))
+
 ;; A port that produces a stream of 1s:
 (define infinite-ones 
   (make-input-port
@@ -560,6 +584,35 @@
 (test 3 sync (write-bytes-avail-evt #"Bye" cap-port))
 (test "HELLOBYE" get-output-string orig-port)
 
+;; Make sure output ports get immutable byte strings
+(let ()
+  (define i? #f)
+  (define p (make-output-port
+             'test
+             always-evt
+             (lambda (bstr start end buffer? enable-break?)
+               (set! i? (immutable? bstr))
+               (- end start))
+             void
+             (lambda (v buffer? enable-break?)
+               1)
+             (lambda (bstr start end)
+               (set! i? (immutable? bstr))
+               (wrap-evt always-evt (lambda (v) (- end start))))
+             (lambda (v)
+               (wrap-evt always-evt (lambda (v) 1)))))
+  (test 5 write-bytes (bytes-copy #"hello") p)
+  (test #t values i?)
+  (set! i? #f)
+  (test 5 write-bytes #"hello" p)
+  (test #t values i?)
+  (set! i? #f)
+  (test #t evt? (write-bytes-avail-evt #"hello" p))
+  (test #t values i?)
+  (set! i? #f)
+  (test #t evt? (write-bytes-avail-evt (bytes-copy #"hello") p))
+  (test #t values i?))
+
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Peeking in a limited pipe extends the limit:
 
@@ -682,6 +735,115 @@
       (test 101 syntax-line stx)
       (test 0 syntax-column stx)
       (test 1026 syntax-position stx))))
+
+;; Test provided by @wcs4217
+(let ([p (open-input-bytes #"\rx\ny")])
+  (port-count-lines! p)
+  (test-values '(1 0 1) (lambda () (port-next-location p)))
+  (test #\return read-char p)
+  (test-values '(2 0 2) (lambda () (port-next-location p)))
+  (test #\x read-char p)
+  (test-values '(2 1 3) (lambda () (port-next-location p)))
+  (test #\newline read-char p)
+  (test-values '(3 0 4) (lambda () (port-next-location p)))
+  (test #\y read-char p)
+  (test-values '(3 1 5) (lambda () (port-next-location p)))
+  (test eof read-char p)
+  (test-values '(3 1 5) (lambda () (port-next-location p))))
+
+(let ([p (open-input-bytes #"\rx\ny")])
+  (port-count-lines! p)
+  (test-values '(1 0 1) (lambda () (port-next-location p)))
+  (test #"\rx" read-bytes 2 p)
+  (test-values '(2 1 3) (lambda () (port-next-location p)))
+  (test #\newline read-char p)
+  (test-values '(3 0 4) (lambda () (port-next-location p)))
+  (test #\y read-char p)
+  (test-values '(3 1 5) (lambda () (port-next-location p)))
+  (test eof read-char p)
+  (test-values '(3 1 5) (lambda () (port-next-location p))))
+
+;; more port location tessting
+(let ()
+  (define-values (i o) (make-pipe))
+  (port-count-lines! i)
+  (port-count-lines! o)
+  (define (next-location p)
+    (define-values (line col pos) (port-next-location p))
+    (list line col pos))
+  (test '(1 0 1) next-location i)
+  (test '(1 0 1) next-location o)
+
+  (write-bytes #"a" o)
+  (test '(1 1 2) next-location o)
+  (write-bytes #"\n b" o)
+  (test '(2 2 5) next-location o)
+
+  (test #"a" read-bytes 1 i)
+  (test '(1 1 2) next-location i)
+  (test #"\n" read-bytes 1 i)
+  (test '(2 0 3) next-location i)
+  (test #" b" read-bytes 2 i)
+  (test '(2 2 5) next-location i)
+
+  (write-bytes #"x\r" o)
+  (test '(3 0 7) next-location o)
+  (write-bytes #"\n" o)
+  (test '(3 0 7) next-location o)
+  (write-bytes #"!" o)
+  (test '(3 1 8) next-location o)
+
+  (test #"x\r" read-bytes 2 i)
+  (test '(3 0 7) next-location i)
+  (test #"\n!" read-bytes 2 i)
+  (test '(3 1 8) next-location i)
+
+  (write-string "e\u300" o)
+  (test '(3 3 10) next-location o)
+  (test #"e" read-bytes 1 i)
+  (test '(3 2 9) next-location i)
+  (test #"\314" read-bytes 1 i)
+  (test '(3 3 10) next-location i) ; tentatively incremented mid-UTF-8
+  (test #"\200" read-bytes 1 i)
+  (test '(3 3 10) next-location i)  ; UTF-8 concluded
+
+  (write-string "!" o)
+  (test '(3 4 11) next-location o)
+  (test #"!" read-bytes 1 i)
+  (test '(3 4 11) next-location i)
+
+  (write-string "\r" o)
+  (test '(4 0 12) next-location o)
+  (test #"\r" read-bytes 1 i)
+  (test '(4 0 12) next-location i)
+
+  (write-string "\n" o)
+  (test '(4 0 12) next-location o)
+  (test #"\n" read-bytes 1 i)
+  (test '(4 0 12) next-location i)
+
+  (write-string "." o)
+  (test '(4 1 13) next-location o)
+  (test #"." read-bytes 1 i)
+  (test '(4 1 13) next-location i)
+
+  (write-string "app\u03BBe" o)
+  (test '(4 6 18) next-location o)
+  (test "app\u03BBe" read-string 5 i)
+  (test '(4 6 18) next-location i)
+
+  (void))
+
+(let ()
+  (define i (open-input-string "\u0019\u0000\u000E"))
+  (port-count-lines! i)
+  (define (next-location p)
+    (define-values (line col pos) (port-next-location p))
+    (list line col pos))
+
+  (test '(1 0 1) next-location i)
+  (test "\u0019\u0000\u000E" read-string 3 i)
+  (test '(1 3 4) next-location i))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;  Check that if the initial commit thread is killed, then
@@ -867,6 +1029,38 @@
   (check-all port-count-lines!))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; attempting to read from or write to a closed byte-string port
+
+(let ()
+  (define (check proc)
+    (define p (open-input-bytes #"x"))
+    (close-input-port p)
+    (err/rt-test (proc p) exn:fail? #rx"closed")
+    (err/rt-test (proc p)  (lambda (e) (not (exn:fail:contract? e)))))
+  (check read-byte)
+  (check peek-byte)
+  (check (lambda (p) (peek-byte p 10)))
+  (check (lambda (p) (read-bytes 10 p)))
+  (check read-char)
+  (check read-char-or-special)
+  (check peek-char)
+  (check (lambda (p) (read-string 10 p)))
+  (check read)
+  (check (lambda (p) (read-syntax (object-name p) p))))
+
+(let ()
+  (define (check proc)
+    (define p (open-output-bytes))
+    (close-output-port p)
+    (err/rt-test (proc p) exn:fail? #rx"closed")
+    (err/rt-test (proc p) (lambda (e) (not (exn:fail:contract? e)))))
+  (check (lambda (p) (write-byte 10 p)))
+  (check (lambda (p) (write-bytes #"hello" p)))
+  (check (lambda (p) (write-char #\x p)))
+  (check (lambda (p) (write-string "hello" p)))
+  (check flush-output))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; port-closed events
 
 (let ()
@@ -924,11 +1118,17 @@
   (test #f file-position* p2)
   (err/rt-test (file-position p2) exn:fail:filesystem?))
 
+(let ([i (open-input-bytes #"")])
+  (test i sync/timeout 0 i)
+  (test i sync/timeout #f i)
+  (test #t byte-ready? i)
+  (test #t char-ready? i))
+
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Text mode, file positions, and buffers
 
 (let ()
-  (define path (build-path (find-system-path 'temp-dir) "test.txt"))
+  (define path (make-temporary-file "test~a.txt"))
 
   (define ofile (open-output-file path #:mode 'text #:exists 'replace))
   (fprintf ofile "abc\ndef\nghi\n")
@@ -937,22 +1137,20 @@
   (test 'line file-stream-buffer-mode ofile)
   (close-output-port ofile)
 
-  (let ()
-    (define ifile (open-input-file path #:mode 'text))
-    (test "abc" read-line ifile)
-    (define pos (file-position ifile))
-    (test "def" read-line ifile)
-    (file-position ifile pos)
-    (test "def" read-line ifile))
+  (test (if (eq? 'windows (system-type))
+            #"abc\r\ndef\r\nghi\r\n"
+            #"abc\ndef\nghi\n")
+        call-with-input-file path (lambda (i) (read-bytes 100 i)))
 
-  (let ()
+  (for ([i '(none block)])
     (define ifile (open-input-file path #:mode 'text))
-    (file-stream-buffer-mode ifile 'none)
+    (file-stream-buffer-mode ifile)
     (test "abc" read-line ifile)
     (define pos (file-position ifile))
     (test "def" read-line ifile)
     (file-position ifile pos)
-    (test "def" read-line ifile))
+    (test "def" read-line ifile)
+    (close-input-port ifile))
 
   (let* ([bs (call-with-input-file path
 	       #:mode 'text 
@@ -1049,6 +1247,53 @@
   (check-srcloc #f 3 29)
   (check-srcloc #f 3 #f)
   (check-srcloc 1 3 29))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Regression test for interaction of `read-line`, "\r\n", and
+;; input buffering
+
+(let ()
+  (define f1 (make-temporary-file "line-feed1~a.txt"))
+  (define f2 (make-temporary-file "line-feed2~a.txt"))
+
+  (define p1 (open-output-file f1 #:exists 'truncate))
+  (define p2 (open-output-file f2 #:exists 'truncate))
+
+  (define (write-prefix p)
+    (for ([i 1364])
+      (write-bytes #"x\r\n" p)))
+
+  (write-prefix p1)
+  (write-prefix p2)
+  (write-bytes #"\r\ny\r\ny\r\n" p1)
+  (write-bytes #"y\r\ny\r\ny\r\n" p2)
+
+  (close-output-port p1)
+  (close-output-port p2)
+
+  (define (count f)
+    (call-with-input-file f
+                          (lambda (in)
+                            (let loop ()
+                              (define v (read-line in 'any))
+                              (if (eof-object? v)
+                                  0
+                                  (add1 (loop)))))))
+
+  (test 1367 count f1)
+  (test 1367 count f2)
+
+  (delete-file f1)
+  (delete-file f2))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Regression test for peek-string! issue #4156.
+
+(let ()
+  (define in (open-input-string "hello"))
+  (define str (make-string 10))
+  (test 5 peek-string! str 0 in)
+  (test "hello" substring str 0 5))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 

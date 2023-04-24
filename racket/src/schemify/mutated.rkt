@@ -9,7 +9,9 @@
          "mutated-state.rkt"
          "find-known.rkt"
          "infer-known.rkt"
-         "letrec.rkt")
+         "letrec.rkt"
+         "id-to-var.rkt"
+         "aim.rkt")
 
 (provide mutated-in-body
          update-mutated-state!)
@@ -24,7 +26,8 @@
 ;; This pass is also responsible for recording when a letrec binding
 ;; must be mutated implicitly via `call/cc`.
 
-(define (mutated-in-body l exports prim-knowns knowns imports simples unsafe-mode? enforce-constant?)
+(define (mutated-in-body l exports extra-variables prim-knowns knowns imports simples
+                         unsafe-mode? target enforce-constant?)
   ;; Find all `set!`ed variables, and also record all bindings
   ;; that might be used too early
   (define mutated (make-hasheq))
@@ -33,17 +36,35 @@
   ;; undefined state and must be accessed through a `variable`:
   (for ([id (in-hash-keys exports)])
     (hash-set! mutated id 'undefined))
-  ;; Find all defined variables:
-  (for ([form (in-list l)])
-    (match form
-      [`(define-values (,ids ...) ,rhs)
-       (for ([id (in-list ids)])
-         (hash-set! mutated (unwrap id) (if enforce-constant?
-                                            'not-ready
-                                            ;; If constants should not be enforced, then
-                                            ;; treat all variable as mutated:
-                                            'set!ed)))]
-      [`,_ (void)]))
+  ;; Find all defined variables, and find variables that are not exported:
+  (define unexported-ids
+    (for/fold ([unexported-ids '()]) ([form (in-list l)])
+      (match form
+        [`(define-values (,ids ...) ,rhs)
+         (for/fold ([unexported-ids unexported-ids]) ([id (in-list ids)])
+           (define u-id (unwrap id))
+           (hash-set! mutated u-id (if enforce-constant?
+                                       'not-ready
+                                       ;; If constants should not be enforced, then
+                                       ;; treat all variable as mutated:
+                                       'set!ed-too-early))
+           (if (hash-ref exports u-id #f)
+               unexported-ids
+               (cons u-id unexported-ids)))]
+        [`,_ unexported-ids])))
+  ;; To support jitify, if an unexported and unmutated variable is
+  ;; captured in a closure before it is defined, will want to reify
+  ;; it like an export; so, set those variables to 'too-early
+  ;; until they are really initialized
+  (define unexported-ready (and (pair? unexported-ids)
+                                (aim? target 'interp)
+                                (make-hasheq)))
+  (when unexported-ready
+    (for ([id (in-list unexported-ids)])
+      (hash-set! mutated id (lambda ()
+                              (unless (or (hash-ref unexported-ready id #f)
+                                          (set!ed-mutated-state? (hash-ref mutated id #f)))
+                                (hash-set! mutated id 'too-early))))))
   ;; Walk through the body:
   (for/fold ([prev-knowns knowns]) ([form (in-list l)])
     ;; Accumulate known-binding information in this pass, because it's
@@ -53,7 +74,7 @@
     ;; that information is correct, because it dynamically precedes
     ;; the `set!`
     (define-values (knowns info)
-      (find-definitions form prim-knowns prev-knowns imports mutated simples unsafe-mode?
+      (find-definitions form prim-knowns prev-knowns imports mutated simples unsafe-mode? target
                         #:optimize? #f))
     (match form
       [`(define-values (,ids ...) ,rhs)
@@ -62,20 +83,27 @@
          ;; Look just at the "rest" part:
          (for ([e (in-list (struct-type-info-rest info))]
                [pos (in-naturals)])
-           (unless (and (= pos struct-type-info-rest-properties-list-pos)
-                        (pure-properties-list? e prim-knowns knowns imports mutated simples))
-             (find-mutated! e ids prim-knowns knowns imports mutated simples)))]
+           (define prop-vals (and (= pos struct-type-info-rest-properties-list-pos)
+                                  (pure-properties-list e prim-knowns knowns imports mutated simples)))
+           (cond
+             [prop-vals
+              ;; check individual property values using `ids`, so procedures won't
+              ;; count as used until some instace is created
+              (for ([e (in-list prop-vals)])
+                (find-mutated! e ids prim-knowns knowns imports mutated simples unsafe-mode?))]
+             [else
+              (find-mutated! e ids prim-knowns knowns imports mutated simples unsafe-mode?)]))]
         [else
-         (find-mutated! rhs ids prim-knowns knowns imports mutated simples)])
+         (find-mutated! rhs ids prim-knowns knowns imports mutated simples unsafe-mode?)])
        ;; For any among `ids` that didn't get a delay and wasn't used
        ;; too early, the variable is now ready, so remove from
-       ;; `mutated`:
+       ;; `mutated`
        (for ([id (in-list ids)])
          (let ([id (unwrap id)])
            (when (eq? 'not-ready (hash-ref mutated id #f))
              (hash-remove! mutated id))))]
       [`,_
-       (find-mutated! form #f prim-knowns knowns imports mutated simples)])
+       (find-mutated! form #f prim-knowns knowns imports mutated simples unsafe-mode?)])
     knowns)
   ;; For definitions that are not yet used, force delays:
   (for ([form (in-list l)])
@@ -84,17 +112,28 @@
        (for ([id (in-list ids)])
          (let ([id (unwrap id)])
            (define state (hash-ref mutated id #f))
+           (when unexported-ready
+             (when (not (hash-ref exports id #f))
+               (hash-set! unexported-ready id #t)))
            (when (delayed-mutated-state? state)
              (hash-remove! mutated id)
              (state))))]
       [`,_ (void)]))
+  ;; Check for unexported variables that need to be implemented like exports:
+  (unless (or unsafe-mode?
+              (aim? target 'system))
+    (for ([id (in-list unexported-ids)])
+      (define state (hash-ref mutated id #f))
+      (when (via-variable-mutated-state? state)
+        ;; force creation of variable
+        (id-to-variable id exports extra-variables))))
   ;; Everything else in `mutated` is either 'set!ed, 'too-early,
   ;; 'undefined, or unreachable:
   mutated)
 
 ;; Schemify `let-values` to `let`, etc., and
 ;; reorganize struct bindings.
-(define (find-mutated! v ids prim-knowns knowns imports mutated simples)
+(define (find-mutated! top-v ids prim-knowns knowns imports mutated simples unsafe-mode?)
   (define (delay! ids thunk)
     (define done? #f)
     (define force (lambda () (unless done?
@@ -103,10 +142,14 @@
     (for ([id (in-list ids)])
       (let ([id (unwrap id)])
         (define m (hash-ref mutated id 'not-ready))
-        (if (eq? 'not-ready m)
-            (hash-set! mutated id force)
-            (force)))))
-  (let find-mutated! ([v v] [ids ids])
+        (cond
+          [(eq? 'not-ready m)
+           (hash-set! mutated id force)]
+          [(procedure? m)
+           (hash-set! mutated id (lambda () (m) (force)))]
+          [else
+           (force)]))))
+  (let find-mutated! ([v top-v] [ids ids])
     (define (find-mutated!* l ids)
       (let loop ([l l])
         (cond
@@ -142,8 +185,9 @@
                                       [rhs (in-list rhss)])
             (find-mutated! rhs (unwrap-list ids))
             (define new-maybe-cc? (or maybe-cc?
-                                      (not (simple? rhs prim-knowns knowns imports mutated simples
-                                                    #:pure? #f))))
+                                      (not (simple? rhs prim-knowns knowns imports mutated simples unsafe-mode?
+                                                    #:pure? #f
+                                                    #:result-arity (length ids)))))
             ;; Each `id` in `ids` is now ready (but might also hold a delay):
             (for ([id (in-wrap-list ids)])
               (let ([u-id (unwrap id)])
@@ -182,6 +226,8 @@
        (find-mutated! body ids)]
       [`(begin ,exps ...)
        (find-mutated!* exps ids)]
+      [`(begin-unsafe ,exps ...)
+       (find-mutated!* exps ids)]
       [`(begin0 ,exp ,exps ...)
        (find-mutated! exp ids)
        (find-mutated!* exps #f)]
@@ -199,10 +245,18 @@
                (let ([rator (unwrap rator)])
                  (and (symbol? rator)
                       (let ([v (find-known rator prim-knowns knowns imports mutated)])
-                        (and (known-constructor? v)
+                        (and (or (known-constructor? v)
+                                 ;; Some ad hoc constructors that are particularly
+                                 ;; useful to struct-type properties:
+                                 (eq? rator 'cons)
+                                 (eq? rator 'list)
+                                 (eq? rator 'vector)
+                                 (eq? rator 'make-struct-type-property))
                              (bitwise-bit-set? (known-procedure-arity-mask v) (length exps))))
                       (for/and ([exp (in-list exps)])
-                        (simple? exp prim-knowns knowns imports mutated simples)))))
+                        (simple? exp prim-knowns knowns imports mutated simples unsafe-mode?
+                                 #:ordered? #t
+                                 #:succeeds? #t)))))
           ;; Can delay construction
           (delay! ids (lambda () (find-mutated!* exps #f)))]
          [else
@@ -214,13 +268,15 @@
            (define state (hash-ref mutated v #f))
            (cond
              [(not-ready-mutated-state? state)
-              (hash-set! mutated v 'too-early)]
+              (unless unsafe-mode? ; unsafe => assume too-early won't happen
+                (hash-set! mutated v 'too-early))]
              [(delayed-mutated-state? state)
               (cond
                 [ids
                  ;; Chain delays
                  (delay! ids (lambda ()
-                               (hash-remove! mutated v)
+                               (when (eq? (hash-ref mutated v #f) state)
+                                 (hash-remove! mutated v))
                                (state)))]
                 [else
                  (hash-remove! mutated v)

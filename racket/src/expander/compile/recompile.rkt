@@ -102,7 +102,7 @@
   ;; as the mpis and link modules, then use that data for cross-module
   ;; optimization while recompiling the per-phase body units, and then
   ;; regenerate the data linklets because optimization can add new
-  ;; linklet import.s
+  ;; linklet imports.
   (define orig-h (linklet-bundle->hash b))
 
   ;; Force compilation of linklets that are not the module body:
@@ -139,6 +139,10 @@
 
   (define self (decl 'self-mpi))
   (define phase-to-link-modules (decl 'phase-to-link-modules))
+  (define portal-stxes (decl 'portal-stxes))
+
+  (define unsafe? (hash-ref orig-h 'unsafe? #f))
+  (define realm (hash-ref orig-h 'realm 'racket))
 
   (define (find-submodule mod-name phase)
     ;; If `mod-name` refers to a submodule in the same linklet directory,
@@ -188,9 +192,11 @@
                                 #:serializable? #t
                                 #:module-prompt? #t
                                 #:module-use*s module-use*s
-                                #:cross-linklet-inlining? #t
+                                #:optimize-linklet? #t
+                                #:unsafe? unsafe?
                                 #:load-modules? #t
-                                #:namespace ns))
+                                #:namespace ns
+                                #:realm realm))
       (values phase (cons linklet new-module-use*s))))
 
   (define h/new-body-linklets
@@ -210,8 +216,10 @@
   (define declaration-linklet
     (compile-linklet (generate-module-declaration-linklet mpis self 
                                                           (decl 'requires)
+                                                          (decl 'recur-requires)
                                                           (decl 'provides)
-                                                          phase-to-link-module-uses-expr)
+                                                          phase-to-link-module-uses-expr
+                                                          portal-stxes)
                      'decl))
 
   (define new-bundle

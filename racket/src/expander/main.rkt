@@ -36,9 +36,13 @@
          (only-in "syntax/cache.rkt" cache-place-init!)
          (only-in "syntax/syntax.rkt" syntax-place-init!)
          (only-in "syntax/scope.rkt" scope-place-init!)
+         (only-in "syntax/error.rkt" install-error-syntax->string-handler!)
+         "syntax/serialize.rkt"
          (only-in "eval/module-cache.rkt" module-cache-place-init!)
          (only-in "common/performance.rkt" performance-place-init!)
-         (only-in "eval/shadow-directory.rkt" shadow-directory-place-init!))
+         (only-in "eval/shadow-directory.rkt" shadow-directory-place-init!)
+         (only-in "common/phase+space.rkt" phase+space-place-init!)
+         (only-in "expand/configure.rkt" set-load-configure-expand!))
 
 ;; All bindings provided by this module must correspond to variables
 ;; (as opposed to syntax). Provided functions must not accept keyword
@@ -69,7 +73,10 @@
 
          find-library-collection-paths
          find-library-collection-links
+         find-compiled-file-roots
          find-main-config
+         read-installation-configuration-table
+         get-installation-name
 
          current-library-collection-paths
          current-library-collection-links
@@ -78,7 +85,7 @@
          use-compiled-file-check
          use-collection-link-paths
          use-user-specific-search-paths
-         
+
          syntax?
          read-syntax
          datum->syntax syntax->datum
@@ -134,6 +141,9 @@
          syntax-shift-phase-level
          bound-identifier=?
 
+         syntax-serialize
+         syntax-deserialize
+
          compiled-expression-recompile)
 
 ;; ----------------------------------------
@@ -155,7 +165,8 @@
    (begin
      (declare-core-module! ns)
      (declare-hash-based-module! '#%read read-primitives #:namespace ns)
-     (declare-hash-based-module! '#%main main-primitives #:namespace ns)
+     (declare-hash-based-module! '#%main main-primitives #:namespace ns
+                                 #:protected '(current-compile))
      (declare-hash-based-module! '#%utils utils-primitives #:namespace ns)
      (declare-hash-based-module! '#%place-struct place-struct-primitives #:namespace ns
                                  ;; Treat place creation as "unsafe", since the new place starts with
@@ -171,8 +182,13 @@
                          'variable-reference-constant?)])
        (declare-hash-based-module! '#%linklet-primitive linklet-primitives #:namespace ns
                                    #:primitive? #t
-                                   #:register-builtin? #t)
-       (declare-hash-based-module! '#%linklet-expander linklet-expander-primitives #:namespace ns)
+                                   #:register-builtin? #t
+                                   #:protected? #t)
+       (declare-hash-based-module! '#%linklet-expander linklet-expander-primitives #:namespace ns
+                                   ;; Names that shadow linklet primitives need to be registered,
+                                   ;; and it's ok if we register a few more:
+                                   #:register-builtin? #t
+                                   #:protected? #t)
        (declare-reexporting-module! '#%linklet (list '#%linklet-primitive
                                                      '#%linklet-expander)
                                     #:namespace ns))
@@ -189,7 +205,8 @@
                              #:namespace ns
                              #:protected? (or (eq? name '#%foreign)
                                               (eq? name '#%futures)
-                                              (eq? name '#%unsafe))))
+                                              (eq? name '#%unsafe)
+                                              (eq? name '#%terminal))))
      (declare-reexporting-module! '#%builtin (list* '#%place-struct
                                                     '#%utils
                                                     '#%boot
@@ -203,6 +220,24 @@
      (dynamic-require ''#%kernel 0))))
 
 (namespace-init!)
+(install-error-syntax->string-handler!)
+
+(set-load-configure-expand!
+ (lambda (mpi ns)
+   (let ([config-m (module-path-index-join '(submod "." configure-expand) mpi)])
+     (if (module-declared? config-m #t)
+         (parameterize ([current-namespace ns])
+           (let ([enter (dynamic-require config-m 'enter-parameterization)]
+                 [exit (dynamic-require config-m 'exit-parameterization)])
+             (unless (and (procedure? enter)
+                          (procedure-arity-includes? enter 0))
+               (raise-result-error 'configure-expand "(procedure-arity-includes/c 0)" enter))
+             (unless (and (procedure? enter)
+                          (procedure-arity-includes? exit 0))
+               (raise-result-error 'configure-expand "(procedure-arity-includes/c 0)" exit))
+             (values enter exit)))
+         (values current-parameterization
+                 current-parameterization)))))
 
 (define (datum->kernel-syntax s)
   (datum->syntax core-stx s))
@@ -212,9 +247,11 @@
   (scope-place-init!)
   (cache-place-init!)
   (core-place-init!)
+  (phase+space-place-init!)
   (module-path-place-init!)
   (module-cache-place-init!)
   (shadow-directory-place-init!)
   (collection-place-init!)
   (performance-place-init!)
-  (namespace-init!))
+  (namespace-init!)
+  (install-error-syntax->string-handler!))

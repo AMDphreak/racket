@@ -1,17 +1,18 @@
 (module reqprov '#%kernel
   (#%require "define.rkt"
              (for-syntax '#%kernel
-                         "stx.rkt" "stxcase-scheme.rkt" "small-scheme.rkt" 
+                         "stx.rkt" "stxcase-scheme.rkt" "define-et-al.rkt"
+                         "qq-and-or.rkt" "cond.rkt"
                          "stxloc.rkt" "qqstx.rkt" "more-scheme.rkt"
-                         "member.rkt"
                          "../require-transform.rkt"
                          "../provide-transform.rkt"
-                         "struct-info.rkt"))
+                         "struct-info.rkt"
+                         "../phase+space.rkt"))
   
   (#%provide lib file planet submod
-             for-syntax for-template for-label for-meta
+             for-syntax for-template for-label for-meta for-space
              require
-             only-in rename-in prefix-in except-in combine-in only-meta-in
+             only-in rename-in prefix-in except-in combine-in only-meta-in only-space-in
              relative-in
              provide
              all-defined-out all-from-out
@@ -51,7 +52,9 @@
             [(eq? kw 'submod)
              (syntax-case stx ()
                [(_ mp . rest)
-                (let ([new-mp (xlate-path #'mp)])
+                (let ([new-mp (case (syntax-e #'mp)
+                                [("." "..") #'mp]
+                                [else (xlate-path #'mp)])])
                   (if (and (eq? new-mp #'mp)
                            (eq? (car d) 'submod))
                       stx
@@ -119,9 +122,6 @@
   ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
   ;; for-syntax, for-template, for-label
 
-  (define-for-syntax (phase+ a b)
-    (and a b (+ a b)))
-
   (define-for-syntax (shift-subs stx mode)
     (syntax-case stx ()
       [(_ in ...)
@@ -136,16 +136,16 @@
                         (make-import (import-local-id import)
                                      (import-src-sym import)
                                      (import-src-mod-path import)
-                                     (phase+ mode (import-mode import))
-                                     (phase+ mode (import-req-mode import))
+                                     (phase+space+ (import-mode import) mode)
+                                     (phase+space-shift+ (import-req-mode import) mode)
                                      (import-orig-mode import)
                                      (import-orig-stx import)))
                       imports)
                  (map (lambda (source)
                         (make-import-source 
                          (import-source-mod-path-stx source)
-                         (phase+ mode
-                                 (import-source-mode source))))
+                         (phase+space-shift+ (import-source-mode source)
+                                             mode)))
                       sources)))]))
 
   (define-for-syntax (make-require+provide-transformer r p pp)
@@ -159,45 +159,70 @@
                                      (cons prop:provide-pre-transformer (lambda (a) pp))))])
       (mk)))
 
-  (define-for-syntax (exports-at-phase stx modes mode)
-    (if (not (null? modes))
-        (raise-syntax-error
-         #f
-         "nested phases specification not allowed"
-         stx)
-        (syntax-case stx ()
-          [(_ ex ...)
-           (apply append
-                  (map (lambda (ex)
-                         (expand-export ex (list mode)))
-                       (syntax->list #'(ex ...))))])))
+  (define-for-syntax (exports-at-mode stx modes mode)
+    (let ([modes (if (null? modes)
+                     (list mode)
+                     (map (lambda (m) (phase+space+ m mode))
+                          modes))])
+      (syntax-case stx ()
+        [(_ ex ...)
+         (apply append
+                (map (lambda (ex) (expand-export ex modes))
+                     (syntax->list #'(ex ...))))])))
 
   (define-syntax for-syntax
     (make-require+provide-transformer
      (lambda (stx)
        (shift-subs stx 1))
      (lambda (stx modes)
-       (exports-at-phase stx modes 1))
+       (exports-at-mode stx modes 1))
      (lambda (stx modes)
-       (recur-pre stx (if (null? modes) '(1) (map add1 modes))))))
+       (recur-pre stx (if (null? modes) '(1) (map (lambda (mode) (phase+space+ mode 1))
+                                                  modes))))))
   
   (define-syntax for-template
     (make-require+provide-transformer
      (lambda (stx)
        (shift-subs stx -1))
      (lambda (stx modes)
-       (exports-at-phase stx modes -1))
+       (exports-at-mode stx modes -1))
      (lambda (stx modes)
-       (recur-pre stx (if (null? modes) '(-1) (map sub1 modes))))))
+       (recur-pre stx (if (null? modes) '(-1) (map (lambda (mode) (phase+space+ mode -1))
+                                                   modes))))))
   
   (define-syntax for-label
     (make-require+provide-transformer
      (lambda (stx)
        (shift-subs stx #f))
      (lambda (stx modes)
-       (exports-at-phase stx modes #f))
+       (exports-at-mode stx modes #f))
      (lambda (stx modes)
        (recur-pre stx '(#f)))))
+
+  (define-for-syntax (make-for-mode extract-mode)
+    (make-require+provide-transformer
+     (lambda (stx)
+       (syntax-case stx ()
+         [(_ mode in ...)
+          (let ([base-mode (extract-mode stx #'mode)])
+            (shift-subs #'(for-mode in ...) base-mode))]))
+     (lambda (stx modes)
+       (syntax-case stx ()
+         [(_ mode out ...)
+          (let ([base-mode (extract-mode stx #'mode)])
+            (exports-at-mode #'(for-mode out ...) modes base-mode))]))
+     (lambda (stx modes)
+       (syntax-case stx ()
+         [(for-mode mode out ...)
+          (let* ([base-mode (extract-mode stx #'mode)]
+                 [modes (if (null? modes)
+                            (list base-mode)
+                            (map (lambda (v) (phase+space+ v base-mode)) modes))])
+            (with-syntax ([(out ...) (map (lambda (o)
+                                            (pre-expand-export o modes))
+                                          (syntax->list #'(out ...)))])
+              (syntax/loc stx
+                (for-mode mode out ...))))]))))
 
   (define-syntax for-meta
     (let ([extract-phase
@@ -211,31 +236,21 @@
                   stx
                   mode))
                base-mode))])
-      (make-require+provide-transformer
-       (lambda (stx)
-         (syntax-case stx ()
-           [(_ mode in ...)
-            (let ([base-mode (extract-phase stx #'mode)])
-              (shift-subs #'(for-meta in ...) base-mode))]))
-       (lambda (stx modes)
-         (syntax-case stx ()
-           [(_ mode out ...)
-            (let ([base-mode (extract-phase stx #'mode)])
-              (exports-at-phase #'(for-meta out ...) modes base-mode))]))
-       (lambda (stx modes)
-         (syntax-case stx ()
-           [(_ mode out ...)
-            (let* ([base-mode (extract-phase stx #'mode)]
-                   [modes (if (null? modes)
-                              (list base-mode)
-                              (if (null? base-mode)
-                                  (list base-mode)
-                                  (map (lambda (v) (+ v base-mode)) modes)))])
-              (with-syntax ([(out ...) (map (lambda (o)
-                                              (pre-expand-export o modes))
-                                            (syntax->list #'(out ...)))])
-                (syntax/loc stx
-                  (for-meta mode out ...))))])))))
+      (make-for-mode extract-phase)))
+
+  (define-syntax for-space
+    (let ([extract-space
+           (lambda (stx mode)
+             (let ([base-mode (syntax-e mode)])
+               (unless (or (not base-mode)
+                           (symbol? base-mode))
+                 (raise-syntax-error
+                  #f
+                  "space must be #f or an identifier"
+                  stx
+                  mode))
+               (phase+space 0 base-mode)))])
+      (make-for-mode extract-space)))
   
   ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
   ;; require
@@ -249,8 +264,14 @@
          (letrec ([mode-wrap
                    (lambda (mode base)
                      (cond
-                      [(eq? mode 0) base]
-                      [else #`(for-meta #,mode #,base)]))]
+                       [(eq? mode 0) base]
+                       [(pair? mode)
+                        (let ([phase-shift (car mode)])
+                          (if (eq? phase-shift 0)
+                              #`(for-space #,(cdr mode) #,base)
+                              #`(for-meta #,phase-shift
+                                          (for-space #,(cdr mode) #,base))))]
+                       [else #`(for-meta #,mode #,base)]))]
                   [simple-path? (lambda (p)
                                   (syntax-case p (lib quote)
                                     [(lib . _)
@@ -263,7 +284,7 @@
                                               (module-path? (syntax-e p))))]))]
                   [transform-simple
                    (lambda (in base-mode)
-                     (syntax-case in (lib file planet submod prefix-in except-in quote)
+                     (syntax-case in (lib file planet submod prefix-in except-in rename-in quote)
                        ;; Detect simple cases first:
                        [_ 
                         (string? (syntax-e in))
@@ -320,6 +341,30 @@
                                   (quasisyntax/loc in
                                     (all-except #,(xlate-path #'path) id ...))))
                                 in)))]
+                       [(rename-in path [orig-id bind-id] ...)
+                        (and (simple-path? #'path)
+                             (call-with-values (lambda () (expand-import in))
+                               (lambda (a b) #t)))
+                        (let ([xlated-path (xlate-path #'path)])
+                          (cons (mode-wrap
+                                 base-mode
+                                 (syntax-track/form
+                                  (datum->syntax
+                                   #'path
+                                   (syntax-e
+                                    (quasisyntax/loc in
+                                      (all-except #,xlated-path orig-id ...))))
+                                  in))
+                                (map (λ (bind-id orig-id)
+                                       (mode-wrap
+                                        base-mode
+                                        (datum->syntax
+                                         #'path
+                                         (syntax-e
+                                          (quasisyntax/loc in
+                                            (rename #,xlated-path #,bind-id #,orig-id))))))
+                                     (syntax->list #'(bind-id ...))
+                                     (syntax->list #'(orig-id ...)))))]
                        ;; General case:
                        [_ (let-values ([(imports sources) (expand-import in)])
                             ;; Note: in case `in` could be expressed as a simple import form,
@@ -331,15 +376,23 @@
                              (append
                               (map (lambda (import)
                                      #`(just-meta
-                                        #,(import-orig-mode import)
-                                        #,(mode-wrap (phase+ base-mode (import-req-mode import))
-                                                     (quasisyntax/loc in
-                                                       (rename #,(import-src-mod-path import)
-                                                               #,(import-local-id import)
-                                                               #,(import-src-sym import))))))
+                                        #,(phase+space-phase (import-orig-mode import))
+                                        #,(mode-wrap (phase+space-shift+ base-mode (import-req-mode import))
+                                                     #`(just-space
+                                                        #,(phase+space-space (import-orig-mode import))
+                                                        #,(quasisyntax/loc in
+                                                            (rename #,(import-src-mod-path import)
+                                                                    #,(import-local-id import)
+                                                                    #,(if (eq? (syntax-e (import-orig-stx import))
+                                                                               (import-src-sym import))
+                                                                          (import-orig-stx import)
+                                                                          (datum->syntax
+                                                                           #f
+                                                                           (import-src-sym import)
+                                                                           (import-orig-stx import)))))))))
                                    imports)
                               (map (lambda (src)
-                                     (mode-wrap (phase+ base-mode (import-source-mode src))
+                                     (mode-wrap (phase+space-shift+ base-mode (import-source-mode src))
                                                 #`(only #,(import-source-mod-path-stx src))))
                                    sources))))]))]
                   [transform-one
@@ -434,6 +487,12 @@
   ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
   ;; require transformers
 
+  (define-for-syntax (import-identifier=? a b)
+    ;; Prior to v8.2.0.3, this was `free-identifier=?` (without a phase);
+    ;; the primitive `all-except` uses symbol equality, not binding,
+    ;; and that seems more appropriate
+    (eq? (syntax-e a) (syntax-e b)))
+
   (define-syntax only-in
     (make-require-transformer
      (lambda (stx)
@@ -478,7 +537,7 @@
                        (let ([l (filter
                                  values
                                  (map (lambda (import)
-                                        (and (free-identifier=? orig-id (import-local-id import)) ; don't compare at mode
+                                        (and (import-identifier=? orig-id (import-local-id import))
                                              (if (eq? new-id orig-id)
                                                  import
                                                  (make-import new-id
@@ -487,7 +546,7 @@
                                                               (import-mode import)
                                                               (import-req-mode import)
                                                               (import-orig-mode import)
-                                                              new-id))))
+                                                              orig-id))))
                                       imports))])
                          (if (null? l)
                              (raise-syntax-error
@@ -524,7 +583,7 @@
                  dup-id)))
             (for-each (lambda (id)
                         (or (ormap (lambda (import)
-                                     (free-identifier=? id (import-local-id import)))
+                                     (import-identifier=? id (import-local-id import)))
                                    imports)
                             (raise-syntax-error
                              #f
@@ -536,7 +595,7 @@
             (values
              (filter (lambda (import)
                        (not (ormap (lambda (id)
-                                     (free-identifier=? id (import-local-id import)))
+                                     (import-identifier=? id (import-local-id import)))
                                    ids)))
                      imports)
              sources))]))))
@@ -567,17 +626,35 @@
                "phase level must be #f or an exact integer"
                stx
                #'mode))
-            (let ([subs
-                   (map (lambda (in)
-                          (let-values ([(imports sources) (expand-import in)])
-                            (cons
-                             (filter (lambda (import)
-                                       (equal? (import-mode import) base-mode))
-                                     imports)
-                             sources)))
-                        (syntax->list #'(in ...)))])
-              (values (apply append (map car subs))
-                      (apply append (map cdr subs)))))]))))
+            (filter-by-mode base-mode phase+space-phase #'(in ...)))]))))
+
+  (define-syntax only-space-in
+    (make-require-transformer
+     (lambda (stx)
+       (syntax-case stx ()
+         [(_ mode in ...)
+          (let ([base-mode (syntax-e #'mode)])
+            (unless (or (not base-mode)
+                        (symbol? base-mode))
+              (raise-syntax-error
+               #f
+               "space must be #f or an identifier"
+               stx
+               #'mode))
+            (filter-by-mode base-mode phase+space-space #'(in ...)))]))))
+
+  (define-for-syntax (filter-by-mode base-mode sel ins)
+    (let ([subs
+           (map (lambda (in)
+                  (let-values ([(imports sources) (expand-import in)])
+                    (cons
+                     (filter (lambda (import)
+                               (equal? (sel (import-mode import)) base-mode))
+                             imports)
+                     sources)))
+                (syntax->list ins))])
+      (values (apply append (map car subs))
+              (apply append (map cdr subs)))))
 
   (define-syntax rename-in
     (make-require-transformer
@@ -607,8 +684,8 @@
                     append
                     (map (lambda (orig-id bind-id)
                            (let ([rename-imports (filter (lambda (import)
-                                                           (free-identifier=? orig-id
-                                                                              (import-local-id import)))
+                                                           (import-identifier=? orig-id
+                                                                                (import-local-id import)))
                                                          imports)])
                              (unless (pair? rename-imports)
                                (raise-syntax-error
@@ -624,7 +701,7 @@
                                                        (import-mode import)
                                                        (import-req-mode import)
                                                        (import-orig-mode import)
-                                                       bind-id)
+                                                       orig-id)
                                           import))
                                   rename-imports)))
                          orig-ids bind-ids))])
@@ -636,7 +713,7 @@
                 ;; Make sure no new name is in the leftover set:
                 (for-each (lambda (bind-id)
                             (when (ormap (lambda (import)
-                                           (and (free-identifier=? bind-id
+                                           (and (import-identifier=? bind-id
                                                                      (import-local-id import))
                                                 import))
                                          leftover-imports)
@@ -718,14 +795,14 @@
             (syntax-property
              (quasisyntax/loc stx 
                (#%provide #,(syntax-property
-                             #`(expand (provide-trampoline out ...))
+                             #`(expand (provide-trampoline out ...) #,stx)
                              'certify-mode 'transparent)))
              'certify-mode 'transparent))])]
       [else
        (raise-syntax-error #f
                            "not at module level"
                            stx)]))
-  
+
   (define-syntax (provide-trampoline stx)
     (syntax-case stx ()
       [(_ out ...)
@@ -739,15 +816,26 @@
                                        (export-local-id export)
                                        (quasisyntax/loc out
                                          (rename #,(export-local-id export)
-                                                 #,(export-out-sym export))))]
+                                                 #,(if (eq? (syntax-e (export-orig-stx export))
+                                                            (export-out-sym export))
+                                                       (export-orig-stx export)
+                                                       (datum->syntax
+                                                        #f
+                                                        (export-out-sym export)
+                                                        (export-orig-stx export))))))]
                                   [mode (export-mode export)])
-                              (let ([phased
-                                     (cond
-                                      [(eq? mode 0) base]
-                                      [else #`(for-meta #,mode #,base)])])
+                              (let ([moded
+                                     (let ([spaced (let ([space (phase+space-space mode)])
+                                                     (if space
+                                                         #`(for-space #,space #,base)
+                                                         base))])
+                                       (let ([phase (phase+space-phase mode)])
+                                         (cond
+                                           [(eq? phase 0) spaced]
+                                           [else #`(for-meta #,phase #,spaced)])))])
                                 (if (export-protect? export)
-                                    #`(protect #,phased)
-                                    phased))))
+                                    #`(protect #,moded)
+                                    moded))))
                           exports)))])
          (syntax-case stx ()
            [(_ out ...)
@@ -758,28 +846,43 @@
                  (syntax/loc stx
                    (begin new-out ...)))))]))]))
 
+  (define-for-syntax (combine-prop b a)
+    (if a (if b (cons a b) a) b))
+
   (define-for-syntax (copy-disappeared-uses outs r)
     (cond
-     [(null? outs) r]
-     [else
-      (let ([p (syntax-property (car outs) 'disappeared-use)]
-            [name (if (identifier? (car outs))
-                      #f
-                      (syntax-local-introduce (car (syntax-e (car outs)))))]
-            [combine (lambda (b a)
-                       (if a
-                           (if b
-                               (cons a b)
-                               a)
-                           b))])
-        (syntax-property r 'disappeared-use
-                         (combine p
-                                  (combine
-                                   name
-                                   (syntax-property r 'disappeared-use)))))]))
+      [(null? outs) r]
+      [else
+       (syntax-property
+        r
+        'disappeared-use
+        (let loop ([outs outs]
+                   [disappeared-uses (syntax-property r 'disappeared-use)])
+          (cond
+            [(null? outs) disappeared-uses]
+            [else
+             (let ([p (syntax-property (car outs) 'disappeared-use)]
+                   [name (if (identifier? (car outs))
+                             #f
+                             (syntax-local-introduce (car (syntax-e (car outs)))))])
+               (loop
+                (cdr outs)
+                (combine-prop p (combine-prop name disappeared-uses))))])))]))
+
+
 
   ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
   ;; provide transformers
+
+  (define-for-syntax (free-identifier=?/mode a b mode)
+    (let ([phase (phase+space-phase mode)])
+      (free-identifier=? (add-mode-scope a mode) (add-mode-scope b mode) phase)))
+
+  (define-for-syntax (add-mode-scope stx mode)
+    (let ([space (phase+space-space mode)])
+      (if space
+          ((make-interned-syntax-introducer space) stx 'add)
+          stx)))
 
   (define-for-syntax (recur-pre stx modes)
     (syntax-case stx ()
@@ -794,7 +897,7 @@
     (make-provide-transformer
      (lambda (stx modes)
        (syntax-case stx ()
-         [(_) 
+         [(_)
           (let* ([ht (syntax-local-module-defined-identifiers)]
                  [same-ctx? (lambda (free-identifier=?)
                               (lambda (id)
@@ -808,18 +911,26 @@
             (apply
              append
              (map (lambda (mode)
-                    (let* ([phase (and mode (+ mode (syntax-local-phase-level)))]
+                    (let* ([abs-mode (phase+space+ mode (syntax-local-phase-level))]
                            [same-ctx-in-phase?
                             (same-ctx? 
                              (cond
                               [(eq? mode 0) free-identifier=?]
                               [(eq? mode 1) free-transformer-identifier=?]
                               [else (lambda (a b)
-                                      (free-identifier=? a b phase))]))])
+                                      (free-identifier=?/mode a b abs-mode))]))]
+                           [right-space?
+                            (let ([space (phase+space-space mode)])
+                              (if space
+                                  (let ([intro (make-interned-syntax-introducer space)])
+                                    (lambda (id)
+                                      (not (free-identifier=? (intro id 'add) (intro id 'remove)))))
+                                  (lambda (id) #t)))])
                       (map (lambda (id)
                              (make-export id (syntax-e id) mode #f stx))
                            (filter (lambda (id)
                                      (and (same-ctx-in-phase? id)
+                                          (right-space? id)
                                           (let-values ([(v id) (syntax-local-value/immediate
                                                                 id
                                                                 (lambda () (values #f #f)))])
@@ -828,7 +939,7 @@
                                                   (syntax-property 
                                                    (rename-transformer-target v)
                                                    'not-provide-all-defined))))))
-                                   (hash-ref ht phase null)))))
+                                   (hash-ref ht (phase+space-phase abs-mode) null)))))
                   modes)))]))))
 
   (define-syntax all-from-out
@@ -855,13 +966,16 @@
                                (or r
                                    (raise-syntax-error
                                     #f
-                                    (format "no corresponding require~a"
-                                            (cond
-                                             [(eq? mode 0) ""]
-                                             [(not mode)
-                                              " at the label phase level"]
-                                             [else
-                                              (format " at phase level ~a" mode)]))
+                                    (format "no corresponding require~a~a"
+                                            (let ([phase (phase+space-phase mode)])
+                                              (cond
+                                                [(eq? phase 0) ""]
+                                                [(not phase) " at the label phase level"]
+                                                [else (format " at phase level ~a" phase)]))
+                                            (let ([space (phase+space-space mode)])
+                                              (cond
+                                                [(not space) ""]
+                                                [else (format " in space ~a" space)])))
                                     stx
                                     mp))))
                            (if (null? modes)
@@ -877,8 +991,8 @@
                   (map (lambda (ids)
                          (let ([mode (car ids)])
                            (map (lambda (id)
-                                  (and (free-identifier=? id (datum->syntax mp (syntax-e id))
-                                                          mode)
+                                  (and (free-identifier=?/mode id (datum->syntax mp (syntax-e id))
+                                                               mode)
                                        (make-export id (syntax-e id) mode #f stx)))
                                 (cdr ids))))
                        idss)))))
@@ -902,17 +1016,22 @@
             (apply
              append
              (map (lambda (mode)
-                    (let ([abs-mode (and mode (+ mode (syntax-local-phase-level)))])
+                    (let ([abs-phase (phase+space-phase (phase+space+ mode (syntax-local-phase-level)))])
                       (map (lambda (orig-id bind-id)
-                             (unless (list? (identifier-binding orig-id abs-mode))
+                             (unless (list? (identifier-binding (add-mode-scope orig-id mode) abs-phase))
                                (raise-syntax-error
                                 #f
-                                (format "no binding~a for identifier"
-                                        (cond
-                                         [(eq? mode 0) ""]
-                                         [(not mode) " in the label phase level"]
-                                         [(not mode) (format " at phase level ~a" mode)]
-                                         [else ""]))
+                                (format "no binding~a~a for identifier"
+                                        (let ([phase (phase+space-phase mode)])
+                                          (cond
+                                            [(eq? phase 0) ""]
+                                            [(not phase) " in the label phase level"]
+                                            [(not phase) (format " at phase level ~a" phase)]
+                                            [else ""]))
+                                        (let ([space (phase+space-space mode)])
+                                          (cond
+                                            [(not space) ""]
+                                            [else (format " in space ~a" space)])))
                                 stx
                                 orig-id))
                              (make-export orig-id
@@ -938,11 +1057,11 @@
                                   (syntax->list #'(spec ...))))])
             (for-each (lambda (exception)
                         (or (ormap (lambda (export)
-                                     (and (eq? (export-mode export)
-                                               (export-mode exception))
-                                          (free-identifier=? (export-local-id exception)
-                                                             (export-local-id export)
-                                                             (export-mode export))))
+                                     (and (equal? (export-mode export)
+                                                  (export-mode exception))
+                                          (free-identifier=?/mode (export-local-id exception)
+                                                                  (export-local-id export)
+                                                                  (export-mode export))))
                                    exports)
                             (raise-syntax-error
                              #f
@@ -953,11 +1072,11 @@
                       exceptions)
             (filter (lambda (export)
                       (not (ormap (lambda (exception)
-                                    (and (eq? (export-mode export)
-                                              (export-mode exception))
-                                         (free-identifier=? (export-local-id exception)
-                                                            (export-local-id export)
-                                                            (export-mode export))))
+                                    (and (equal? (export-mode export)
+                                                 (export-mode exception))
+                                         (free-identifier=?/mode (export-local-id exception)
+                                                                 (export-local-id export)
+                                                                 (export-mode export))))
                                   exceptions)))
                     exports))]))
      (lambda (stx modes)
@@ -986,7 +1105,8 @@
           stx))
        (syntax-case stx ()
          [(_ id)
-          (let ([id #'id])
+          (let ([id #'id]
+                [s-id #'id])
             (unless (identifier? id)
               (raise-syntax-error
                #f
@@ -1056,7 +1176,14 @@
                      (map (lambda (id)
                             (and id
                                  (let ([id (find-imported/defined id)])
-                                   (make-export id
+                                   (make-export (syntax-property
+                                                 id
+                                                 'disappeared-use
+                                                 (combine-prop
+                                                  (syntax-local-introduce s-id)
+                                                  (syntax-property
+                                                   id
+                                                   'disappeared-use)))
                                                 (syntax-e id)
                                                 0
                                                 #f
@@ -1076,18 +1203,7 @@
                    #f
                    "identifier is not bound to struct type information"
                    stx
-                   id))))]))
-     (λ (stx modes)
-       (syntax-case stx ()
-         [(_ id)
-          (and (identifier? #'id)
-               (struct-info? (syntax-local-value #'id (lambda () #f))))
-          (syntax-local-lift-expression
-           (syntax-property #'(void)
-                            'disappeared-use
-                            (syntax-local-introduce #'id)))]
-         [whatevs (void)])
-       stx)))
+                   id))))]))))
 
   (define-syntax combine-out
     (make-provide-transformer
@@ -1177,14 +1293,26 @@
     (datum->syntax
      (import-orig-stx i)
      (list #'just-meta
-           (import-orig-mode i)
+           (phase+space-phase (import-orig-mode i))
            (list #'for-meta
-                 (import-mode i)
-                 (list #'rename
-                       (import-src-mod-path i)
-                       (import-local-id i)
-                       (import-src-sym i))))
+                 (phase+space-phase (import-mode i))
+                 (let ([at-space (list #'just-space
+                                       (phase+space-space (import-orig-mode i))
+                                       (list #'rename
+                                             (import-src-mod-path i)
+                                             (import-local-id i)
+                                             (import-src-sym i)))])
+                   ;; avoid a space shift if unnecessary:
+                   (if (eq? (phase+space-space (import-orig-mode i))
+                            (phase+space-space (import-mode i)))
+                       at-space
+                       (list #'for-space
+                             (phase+space-space (import-mode i))
+                             at-space)))))
      (import-orig-stx i)))
+
+  (define-for-syntax (import-local-id-with-space-scope i)
+    (add-mode-scope (import-local-id i) (import-mode i)))
 
   ;; (do-local-require rename spec ...)
   ;; Lifts (require spec ...) to the (module) top level, and makes the imported
@@ -1201,14 +1329,16 @@
                           stx
                           (list* #'only-meta-in 0 (syntax->list #'(spec ...)))
                           stx))]
-                       [(names) (map import-local-id imports)]
+                       [(names) (map import-local-id-with-space-scope imports)]
                        [(reqd-names)
                         ;; Could be just `(generate-temporaries names)`, but using the
                         ;; exported name turns out to be a hint to Check Syntax for binding
                         ;; arrows, for now:
                         (let ([intro (make-syntax-introducer)])
-                          (map (lambda (n) (intro (datum->syntax #f (syntax-e n) n)))
-                               names))]
+                          (map (lambda (n i) (intro (add-mode-scope (datum->syntax #f (syntax-e n) n)
+                                                                    (import-mode i))))
+                               names
+                               imports))]
                        [(renamed-imports) (map rename-import imports reqd-names)]
                        [(raw-specs) (map import->raw-require-spec renamed-imports)]
                        [(lifts) (map syntax-local-lift-require raw-specs reqd-names)])

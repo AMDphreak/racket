@@ -29,13 +29,25 @@ a number between the @litchar{#} and
 
 @defproc[(vector? [v any/c]) boolean?]{
 
-Returns @racket[#t] if @racket[v] is a vector, @racket[#f] otherwise.}
+Returns @racket[#t] if @racket[v] is a vector, @racket[#f] otherwise.
+
+See also @racket[immutable-vector?] and @racket[mutable-vector?].}
 
 @defproc[(make-vector [size exact-nonnegative-integer?]
                       [v any/c 0]) vector?]{
 
 Returns a mutable vector with @racket[size] slots, where all slots are
-initialized to contain @racket[v].}
+initialized to contain @racket[v]. Note that @racket[v] is shared for 
+all elements, so for mutable data, mutating an element will affect other elements.
+@examples[
+  (make-vector 3 2)
+  (define v (make-vector 5 (box 3)))
+  v
+  (set-box! (vector-ref v 0) 7)
+  v
+]
+
+This function takes time proportional to @racket[size].}
 
 
 @defproc[(vector [v any/c] ...) vector?]{
@@ -49,7 +61,7 @@ order.}
                                                  immutable?)]{
 
 Returns a newly allocated immutable vector with as many slots as provided
-@racket[v]s, where the slots are contain the given @racket[v]s in
+@racket[v]s, where the slots contain the given @racket[v]s in
 order.}
 
 
@@ -57,20 +69,27 @@ order.}
 @defproc[(vector-length [vec vector?]) exact-nonnegative-integer?]{
 
 Returns the length of @racket[vec] (i.e., the number of slots in the
-vector).}
+vector).
+
+This function takes constant time.}
+
 
 @defproc[(vector-ref [vec vector?] [pos exact-nonnegative-integer?]) any/c]{
 
 Returns the element in slot @racket[pos] of @racket[vec]. The first
 slot is position @racket[0], and the last slot is one less than
-@racket[(vector-length vec)].}
+@racket[(vector-length vec)].
+
+This function takes constant time.}
 
 @defproc[(vector-set! [vec (and/c vector? (not/c immutable?))]
                       [pos exact-nonnegative-integer?]
                       [v any/c])
          void?]{
 
-Updates the slot @racket[pos] of @racket[vec] to contain @racket[v].}
+Updates the slot @racket[pos] of @racket[vec] to contain @racket[v].
+
+This function takes constant time.}
 
 
 @deftogether[(
@@ -102,27 +121,36 @@ Compare and set operation for vectors. See @racket[box-cas!].
 
 @defproc[(vector->list [vec vector?]) list?]{
 
-Returns a list with the same length and elements as @racket[vec].}
+Returns a list with the same length and elements as @racket[vec].
+
+This function takes time proportional to the size of @racket[vec].}
 
 
 @defproc[(list->vector [lst list?]) vector?]{
 
 Returns a mutable vector with the same length and elements as
-@racket[lst].}
+@racket[lst].
+
+This function takes time proportional to the length of @racket[lst].}
 
 
 @defproc[(vector->immutable-vector [vec vector?])
          (and/c vector? immutable?)]{
 
 Returns an immutable vector with the same length and elements as @racket[vec].
-If @racket[vec] is itself immutable, then it is returned as the result.}
+If @racket[vec] is itself immutable, then it is returned as the result.
+
+This function takes time proportional to the size of @racket[vec] when
+@racket[vec] is mutable.}
 
 
 @defproc[(vector-fill! [vec (and/c vector? (not/c immutable?))]
                        [v any/c])
          void?]{
 
-Changes all slots of @racket[vec] to contain @racket[v].}
+Changes all slots of @racket[vec] to contain @racket[v].
+
+This function takes time proportional to the size of @racket[vec].}
 
 
 @defproc[(vector-copy! [dest (and/c vector? (not/c immutable?))]
@@ -143,6 +171,8 @@ Changes all slots of @racket[vec] to contain @racket[v].}
  account the sizes of the vectors and the source and destination
  regions), the @exnraise[exn:fail:contract].
 
+This function takes time proportional to @racket[(- src-end src-start)].
+
 @examples[(define v (vector 'A 'p 'p 'l 'e))
           (vector-copy! v 4 #(y))
           (vector-copy! v 0 v 3 4)
@@ -159,7 +189,9 @@ the elements of @racket[vec] from @racket[start-pos] (inclusive) to
 @racket[end-pos] (exclusive). If @racket[start-pos] or
 @racket[end-pos] are greater than @racket[(vector-length vec)], or if
 @racket[end-pos] is less than @racket[start-pos], the
-@exnraise[exn:fail:contract].}
+@exnraise[exn:fail:contract].
+
+This function takes time proportional to the size of @racket[vec].}
 
 @defproc[(build-vector [n exact-nonnegative-integer?]
                        [proc (exact-nonnegative-integer? . -> . any/c)])

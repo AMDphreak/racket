@@ -3,9 +3,9 @@
           (for-label racket/base
                      racket/include
                      racket/contract
-                     racket/future
                      racket/promise
                      racket/file
+                     racket/place
                      compiler/cm
                      compiler/cm-accomplice
                      setup/parallel-build
@@ -13,6 +13,7 @@
                      compiler/compilation-path
                      compiler/compile-file
                      syntax/modread
+                     (only-in racket/match match)
                      (only-in racket/unit define-signature)
                      (only-in compiler/compiler compile-zos)))
 
@@ -36,7 +37,10 @@ The @exec{raco make} command accepts a few flags:
 
 @itemlist[
 
- @item{@Flag{j} @nonterm{n} --- Compiles argument modules in parallel,
+ @item{@Flag{l} @nonterm{path} --- Compiles @nonterm{path} interpreted
+       as a collection-based module path, as for @racket[require].}
+
+@item{@Flag{j} @nonterm{n} --- Compiles argument modules in parallel,
        using up to @nonterm{n} parallel tasks.}
 
  @item{@DFlag{disable-inline} --- Disables function inlining while
@@ -268,14 +272,17 @@ the @filepath{.dep} file also records the SHA-1 hash of the
 machine-independent form, since the recompiled module's behavior should
 be exactly the same.
 
-The special combination of @racket[(cross-installation?)] as
+The special combination of @racket[(cross-installation?)] or
+@racket[(current-multi-compile-any)] as
 @racket[#t], @racket[(current-compile-target-machine)] as @racket[#f],
 and @racket[(current-compiled-file-roots)] having two or more elements
 triggers a special compilation mode. Bytecode specific to the running
 Racket is written to the directory determined by the first element of
-@racket[(current-compiled-file-roots)]. Bytecode specific to the
-cross-compilation target is written to the directory determined by the
-first element of @racket[(current-compiled-file-roots)]. By
+@racket[(current-compiled-file-roots)]. Bytecode specific to either the
+cross-compilation target for @racket[(cross-installation?)] or
+machine-independent format if @racket[(current-multi-compile-any)]
+is written to the directory determined by the
+second element of @racket[(current-compiled-file-roots)]. By
 configuring @racket[(current-compiled-file-roots)] so that the first
 element is outside a build tree and the second element is inside the
 build tree, cross-compilation can create a build tree suitable for the
@@ -346,9 +353,17 @@ are @racket['locking], @racket['start-compile], @racket['finish-compile], and
 
 Compiles the given module source file to a @filepath{.zo}, installing
 a compilation-manager handler while the file is compiled (so that
-required modules are also compiled), and creating a @filepath{.dep} file
-to record the timestamps of immediate files used to compile the source
-(i.e., files @racket[require]d in the source).
+required modules are also compiled), and creating a @filepath{.dep}
+file to record the timestamps of immediate files used to compile the
+source (i.e., files @racket[require]d in the source).
+
+Compilation is triggered by loading a module into the current
+namespace, so if a module that is a dependency of @racket[file] has
+already been loaded into the current namespace, then that module will
+not necessarily be (re-)compiled. The handler used to trigger
+compilation is created with
+@racket[make-compilation-manager-load/use-compiled-handler], so all the
+rules and constraints there apply.
 
 If @racket[file] is compiled from source, then
 @racket[read-src-syntax] is used in the same way as
@@ -411,7 +426,14 @@ out-of-date @filepath{.zo} files instead of re-compiling from source.}
 
 Returns a procedure that behaves like @racket[managed-compile-zo]
 (providing the same @racket[read-src-syntax] each time), but a cache
-of timestamp information is preserved across calls to the procedure.}
+of timestamp information is preserved across calls to the procedure.
+
+A handler to support compilation is created with
+@racket[make-compilation-manager-load/use-compiled-handler] each time
+the result of @racket[make-caching-managed-compile-zo] is called, so
+the current namespace and other parameter values are relevant at that
+time, not when @racket[make-caching-managed-compile-zo] is called.}
+
 
 @defparam[manager-compile-notify-handler notify (path? . -> . any)]{
 
@@ -502,13 +524,13 @@ any security guard put in place by
 
 @defparam[parallel-lock-client proc 
                                (or/c #f
-                                     (->i ([command (or/c 'lock 'unlock)]
-                                           [file bytes?])
-                                          [res (command) (if (eq? command 'lock)
-                                                             boolean?
-                                                             void?)]))]{
+                                     (->i ([_command (or/c 'lock 'unlock)]
+                                           [_file bytes?])
+                                          [res (_command) (if (eq? _command 'lock)
+                                                              boolean?
+                                                              void?)]))]{
 
-Holds the parallel compilation lock client, which
+Creates a parallel compilation lock client, which
 is used by the result of @racket[make-compilation-manager-load/use-compiled-handler] to
 prevent compilation races between parallel builders.  
 
@@ -517,18 +539,20 @@ compilation is done (and thus multiple threads or places running compilations
 via @racket[make-compilation-manager-load/use-compiled-handler] will potentially
 corrupt each other's @filepath{.zo} files).
 
-When @racket[proc] is a function, its first argument is a command, indicating
-if it wants to lock or unlock the path specified in the second argument.
+When @racket[proc] is a function, its first argument is a command
+@racket['lock] pr @racket['unlock], which indicates whether the caller
+wants to lock or unlock a target @racket[_zo-path], and the second
+argument is the target @racket[_zo-path] (expressed as a byte string).
 
-When the @racket[proc] @racket['lock] command returns @racket[#t], the current
-builder has obtained the lock for @racket[zo-path].
-Once compilation of @racket[zo-path] is complete, the builder process must
+When @racket[proc] returns @racket[#t] for a @racket['lock] command, the current
+builder has obtained the lock for @racket[_zo-path].
+Once compilation of @racket[_zo-path] is complete, the builder process must
 release the lock by calling @racket[proc] @racket['unlock] with the exact same
-@racket[zo-path].
+@racket[_zo-path].
 
-When the @racket[proc] @racket['lock] command returns @racket[#f], another
-parallel builder obtained the lock first and has already compiled the zo.  The
-parallel builder should continue without compiling @racket[zo-path].
+When @racket[proc] returns @racket[#f] for a @racket['lock] command, another
+parallel builder obtained the lock first and has already compiled the target.  The
+parallel builder should continue without compiling @racket[_zo-path].
 (In this case, @racket[make-compilation-manager-load/use-compiled-handler]'s
 result will not call @racket[proc] with @racket['unlock].)
 
@@ -549,26 +573,41 @@ result will not call @racket[proc] with @racket['unlock].)
 ]
 }
 
-@defproc[(compile-lock->parallel-lock-client [pc place-channel?] [cust (or/c #f custodian?) #f])
+@defproc[(compile-lock->parallel-lock-client [pc place-channel?]
+                                             [cust (or/c #f custodian?) #f]
+                                             [current-shutdown-evt (-> evt?) (lambda () never-evt)])
          (-> (or/c 'lock 'unlock) bytes? boolean?)]{
 
-  Returns a function that follows the @racket[parallel-lock-client]
-  by communicating over @racket[pc]. The argument must
-  be the result of @racket[make-compile-lock].
+  Returns a function that follows the @racket[parallel-lock-client] protocol
+  by communicating over @racket[pc], where @racket[pc] must
+  be a result of @racket[make-compile-lock].
   
-  This communication protocol implementation is not kill safe. To make it kill safe,
-  it needs a sufficiently powerful custodian, i.e., one that is not subject to
-  termination (unless all of the participants in the compilation are also terminated).
-  It uses this custodian to create a thread that monitors the threads that are
-  doing the compilation. If one of them is terminated, the presence of the
+  This communication protocol implementation is not kill-safe when @racket[cust] is @racket[#f].
+  Making the protocol kill-safe requires a sufficiently powerful custodian (i.e., one that is not subject to
+  termination unless all of the participants in the compilation are also terminated)
+  supplied as @racket[cust]. The given custodian is used to create a thread that monitors the threads that are
+  perform the compilation. If one of the threads is terminated, the presence of the
   custodian lets another one continue. (The custodian is also used to create
-  a thread that manages a thread safe table.)
-}
+  a thread that manages a thread-safe table.)
+
+  Just checking for thread termination is not always sufficient to
+  release a lock, because a thread created with
+  @racket[thread/suspend-to-kill] is merely suspending by removing its
+  ability to run. The @racket[current-shutdown-evt] argument returns
+  an @tech[#:doc reference-doc]{synchronizable event} that the monitor
+  thread waits on at the same time as it waits for a thread to
+  terminate. If the event becomes ready, then the monitor releases a
+  lock the same as if the thread was terminated. For example,
+  @racket[current-shutdown-evt] might return a @tech[#:doc
+  reference-doc]{custodian box} to detect a custodian shutdown.
+
+@history[#:changed "8.1.0.7" @elem{Added the @racket[current-shutdown-evt] argument.}]}
+
 
 @defproc[(make-compile-lock) place-channel?]{
-  Creates a @racket[place-channel?] that can be used with
-            @racket[compile-lock->parallel-lock-client] to avoid concurrent
-            compilations of the same Racket source files in multiple places.
+  Creates a place-channel that can be used with
+  @racket[compile-lock->parallel-lock-client] to avoid concurrent
+  compilations of the same Racket source files in multiple places.
 }
 
 @defproc[(install-module-hashes! [bstr bytes?]
@@ -583,6 +622,14 @@ zero bytes in place of each hash string, which is what @racket[write]
 produces for a compiled form.
 
 @history[#:added "6.3"]}
+
+@defboolparam[current-multi-compile-any on?]{
+
+A parameter that enables compilation of both current-machine bytecode
+and machine-independent bytecode by a handler created with
+@racket[make-compilation-manager-load/use-compiled-handler].
+
+@history[#:added "8.1.0.2"]}
 
 @; ----------------------------------------------------------------------
 
@@ -635,15 +682,16 @@ The return value is @racket[(void)] if it was successful, or @racket[#f] if ther
     (parallel-compile-files 
       source-files 
       #:worker-count 4
-      #:handler (lambda (type work msg out err)
+      #:handler
+      (lambda (type work msg out err)
         (match type
           ['done (when (verbose) (printf " Made ~a\n" work))]
           ['output (printf " Output from: ~a\n~a~a" work out err)]
-          [else (printf " Error compiling ~a\n~a\n~a~a"
-                        work 
-                        msg 
-                        out 
-                        err)])))]
+          [_ (printf " Error compiling ~a\n~a\n~a~a"
+                     work
+                     msg
+                     out
+                     err)])))]
 
 @history[#:changed "7.0.0.19" @elem{Added the @racket[#:use-places?] argument.}]}
 
@@ -692,8 +740,9 @@ information, for example).
                                  [#:indirect? indirect? any/c #f])
          void?]{
 
-Logs a message (see @racket[log-message]) at level @racket['info] to a
-logger named @racket['cm-accomplice]. The message data is a
+Logs a message (see @racket[log-message]) to the current logger
+at level @racket['info] with the
+topic @racket['cm-accomplice]. The message data is a
 @racketidfont{file-dependency} prefab structure type with two fields;
 the first field's value is @racket[file] and the second field's value
 is @racket[#f] (to indicate a non-module dependency). If the
@@ -822,7 +871,7 @@ path.
 The @DFlag{no-deps} mode for @exec{raco make} is an improverished
 form of the compilation, because it does not track import
 dependencies. It does, however, support compilation of non-module
-source in a namespace that initially imports @racketmodname[scheme].
+source in a namespace that initially imports @racketmodname[scheme #:indirect].
 
 Outside of a module, top-level @racket[define-syntaxes],
 @racket[module], @racket[#%require],
@@ -860,7 +909,7 @@ reader, such as @racket[(read-case-sensitive #t)]. The @Flag{p} or
 compiling the source files specified on the command line.
 
 By default, the namespace for compilation is initialized by a
-@racket[require] of @racketmodname[scheme]. If the @DFlag{no-prim}
+@racket[require] of @racketmodname[scheme #:indirect]. If the @DFlag{no-prim}
 flag is specified, the namespace is instead initialized with
 @racket[namespace-require/copy], which allows mutation and
 redefinition of all initial bindings (other than syntactic forms, in

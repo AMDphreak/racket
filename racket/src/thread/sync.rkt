@@ -35,16 +35,16 @@
                 wraps ; list of wraps to apply if selected
                 commits ; list of thunks to run atomically when selected
                 interrupted? ; kill/break in progress?
-                interrupts ; list of thunks to run on kill/break initiation
+                interrupt ; #f or a thunk to run on kill/break initiation
                 abandons ; list of thunks to run on kill/break completion
-                retries ; list of thunks to run on retry: returns `(values _val _ready?)`
+                retry ; #f or a thunk to run on retry: returns `(values _val _ready?)`
                 prev  ; previous in linked list
                 next) ; next in linked list
   #:transparent
         #:mutable)
 
 (define (make-syncer evt wraps prev)
-  (syncer evt wraps null #f null null null prev #f))
+  (syncer evt wraps null #f #f null #f prev #f))
 
 (define none-syncer (make-syncer #f null #f))
 
@@ -88,7 +88,9 @@
 
   (when (or (and (real? timeout) (zero? timeout))
             (procedure? timeout))
-    (atomically (call-pre-poll-external-callbacks)))
+    (atomically
+     (call-pre-poll-external-callbacks)
+     (void)))
 
   ;; General polling loop
   (define (go #:thunk-result? [thunk-result? #t])
@@ -99,7 +101,8 @@
          (lambda () (syncing-abandon! s)))
         (thread-push-suspend+resume-callbacks!
          (lambda () (syncing-interrupt! s))
-         (lambda () (syncing-queue-retry! s)))))
+         (lambda () (syncing-queue-retry! s)))
+        (void)))
      (lambda ()
        (when enable-break? (check-for-break))
        (cond
@@ -126,12 +129,12 @@
           ;; callbacks, then the loop can suspend the current thread
           (define timeout-at
             (and timeout
-                 (+ (* timeout 1000) (current-inexact-milliseconds))))
+                 (+ (* timeout 1000) (current-inexact-monotonic-milliseconds))))
           (let loop ([did-work? #t] [polled-all? #f])
             (cond
               [(and polled-all?
                     timeout
-                    (timeout-at . <= . (current-inexact-milliseconds)))
+                    (timeout-at . <= . (current-inexact-monotonic-milliseconds)))
                (start-atomic)
                (cond
                  [(syncing-selected s)
@@ -164,10 +167,9 @@
        (atomically
         (thread-pop-suspend+resume-callbacks!)
         (thread-pop-kill-callback!)
-        (when local-break-cell
-          (thread-remove-ignored-break-cell! (current-thread/in-atomic) local-break-cell))
         ;; On escape, post nacks, etc.:
-        (syncing-abandon! s)))))
+        (syncing-abandon! s)
+        (void)))))
 
   ;; Result thunk (if needed) is called in tail position:
   (cond
@@ -177,6 +179,9 @@
                     break-enabled-key
                     local-break-cell
                     (go)))
+     ;; If we get here, the break wasn't triggered, and it must be currently ignored.
+     ;; (If the break was triggered so that we don't get here, it's not ignored.)
+     (thread-remove-ignored-break-cell! (current-thread/in-atomic) local-break-cell)
      ;; In case old break cell was meanwhile enabled:
      (check-for-break)
      ;; In tail position:
@@ -395,6 +400,27 @@
        (schedule-info-did-work! sched-info)
        (end-atomic)
        (loop (syncer-next sr) 0 #f #f)]
+      [(nested-sync-evt? (syncer-evt sr))
+       ;; Have to go out of atomic mode to continue:
+       (end-atomic)
+       (define-values (same? new-evt) (poll-nested-sync (syncer-evt sr) just-poll? fast-only? sched-info))
+       (cond
+         [same?
+          (loop (syncer-next sr) 0 polled-all-so-far? no-wrappers?)]
+         [else
+          ;; Since we left atomic mode, double-check that we're
+          ;; still syncing before installing the replacement event:
+          (atomically
+           (unless (syncing-selected s)
+             (set-syncer-evt! sr new-evt))
+           (void))
+          (cond
+            [fast-only?
+             ;; Conservative, because we don't know whether `same?` was #f
+             ;; because the nested sync had non-fast elements
+             (none-k sched-info #f #f)]
+            [else
+             (loop sr (add1 retries) polled-all-so-far? no-wrappers?)])])]
       [else
        (define ctx (poll-ctx just-poll?
                              ;; Call back for asynchronous selection,
@@ -429,13 +455,14 @@
                ;; still syncing before installing the replacement event:
                (atomically
                 (unless (syncing-selected s)
-                  (set-syncer-evt! sr new-evt)))
+                  (set-syncer-evt! sr new-evt))
+                (void))
                (loop sr (add1 retries) polled-all-so-far? #f))])]
          [(choice-evt? new-evt)
-          (when (or (pair? (syncer-interrupts sr))
-                    (pair? (syncer-retries sr)))
+          (when (or (syncer-interrupt sr)
+                    (syncer-retry sr))
             (end-atomic)
-            (internal-error "choice event discovered after interrupt/retry callbacks"))
+            (internal-error "choice event discovered after interrupt/retry callback"))
           (define new-syncers (random-rotate
                                (evts->syncers #f
                                               (choice-evt-evts new-evt)
@@ -482,11 +509,19 @@
           (unless (eq? wrap-proc values)
             (set-syncer-wraps! sr (cons wrap-proc (syncer-wraps sr))))
           (unless (eq? interrupt-proc void)
-            (set-syncer-interrupts! sr (cons interrupt-proc (syncer-interrupts sr))))
+            (cond
+              [(eq? interrupt-proc 'reset) (set-syncer-interrupt! sr #f)]
+              [else
+               (when (syncer-interrupt sr) (internal-error "syncer already has an interrupt callback"))
+               (set-syncer-interrupt! sr interrupt-proc)]))
           (unless (eq? abandon-proc void)
             (set-syncer-abandons! sr (cons abandon-proc (syncer-abandons sr))))
           (unless (eq? retry-proc void)
-            (set-syncer-retries! sr (cons retry-proc (syncer-retries sr))))
+            (cond
+              [(eq? retry-proc 'reset) (set-syncer-retry! sr #f)]
+              [else
+               (when (syncer-retry sr) (internal-error "syncer already has an retry callback"))
+               (set-syncer-retry! sr retry-proc)]))
           (set-syncer-evt! sr (control-state-evt-evt new-evt))
           (end-atomic)
           (cond
@@ -512,7 +547,7 @@
              (loop sr (add1 retries) polled-all-so-far? #f)])]
          [(and (never-evt? new-evt)
                (not (evt-impersonator? new-evt))
-               (null? (syncer-interrupts sr))
+               (not (syncer-interrupt sr))
                (null? (syncer-commits sr))
                (null? (syncer-abandons sr)))
           ;; Drop this event, since it will never get selected
@@ -568,8 +603,9 @@
     (when sr
       (unless (eq? sr selected-sr)
         (unless (syncer-interrupted? sr)
-          (for ([interrupt (in-list (syncer-interrupts sr))])
-            (interrupt)))
+          (let ([interrupt (syncer-interrupt sr)])
+            (when interrupt
+              (interrupt))))
         (for ([abandon (in-list (syncer-abandons sr))])
           (abandon)))
       (loop (syncer-next sr))))
@@ -592,8 +628,9 @@
     (when sr
       (unless (syncer-interrupted? sr)
         (set-syncer-interrupted?! sr #t)
-        (for ([interrupt (in-list (syncer-interrupts sr))])
-          (interrupt)))
+        (let ([interrupt (syncer-interrupt sr)])
+          (when interrupt
+            (interrupt))))
       (loop (syncer-next sr)))))
 
 ;; Called in atomic mode
@@ -609,13 +646,12 @@
                (not (syncing-selected s)))
       (when (syncer-interrupted? sr)
         (set-syncer-interrupted?! sr #f)
-        ;; Although we keep a list of retries, we expect only
-        ;; one to be relevant
-        (for ([retry (in-list (syncer-retries sr))])
-          (define-values (result ready?) (retry))
-          (when ready?
-            (set-syncer-wraps! sr (cons (lambda args result) (syncer-wraps sr)))
-            (syncing-done! s sr))))
+        (let ([retry (syncer-retry sr)])
+          (when retry
+            (define-values (result ready?) (retry))
+            (when ready?
+              (set-syncer-wraps! sr (cons (lambda args result) (syncer-wraps sr)))
+              (syncing-done! s sr)))))
       (loop (syncer-next sr)))))
 
 ;; Queue a retry when a check for breaks should happen before a retry
@@ -699,14 +735,14 @@
                               ;; Interrupt due to break/kill/suspend
                               (set-syncing-wakeup! s void)
                               (unless (syncing-selected s)
-                                (syncing-interrupt! s)))
-                            ;; In non-atomic mode and tail position:
-                            (lambda ()
-                              ;; Continue from suspend or ignored break...
-                              ((atomically
-                                (unless (syncing-selected s)
-                                  (syncing-retry! s))
-                                (retry)))))])))))
+                                (syncing-interrupt! s))
+                              ;; In non-atomic mode and tail position:
+                              (lambda ()
+                                ;; Continue from suspend or ignored break...
+                                ((atomically
+                                  (unless (syncing-selected s)
+                                    (syncing-retry! s))
+                                  (retry))))))])))))
 
 ;; ----------------------------------------
 
@@ -715,7 +751,7 @@
   #:reflection-name 'evt)
 
 (struct nested-sync-evt (s next orig-evt)
-  #:property prop:evt (poller (lambda (self poll-ctx) (poll-nested-sync self poll-ctx)))
+  #:property prop:evt (poller (lambda (self poll-ctx) (values #f self)))
   #:reflection-name 'evt)
 
 (define/who (replace-evt evt next)
@@ -732,17 +768,18 @@
         (control-state-evt
          (nested-sync-evt s next orig-evt)
          values
+         ;; The interrupt and retry callbacks get discarded
+         ;; when a new event is returned (but the abandon
+         ;; callback is preserved)
          (lambda () (syncing-interrupt! s))
          (lambda () (syncing-abandon! s))
          (lambda () (syncing-retry! s)))))))
   orig-evt)
 
-(define (poll-nested-sync ns poll-ctx)
+(define (poll-nested-sync ns just-poll? fast-only? sched-info)
   (sync-poll (nested-sync-evt-s ns)
              #:fail-k (lambda (sched-info polled-all? no-wrappers?)
-                        (unless polled-all?
-                          (set-poll-ctx-incomplete?! poll-ctx #f))
-                        (values #f ns))
+                        (values polled-all? ns))
              #:success-k (lambda (thunk)
                            ;; `thunk` produces the values of the evt
                            ;; that was provided to `replace-evt`:
@@ -750,15 +787,21 @@
                            (define orig-evt (nested-sync-evt-orig-evt ns))
                            (values #f
                                    ;; and this is the "replace" step:
-                                   (poll-guard-evt
-                                    (lambda (poll?)
-                                      (define r (call-with-values thunk next))
-                                      (cond
-                                        [(evt? r) r]
-                                        [else (wrap-evt always-evt (lambda (v) orig-evt))])))))
-             #:just-poll? (poll-ctx-poll? poll-ctx)
+                                   (control-state-evt
+                                    (poll-guard-evt
+                                     (lambda (poll?)
+                                       (define r (call-with-values thunk next))
+                                       (cond
+                                         [(evt? r) r]
+                                         [else (wrap-evt always-evt (lambda (v) orig-evt))])))
+                                    values
+                                    'reset
+                                    void
+                                    'reset)))
+             #:just-poll? just-poll?
              #:done-after-poll? #f
-             #:schedule-info (poll-ctx-sched-info poll-ctx)))
+             #:fast-only? fast-only?
+             #:schedule-info sched-info))
 
 ;; ----------------------------------------
 

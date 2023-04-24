@@ -10,7 +10,8 @@
          rktio-errno
          rktio-errstep
          racket-error?
-         rktio-place-init!)
+         rktio-place-init!
+         rktio-place-destroy!)
 ;; More `provide`s added by macros below
 
 (define rktio-table
@@ -47,7 +48,9 @@
 (define-function () #f rktio_is_timestamp)
 (define-function () #f rktio_recv_length_ref)
 (define-function () #f rktio_recv_address_ref)
+(define-function () #f rktio_stat_to_vector)
 (define-function () #f rktio_identity_to_vector)
+(define-function () #f rktio_seconds_to_date*)
 (define-function () #f rktio_convert_result_to_vector)
 (define-function () #f rktio_to_bytes)
 (define-function () #f rktio_to_bytes_list)
@@ -81,6 +84,10 @@
 
 (define (rktio-place-init!)
   (set! rktio (rktio_init)))
+
+(define (rktio-place-destroy!)
+  (rktio_destroy rktio)
+  (set! rktio #f))
 
 ;; Only in the main place:
 (void (rktio_do_install_os_signal_handler rktio))

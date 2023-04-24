@@ -18,10 +18,10 @@
   (unless (or (eq? setup-collects 'skip)
               no-setup?
               (not (member (getenv "PLT_PKG_NOSETUP") '(#f ""))))
-    (define installation? (eq? 'installation (current-pkg-scope)))
+    (define user? (eq? 'user (current-pkg-scope)))
     (unless (setup:setup
-             #:make-user? (not installation?)
-             #:avoid-main? (not installation?)
+             #:make-user? user?
+             #:avoid-main? user?
              #:make-docs? (not no-docs?)
              #:collections (and setup-collects
                                 (map (lambda (s)
@@ -55,7 +55,7 @@
         [user 'user]
         [(path-string? given-scope)
          ;; This can happens when a #:scope value is given a path programmatically.
-         ;; Make it easier on clients by alloing that.
+         ;; Make it easier on clients by allowing that.
          (path->complete-path given-scope)]
         [scope-dir (path->complete-path scope-dir)]
         [else
@@ -117,6 +117,20 @@
   (cond
    [(regexp-match? #rx"^[a-zA-Z]*://" s) (string->url s)]
    [else (path->url (path->complete-path s))]))
+
+(define-syntax-rule (with-catalogs catalogs body ...)
+  (parameterize ([current-pkg-catalogs (let ([l (as-list-or-false catalogs)])
+                                         (and l (map catalog->url l)))])
+    body ...))
+
+(define (as-list-or-false v)
+  (cond
+    [(not v) #f]
+    [(list? v) v]
+    [else (list v)]))
+
+(define (as-list v)
+  (or (as-list-or-false v) '()))
 
 (define (clone-to-package-name clone cmd)
   ;; Use directory name as sole package name, if possible
@@ -181,8 +195,9 @@
              install-copy-flags/post-clone ...
              #:once-any
              scope-flags ...
-             #:once-each
+             #:multi
              catalog-flags ...
+             #:once-each
              [#:bool skip-installed () ("Skip a <pkg-source> if already installed")]
              [#:bool pkgs () ("Install only the specified packages, even when none are provided")]
              install-force-flags ...
@@ -223,8 +238,7 @@
                         (values pkg-source a-type)))
                   (define setup-collects
                     (with-pkg-lock
-                        (parameterize ([current-pkg-catalogs (and catalog
-                                                                  (list (catalog->url catalog)))])
+                      (with-catalogs catalog
                           (pkg-install #:from-command-line? #t
                                        #:dep-behavior (or (and auto 'search-auto)
                                                           deps
@@ -279,8 +293,9 @@
              install-copy-flags/post-clone ...
              #:once-any
              scope-flags ...
-             #:once-each
+             #:multi
              catalog-flags ...
+             #:once-each
              [#:bool skip-uninstalled () ("Skip a given <pkg-source> if not installed")]
              install-force-flags ...
              install-clone-flags ...
@@ -316,8 +331,7 @@
                   (define lookup? (or lookup unclone))
                   (define setup-collects
                     (with-pkg-lock
-                        (parameterize ([current-pkg-catalogs (and catalog
-                                                                  (list (catalog->url catalog)))])
+                      (with-catalogs catalog
                           (pkg-update (for/list ([pkg-source (in-list pkg-source)])
                                         (cond
                                          [lookup?
@@ -459,8 +473,9 @@
              [#:bool binary-lib () ("Strip source elements and documentation before installing")]
              #:once-any
              scope-flags ...
-             #:once-each
+             #:multi
              catalog-flags ...
+             #:once-each
              install-force-flags ...
              dry-run-flags ...
              job-flags ...
@@ -471,8 +486,7 @@
               (lambda ()
                 (define setup-collects
                   (with-pkg-lock
-                   (parameterize ([current-pkg-catalogs (and catalog
-                                                             (list (catalog->url catalog)))])
+                    (with-catalogs catalog
                      (pkg-migrate from-version
                                   #:from-command-line? #t
                                   #:dep-behavior deps
@@ -534,6 +548,10 @@
              scope-flags ...
              #:handlers
              (lambda (accum . key+vals)
+               (define default-scope-scope (and (terminal-port? (current-output-port))
+                                                (parameterize ([current-pkg-scope 'user])
+                                                  (with-pkg-lock/read-only
+                                                    (pkg-config-default-scope-scope)))))
                (call-with-package-scope
                 'config
                 scope scope-dir installation user #f #f #f #f
@@ -541,32 +559,34 @@
                   (if set
                       (with-pkg-lock
                        (pkg-config #t key+vals
-                                   #:from-command-line? #t))
+                                   #:from-command-line? #t
+                                   #:default-scope-scope default-scope-scope))
                       (with-pkg-lock/read-only
                        (pkg-config #f key+vals
-                                   #:from-command-line? #t))))))
+                                   #:from-command-line? #t
+                                   #:default-scope-scope default-scope-scope))))))
              (list "key" "val")]
             ;; ----------------------------------------
             [catalog-show
-             "Show package information as reported by a catalog"
+             "Show package information as reported by catalogs"
+             #:multi
+             catalog-flags ...
              #:once-each
              [#:bool all () "Show all packages"]
              [#:bool only-names () "Show only package names"]
              [#:bool modules () "Show implemented modules"]
-             catalog-flags ...
              [(#:str vers #f) version ("-v") "Show result for Racket <vers>"]
              #:args pkg-name
              (when (and all (pair? pkg-name))
                ((pkg-error 'catalog-show) "both `--all' and package names provided"))
-             (parameterize ([current-pkg-catalogs (and catalog
-                                                       (list (catalog->url catalog)))]
-                            [current-pkg-error (pkg-error 'catalog-show)]
-                            [current-pkg-lookup-version (or version
-                                                            (current-pkg-lookup-version))])
-               (pkg-catalog-show pkg-name
-                                 #:all? all
-                                 #:only-names? only-names
-                                 #:modules? modules))]
+             (with-catalogs catalog
+               (parameterize ([current-pkg-error (pkg-error 'catalog-show)]
+                              [current-pkg-lookup-version (or version
+                                                              (current-pkg-lookup-version))])
+                 (pkg-catalog-show pkg-name
+                                   #:all? all
+                                   #:only-names? only-names
+                                   #:modules? modules)))]
             ;; ----------------------------------------
             [catalog-copy
              "Copy/merge package name catalogs"
@@ -603,6 +623,15 @@
              [(#:sym mode [fail skip continue] 'fail) pkg-fail ()
               ("Select handling of package-download failure;"
                "<mode>s: fail (the default), skip, continue (but with exit status of 5)")]
+             #:multi
+             [(#:str pkg #f) include () "Include <pkg> in new catalog"]
+             #:once-each
+             [#:bool include-deps () "Include dependencies of specified packages"]
+             [(#:strs sys subpath #f) include-deps-platform () "Include one platform's dependencies"]
+             #:multi
+             [(#:str pkg '()) exclude () "Exclude <pkg> from new catalog"]
+             #:once-each
+             [#:bool fast-file-copy () "Copy a local file package as-is"]
              #:args (dest-dir . src-catalog)
              (parameterize ([current-pkg-error (pkg-error 'catalog-archive)]
                             [current-pkg-lookup-version (or version
@@ -613,6 +642,13 @@
                                       #:from-config? from-config
                                       #:state-catalog state
                                       #:relative-sources? relative
+                                      #:include (as-list-or-false include)
+                                      #:include-deps? include-deps
+                                      #:include-deps-sys+subpath (and include-deps-platform
+                                                                      (cons (string->symbol (car include-deps-platform))
+                                                                            (string->path (cadr include-deps-platform))))
+                                      #:exclude (as-list exclude)
+                                      #:fast-file-copy? fast-file-copy
                                       #:package-exn-handler (case pkg-fail
                                                               [(fail) (lambda (name exn) (raise exn))]
                                                               [(skip continue)
@@ -634,12 +670,10 @@
             ;; ----------------------------------------
             [archive
              "Create catalog from installed packages"
-             (define exclude-list (make-parameter null))
              #:once-each
              [#:bool include-deps () "Include dependencies of specified packages"]
              #:multi
-             [(#:str pkg #f) exclude () "Exclude <pkg> from new catalog"
-              (exclude-list (cons pkg (exclude-list)))]
+             [(#:str pkg '()) exclude () "Exclude <pkg> from new catalog"]
              #:once-each
              [#:bool relative () "Make source paths relative when possible"]
              #:args (dest-dir pkg . pkgs)
@@ -647,7 +681,7 @@
                (pkg-archive-pkgs dest-dir
                                  (cons pkg pkgs)
                                  #:include-deps? include-deps
-                                 #:exclude (exclude-list)
+                                 #:exclude (as-list exclude)
                                  #:relative-sources? relative))]
             ;; ----------------------------------------
             [empty-trash
@@ -684,11 +718,11 @@
    #:trash-flags
    ([#:bool no-trash () ("Delete uninstalled/updated, instead of moving to a trash folder")])
    #:catalog-flags
-   ([(#:str catalog #f) catalog () "Use <catalog> instead of configured catalogs"])
+   ([(#:str catalog #f) catalog () "Use <catalog>s instead of configured catalogs"])
    #:install-type-flags
-   ([(#:sym type [file dir file-url dir-url git github name] #f) type ("-t")
+   ([(#:sym type [file dir file-url dir-url git git-url github name] #f) type ("-t")
      ("Specify type of <pkg-source>, instead of inferred;"
-      "valid <types>s are: file, dir, file-url, dir-url, git, github, or name")]
+      "valid <types>s are: file, dir, file-url, dir-url, git, git-url, github, or name")]
     [(#:str name #f) name ("-n") ("Specify name of package, instead of inferred;"
                                   "makes sense only when a single <pkg-source> is given")]
     [(#:str checksum #f) checksum () ("Checksum of package, either expected or selected;"
@@ -743,11 +777,11 @@
                link-type
                (not (memq type
                           (case link-type
-                            [(clone) '(git github)]
+                            [(clone) '(git git-url github)]
                             [else '(dir)]))))
       ((current-pkg-error) (format "-t/--type value must be ~a with --~a"
                                    (cond
-                                    [clone "`git' or `github'"]
+                                    [clone "`git', `git-url', or `github'"]
                                     [else "`dir'"])
                                    (cond
                                     [link "link"]

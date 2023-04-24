@@ -77,7 +77,7 @@ We should also test deep continuations.
       (case (system-type 'vm)
         [(chez-scheme)
          (check-equal? 1 (length (get-blocks log)))
-         ;; `printf` is ok up to the point that it tries to get the currrent output port:
+         ;; `printf` is ok up to the point that it tries to get the current output port:
          (check-equal? 1 (length (get-blocks-on 'continuation-mark-set-first log)))]
         [else
          (check-equal? 3 (length (get-blocks log)))
@@ -857,15 +857,20 @@ We should also test deep continuations.
 
   (let ()
     (define b1 (box #true))
+    ;; variant of `box-cas!` that retries on (apparently) spurious failure
+    (define (box-cas!* b old new)
+      (or (box-cas! b old new)
+          (and (eq? old (unbox b))
+               (box-cas!* b old new))))
     (define (neg-bad)
       (let loop ()
-        (unless (box-cas! b1 #true #false)
-          (unless (box-cas! b1 #false #true)
+        (unless (box-cas!* b1 #true #false)
+          (unless (box-cas!* b1 #false #true)
             (loop)))))
     (define b2 (box #true))
     (define (neg-good)
-      (unless (box-cas! b2 #true #false)
-        (box-cas! b2 #false #true)))
+      (unless (box-cas!* b2 #true #false)
+        (box-cas!* b2 #false #true)))
 
     (check-equal? (unbox b1) #true)
     (neg-bad)
@@ -906,8 +911,7 @@ We should also test deep continuations.
       (define f (func (lambda () (loop i))))
       (sleep 0.1)
       (with-handlers ([exn:fail? (lambda (exn)
-                                   (unless (or (regexp-match #rx"expected number of values not received" (exn-message exn))
-                                               (regexp-match #rx"returned two values to single value return context" (exn-message exn)))
+                                   (unless (regexp-match #rx"expected number of values not received" (exn-message exn))
                                      (raise exn)))])
         (touch f))))
 
@@ -969,4 +973,4 @@ We should also test deep continuations.
 (module+ test
   (module config info
     (define random? #t)
-    (define timeout 200)))
+    (define timeout 450)))

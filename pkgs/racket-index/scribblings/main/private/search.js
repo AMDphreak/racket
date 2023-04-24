@@ -4,6 +4,8 @@ var key_handler, toggle_panel, hide_prefs, new_query, refine_query,
     set_results_num, set_type_delay, set_highlight_color, status_line,
     saved_status = false, ctx_query_label_line;
 
+var descriptions = new Array();
+
 (function(){
 
 // Configuration options (use || in case a cookie exists but is empty)
@@ -32,7 +34,7 @@ function MakePref(label, input) {
   return '<tr><td align="right">' + label + ':&nbsp;&nbsp;</td>'
             +'<td>' + input + '</td></tr>';
 }
-var descriptions = new Array();
+
 function PrefInputArgs(name, desc) {
   // don't plant `desc' directly in the text -- it might have quotes
   descriptions[name] = desc;
@@ -69,7 +71,7 @@ function MakeContextQueryItem(qry, desc) {
               +' onclick="return new_query(this,\''
                                    +encodeURIComponent(desc)
                                    +'\');">'
-              + desc.replace(/{{/g, "<tt><b>").replace(/}}/g, "</b></tt>")
+              + desc.replace(/{{/g, "<code><b>").replace(/}}/g, "</b></code>")
            + '</a></li>';
 }
 
@@ -110,34 +112,34 @@ function InitializeSearch() {
       +'</div>'
       +'<div id="help_panel" '+panelstyle+'>'
         +'<ul style="padding: 0em; margin: 0.5em 1.5em;">'
-        +'<li>Hit <tt>PageUp</tt>/<tt>PageDown</tt> or'
-           +' <tt>C+Enter</tt>/<tt>S+C+Enter</tt> to scroll through the'
-           +' results.</li>'
+        +'<li>Hit <kbd>PageUp</kbd>/<kbd>PageDown</kbd> or'
+           +' <kbd>Ctrl</kbd>+<kbd>Enter</kbd> / <kbd>Shift</kbd>+<kbd>Ctrl</kbd>+<kbd>Enter</kbd>'
+           +' to scroll through the results.</li>'
         +'<li>Search terms are all required, use'
-           +' &ldquo;<tt>N:<i>str</i></tt>&rdquo; to negate a term.'
-        +'<li>Use &ldquo;<tt>M:<i>str</i></tt>&rdquo; to match only'
+           +' &ldquo;<kbd>N:<i>str</i></kbd>&rdquo; to negate a term.'
+        +'<li>Use &ldquo;<kbd>M:<i>str</i></kbd>&rdquo; to match only'
            +' identifiers from modules that (partially) match'
-           +' &ldquo;<tt><i>str</i></tt>&rdquo;; &ldquo;<tt>M:</tt>&rdquo; by'
+           +' &ldquo;<kbd><i>str</i></kbd>&rdquo;; &ldquo;<kbd>M:</kbd>&rdquo; by'
            +' itself will restrict results to bound names only.</li>'
-        +'<li>Use &ldquo;<tt>H:<i>str</i></tt>&rdquo; to match only'
+        +'<li>Use &ldquo;<kbd>H:<i>str</i></kbd>&rdquo; to match only'
            +' modules that implement a language'
-           +' &ldquo;<tt>#lang <i>str</i></tt>&rdquo;.</li>'
-        +'<li>Use &ldquo;<tt>R:<i>str</i></tt>&rdquo; to match only'
+           +' &ldquo;<kbd>#lang <i>str</i></kbd>&rdquo;.</li>'
+        +'<li>Use &ldquo;<kbd>R:<i>str</i></kbd>&rdquo; to match only'
            +' modules that implement a reader module'
-           +' &ldquo;<tt>#reader <i>str</i></tt>&rdquo;.</li>'
-        +'<li>&ldquo;<tt>L:<i>str</i></tt>&rdquo; is similar to'
-           +' &ldquo;<tt>M:<i>str</i></tt>&rdquo;, but'
-           +' &ldquo;<tt><i>str</i></tt>&rdquo; should match the module name'
-           +' exactly; &ldquo;<tt>M:</tt>&rdquo; by'
+           +' &ldquo;<kbd>#reader <i>str</i></kbd>&rdquo;.</li>'
+        +'<li>&ldquo;<kbd>L:<i>str</i></kbd>&rdquo; is similar to'
+           +' &ldquo;<kbd>M:<i>str</i></kbd>&rdquo;, but'
+           +' &ldquo;<kbd><i>str</i></kbd>&rdquo; should match the module name'
+           +' exactly; &ldquo;<kbd>L:</kbd>&rdquo; by'
            +' itself will restrict results to module names only.</li>'
-        +'<li>&ldquo;<tt>T:<i>str</i></tt>&rdquo; restricts results to ones in'
-           +' the &ldquo;<tt><i>str</i></tt>&rdquo; manual (naming the'
+        +'<li>&ldquo;<kbd>T:<i>str</i></kbd>&rdquo; restricts results to ones in'
+           +' the &ldquo;<kbd><i>str</i></kbd>&rdquo; manual (naming the'
            +' directory where the manual is found).</li>'
         +'<li>Entries that correspond to bindings have module links that'
            +' create a query restricted to bindings in that module (using'
-           +' &ldquo;<tt>L:</tt>&rdquo;), other entries have similar links for'
+           +' &ldquo;<kbd>L:</kbd>&rdquo;), other entries have similar links for'
            +' restricting results to a specific manual (using'
-           +' &ldquo;<tt>T:</tt>&rdquo;); you can control whether manual links'
+           +' &ldquo;<kbd>T:</kbd>&rdquo;); you can control whether manual links'
            +' appear (and how) in the preferences.</li>'
         +'<li>Right-clicking these links refines the current query instead of'
            +' changing it (but some browsers don\'t support this).</li>'
@@ -210,11 +212,7 @@ function InitializeSearch() {
       +MakeChevrons(1,
         '<span id="search_status"'
             +' style="color: #601515; font-weight: bold;">&nbsp;</span>')
-      +'<div>'
-        +'<div id="search_result"'
-             +' style="display: none;'
-             +' margin: 0.1em 0em; padding: 0.25em 1em;"></div>'
-      +'</div>'
+      +'<div id="search_result_container"></div>'
       +'<br />'
       +MakeChevrons(2,
         '<span id="ctx_query_label" style="color: #444;">&nbsp;</span>')
@@ -229,10 +227,11 @@ function InitializeSearch() {
   next_page_link2 = document.getElementById("next_page_link2");
   // result_links is the array of result link <container,link> pairs
   result_links = new Array();
-  n = document.getElementById("search_result");
-  results_container = n.parentNode;
+  var proto_search_result = makeProtoSearchResult();
+  results_container = document.getElementById('search_result_container');
+  results_container.appendChild(proto_search_result);
   results_container.normalize();
-  result_links.push(n);
+  result_links.push(proto_search_result);
   AdjustResultsNum();
   // get search string
   var init_q = GetPageArg("q",false);
@@ -241,6 +240,14 @@ function InitializeSearch() {
   DoSearch();
   query.focus();
   query.select();
+}
+
+function makeProtoSearchResult() {
+  var proto_search_result = document.createElement('div');
+  proto_search_result.style.display = 'none';
+  proto_search_result.style.margin = '0.1em 0em';
+  proto_search_result.style.padding = '0.25em 1em';
+  return proto_search_result;
 }
 
 function AdjustResultsNum() {
@@ -385,8 +392,8 @@ function SanitizeHTML(str) {
             .replace(/>/g,   "&gt;")
             .replace(/</g,   "&lt;")
             .replace(/\"/g,  "&quot;")
-            .replace(/{{/g,  "<tt><b>")
-            .replace(/}}/g,  "</b></tt>");
+            .replace(/{{/g,  "<code><b>")
+            .replace(/}}/g,  "</b></code>");
 }
 
 function UrlToManual(url) {
@@ -453,13 +460,22 @@ function CompileTerm(term) {
   /* a case for "Q" is not needed -- same as the default case below */
   default:
     var compare_words = CompileWordCompare(term);
-    return function(x) {
-      var r = Compare(term,x[0]);
-      // only bindings can be used for rexact matches
-      if (r >= C_rexact) return (x[3] ? r : C_exact);
-      if (r > C_words3) return r;
-      else return compare_words(x[0]);
-    };
+    return CompileOrTerms([
+      function(x) {
+        var r = Compare(term,x[0]);
+        // only bindings can be used for rexact matches
+        if (r >= C_rexact) return (x[3] ? r : C_exact);
+        if (r > C_words3) return r;
+        else return compare_words(x[0]);
+      },
+      function(x) {
+        if (x[1].search(/\/index\.html$/) > 0) {
+          return Compare(term,UrlToManual(x[1]));
+        } else {
+          return C_fail;
+        }
+      }
+    ]);
   }
 }
 
@@ -524,7 +540,7 @@ var indicators =
            : (j==i) ? "&#9658;"
            : "&middot;";
       }
-      a.push("&nbsp;<tt>"+s+"</tt>");
+      a.push("&nbsp;<code>"+s+"</code>");
     }
     return a;
    }());
@@ -677,11 +693,23 @@ function UncompactHtml(x) {
   }
 }
 
+function StripQArg(args) {
+  // Don't propagate the `q=...` argument that is used to communicate
+  // to this search page
+  if (!args)
+      return false;
+  args = args.replace(/^[?]q=[^&]*&/,"?").replace(/^[?]q=[^&]*$/,"?").replace(/&q=[^&]*/,"");
+  if (args == "?")
+    return false;
+  else
+    return args;
+}
+
 function UpdateResults() {
   if (first_search_result < 0 ||
       first_search_result >= search_results.length)
     first_search_result = 0;
-  var link_args = (page_query_string && ("?"+page_query_string));
+  var link_args = page_query_string && StripQArg("?"+page_query_string);
   for (var i=0; i<result_links.length; i++) {
     var n = i + first_search_result;
     if (n < search_results.length) {

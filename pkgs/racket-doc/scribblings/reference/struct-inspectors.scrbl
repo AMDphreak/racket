@@ -18,7 +18,7 @@ opaque to ``peer'' code that cannot access the parent inspector.
 The @racket[current-inspector] @tech{parameter} determines a default
 inspector argument for new structure types. An alternate inspector can
 be provided though the @racket[#:inspector] option of the
-@racket[define-struct] form (see @secref["define-struct"]), or
+@racket[struct] form (see @secref["define-struct"]), or
 through an optional @racket[inspector] argument to
 @racket[make-struct-type].
 
@@ -129,6 +129,23 @@ Returns eight values that provide information about the structure type
 If the type for @racket[struct-type] is not controlled by the current inspector,
 the @exnraise[exn:fail:contract].}
 
+
+@defproc[(struct-type-sealed? [struct-type struct-type?]) boolean?]{
+
+Reports whether @racket[struct-type] has the @racket[prop:sealed]
+structure type property.
+
+@history[#:added "8.0.0.7"]}
+
+
+@defproc[(struct-type-authentic? [struct-type struct-type?]) boolean?]{
+
+Reports whether @racket[struct-type] has the @racket[prop:authentic]
+structure type property.
+
+@history[#:added "8.0.0.7"]}
+
+
 @defproc[(struct-type-make-constructor [struct-type struct-type?]
                                        [constructor-name (or/c symbol? #f) #f])
          struct-constructor-procedure?]{
@@ -155,11 +172,8 @@ Returns a value for the name of @racket[v] if @racket[v] has a name,
 @racket[#f] otherwise. The argument @racket[v] can be any value, but
 only (some) procedures, @tech{structures}, @tech{structure types},
 @tech{structure type properties}, @tech{regexp values},
-@tech{ports}, and @tech{loggers} have names. See also @secref["infernames"].
-
-The name (if any) of a procedure is always a symbol. The
-@racket[procedure-rename] function creates a procedure with a specific
-name.
+@tech{ports}, @tech{loggers}, and @tech{prompt tags} have names.
+See also @secref["infernames"].
 
 If a @tech{structure}'s type implements the @racket[prop:object-name] property,
 and the value of the @racket[prop:object-name] property is an integer, then the
@@ -172,6 +186,12 @@ type is an integer), then its name is the implementing procedure's name.
 Otherwise, its name matches the name of the @tech{structure type} that it
 instantiates.
 
+The name (if any) of a procedure is a symbol, unless the procedure is
+also a structure whose type has the @racket[prop:object-name]
+property, in which case @racket[prop:object-name] takes precedence.
+The @racket[procedure-rename] function creates a procedure with a
+specific name.
+
 The name of a @tech{regexp value} is a string or byte string. Passing
 the string or byte string to @racket[regexp], @racket[byte-regexp],
 @racket[pregexp], or @racket[byte-pregexp] (depending on the kind of
@@ -182,7 +202,14 @@ The name of a port can be any value, but many tools use a path or
 string name as the port's for (to report source locations, for
 example).
 
-The name of a @tech{logger} is either a symbol or @racket[#f].}
+The name of a @tech{logger} is either a symbol or @racket[#f].
+
+The name of a @tech{prompt tag} is either the optional symbol
+given to @racket[make-continuation-prompt-tag] or @racket[#f].
+
+ @history[#:changed "7.9.0.13" @elem{Recognize the name of
+            continuation prompt tags.}]
+}
 
 @defthing[prop:object-name struct-type-property?]{
 

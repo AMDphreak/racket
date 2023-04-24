@@ -1,7 +1,5 @@
-(module module+ '#%kernel
-  (#%require "more-scheme.rkt"
-             "modbeg.rkt"
-             (for-syntax '#%kernel
+(module submodule '#%kernel
+  (#%require (for-syntax '#%kernel
                          "stxcase-scheme.rkt"
                          "more-scheme.rkt"
                          "letstx-scheme.rkt"
@@ -29,7 +27,7 @@
                 (set-box! stxs-box
                           (cons (append (reverse (syntax->list (syntax-local-introduce #'(e ...))))
                                         (car (unbox stxs-box)))
-                                (cons stx (cdr (unbox stxs-box))))))
+                                (cons (syntax-local-introduce stx) (cdr (unbox stxs-box))))))
               (syntax/loc stx (begin)))])]
         [else
          (raise-syntax-error #f

@@ -3,6 +3,8 @@
 
 @(define MzAdd (italic "Racket-specific:"))
 
+@(define (litchar~ s) (litchar (regexp-replace* "~" s " ")))
+
 @title[#:tag "windowspaths"]{Windows Paths}
 
 In general, a Windows pathname consists of an optional drive specifier
@@ -105,7 +107,8 @@ include @litchar{\}.
         range @racket[#\x00] to @racket[#\x1F] nor any of the following
         characters:
 
-        @centerline{@litchar{<} @litchar{>} @litchar{:} @litchar{"} @litchar{/} @litchar{\} @litchar{|}}
+        @centerline{@litchar{<} @litchar{>} @litchar{:} @litchar{"}
+                    @litchar{/} @litchar{\} @litchar{|} @litchar{?} @litchar{*}}
 
         Except for @litchar{\}, path elements containing these
         characters can be accessed using a @litchar{\\?\} path
@@ -215,9 +218,11 @@ sequences that are otherwise ill-formed as Windows paths:
 ]
 
 Outside of Racket, except for @litchar{\\?\} paths, pathnames are
- typically limited to 259 characters. Racket internally converts
- pathnames to @litchar{\\?\} form as needed to avoid this
- limit. The operating system cannot access files through
+ typically limited to 259 characters when used as a file path and 247 characters when
+ used as a directory path. Racket internally converts
+ pathnames longer than 247 characters to @litchar{\\?\} form to avoid the
+ limits; in that case, the path is first simplified syntactically (in the
+ sense of @racket[simplify-path]). The operating system cannot access files through
  @litchar{\\?\} paths that are longer than 32,000 characters or
  so.
 
@@ -243,7 +248,7 @@ with a different parent than @litchar{d}, the path nevertheless refers
 to @litchar{f} in the same directory as @litchar{d}. A relative-path
 link is parsed as if prefixed with @litchar{\\?\REL} paths, except
 that @litchar{..}  and @litchar{.} elements are allowed throughout the
-path, and any number of redundant @litchar{/} separators are allowed.
+path, and any number of redundant @litchar{\} separators are allowed.
 
 Windows paths are @techlink{cleanse}d as follows: In paths that start
 @litchar{\\?\}, redundant @litchar{\}s are removed, an extra
@@ -310,8 +315,8 @@ already. Otherwise, if no indicators or redundant separators are in
 For @racket[(split-path _path)] producing @racket[_base],
 @racket[_name], and @racket[_must-be-dir?], splitting a path that does
 not start with @litchar{\\?\} can produce parts that start with
-@litchar{\\?\}. For example, splitting @litchar{C:/x~/aux/}
-produces @litchar{\\?\C:\x~\} and @litchar{\\?\REL\\aux};
+@litchar{\\?\}. For example, splitting @litchar~{C:/x~/aux/} twice
+produces @litchar~{\\?\REL\\x~} and @litchar{\\?\REL\\aux};
 the @litchar{\\?\} is needed in these cases to preserve a
 trailing space after @litchar{x} and to avoid referring to the AUX
 device instead of an @filepath{aux} file.

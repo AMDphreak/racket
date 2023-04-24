@@ -13,7 +13,8 @@
          racket/set
          racket/extflonum
          racket/private/truncate-path
-         racket/fasl)
+         racket/fasl
+         "private/opaque.rkt")
 
 (provide/contract
  [zo-marshal ((or/c linkl-directory? linkl-bundle?) . -> . bytes?)]
@@ -36,7 +37,7 @@
     [(linkl-bundle table)
      ;; single linklet bundle:
      (zo-marshal-bundle-to table outp)]
-    [else
+    [_
      (error 'zo-marshal-top "not a linklet bundle or directory:" top)]))
 
 (define (zo-marshal-directory-to top outp)
@@ -157,9 +158,10 @@
      (s-exp->fasl (hash-remove top 'vm) outp)]
     [(#"chez-scheme")
      (write-bundle-header #"chez-scheme" outp)
-     (define bstr (hash-ref top 'opaque
-                            (lambda ()
-                              (error 'zo-marshal "missing 'opaque for chez-scheme virtual-machine format"))))
+     (define opaque (hash-ref top 'opaque
+                              (lambda ()
+                                (error 'zo-marshal "missing 'opaque for chez-scheme virtual-machine format"))))
+     (define bstr (opaque-bstr opaque))
      (write-bytes (integer->integer-bytes (bytes-length bstr) 4 #f #f) outp)
      (write-bytes bstr outp)]
     [else
@@ -346,6 +348,7 @@
   CPT_CLOSURE
   CPT_DELAY_REF ; used to delay loading of syntax objects and lambda bodies
   CPT_PREFAB
+  CPT_PREFAB_TYPE
   CPT_LET_ONE_UNUSED
   CPT_SHARED
   CPT_TOPLEVEL
@@ -362,7 +365,7 @@
   CPT_OTHER_FORM
   CPT_SRCLOC)
 
-(define CPT_SMALL_NUMBER_START 47)
+(define CPT_SMALL_NUMBER_START 48)
 (define CPT_SMALL_NUMBER_END 74)
 
 (define CPT_SMALL_SYMBOL_START 74)
@@ -616,11 +619,11 @@
         (out-number boxenv-type-num out)
         (out-anything pos out)
         (out-anything (protect-quote body) out)]
-       [(struct branch (test then else))
+       [(struct branch (test then els))
         (out-byte CPT_BRANCH out)
         (out-anything (protect-quote test) out)
         (out-anything (protect-quote then) out)
-        (out-anything (protect-quote else) out)]
+        (out-anything (protect-quote els) out)]
        [(struct application (rator rands))
         (let ([len (length rands)]) 
           (if (len . < . (- CPT_SMALL_APPLICATION_END CPT_SMALL_APPLICATION_START))
@@ -751,7 +754,8 @@
         (out-number (cond
                       [(hash-eqv? v) 2]
                       [(hash-eq? v) 0]
-                      [(hash-equal? v) 1])
+                      [(hash-equal? v) 1]
+                      [(hash-equal-always? v) 3])
                     out)
         (out-number (hash-count v) out)
         (for ([(k v) (in-hash v)])
@@ -770,6 +774,12 @@
         (vector-set! pre-v 0 (prefab-struct-key v))
         (out-byte CPT_PREFAB out)
         (out-anything pre-v out)]
+       [(? (lambda (v) (and (struct-type? v)
+                            (prefab-struct-type-key+field-count v))))
+        (define key+field-count (prefab-struct-type-key+field-count v))
+        (out-byte CPT_PREFAB_TYPE out)
+        (out-anything (car key+field-count) out)
+        (out-number (cdr key+field-count) out)]
        [(quoted qv)
         (out-byte CPT_QUOTE out)
         (parameterize ([quoting? #t])
@@ -826,7 +836,7 @@
         (define bstr (get-output-bytes s))
         (out-number (bytes-length bstr) out)
         (out-bytes bstr out)]
-       [else (error 'out-anything "~s" (current-type-trace))])))))
+       [_ (error 'out-anything "~s" (current-type-trace))])))))
 
 (define (out-linklet linklet-form out)
   (out-byte CPT_LINKLET out)

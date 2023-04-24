@@ -10,6 +10,7 @@
 #ifdef RKTIO_SYSTEM_UNIX
 # include <unistd.h>
 # include <netinet/in.h>
+# include <netinet/tcp.h>
 # include <netdb.h>
 # include <sys/socket.h>
 # include <sys/types.h>
@@ -516,8 +517,10 @@ static rktio_addrinfo_lookup_t *start_lookup(rktio_t *rktio, rktio_addrinfo_look
   
   if (!rktio->ghbn_started) {
     rktio->ghbn_run = 1;
-    if (!ghbn_init(rktio))
+    if (!ghbn_init(rktio)) {
+      free_lookup(lookup);
       return NULL;
+    }
     rktio->ghbn_started = 1;
   }
 
@@ -967,6 +970,18 @@ int rktio_socket_shutdown(rktio_t *rktio, rktio_fd_t *rfd, int mode)
   return 1;
 }
 
+int rktio_tcp_nodelay(rktio_t *rktio, rktio_fd_t *rfd, rktio_bool_t enable)
+{
+  rktio_socket_t s = rktio_fd_socket(rktio, rfd);
+  int nd = (enable ? 1 : 0), r;
+  r = setsockopt(s, IPPROTO_TCP, TCP_NODELAY, &nd, sizeof(nd));
+  if (r) {
+    get_socket_error();
+    return 0;
+  }
+  return 1;
+}
+
 int rktio_socket_poll_write_ready(rktio_t *rktio, rktio_fd_t *rfd)
 {
 #ifdef RKTIO_SYSTEM_UNIX
@@ -1063,7 +1078,9 @@ intptr_t rktio_socket_read(rktio_t *rktio, rktio_fd_t *rfd, char *buffer, intptr
 {
   rktio_socket_t s = rktio_fd_socket(rktio, rfd);
   int rn;
-  
+
+  len = LIMIT_REQUEST_SIZE(len);
+
   do {
     rn = recv(s, buffer, len, 0);
   } while ((rn == -1) && NOT_WINSOCK(errno == EINTR));
@@ -1103,7 +1120,7 @@ static intptr_t do_socket_write(rktio_t *rktio, rktio_fd_t *rfd, const char *buf
 
   while (1) {
     if (addr) {
-      /* Use first address that dosn't result in a bad-address error: */
+      /* Use first address that doesn't result in a bad-address error: */
       for (; addr; addr = (rktio_addrinfo_t *)RKTIO_AS_ADDRINFO(addr)->ai_next) {
         do {
           sent = sendto(s, buffer, len, 0,
@@ -1141,7 +1158,7 @@ static intptr_t do_socket_write(rktio_t *rktio, rktio_fd_t *rfd, const char *buf
 
 intptr_t rktio_socket_write(rktio_t *rktio, rktio_fd_t *rfd, const char *buffer, intptr_t len)
 {
-  return do_socket_write(rktio, rfd, buffer, len, NULL);
+  return do_socket_write(rktio, rfd, buffer, LIMIT_REQUEST_SIZE(len), NULL);
 }
 
 /*========================================================================*/

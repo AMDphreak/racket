@@ -1,4 +1,4 @@
-This package contains the implementation of Racket's front-end: macro
+This package contains the implementation of Racket's front end: macro
 expander, reader, and module systems. A copy of this implementation is
 extracted and built into the Racket executable, so normally this
 package's modules are not run directly. The expander or reader can be
@@ -92,38 +92,69 @@ Running:
    Expands and extracts <file-path> as a single linklet, compiles it
    and then writes the bytecode into <outfile-path>.
 
- % racket bootstrap-run.rkt -c <dir> -O <checkout-dir>/racket
+ % zuo . demo
+ % zuo . run ARGS="<arg> ..."
 
-   Compiles the expander to source files in <dir> --- note that
-   "bootstrap-run.rkt" must be used to get source compiles --- and
-   writes the flattened linklet to "startup.inc" in a Git checkout of
-   a linklet-based Racket. Be sure to increment the target Racket
-   version if you change the serialization of syntax objects or the
-   linklet protocol.
-
-   When you `make`, then "startup.inc" will be automatically compiled
-   to bytecode for for embedding into the Racket executable. If you
-   change the expander in a way that makes existing compiled files
-   invalid, be sure to update "schvers.h". (Updating "schvers.h" is
-   important both for bytecode files and the makefile/preprocessor
-   dance that generates the bytecode version of the expander itself.)
-
- % make
-
-   A shortcut for the above: When this package resides in an existing
-   in-place build from the main Racket repo, then the makefile uses
-   that copy of Racket to build the expander and drop a replacement
-   into the "src" directory. Re-making the Racket tree will then use
-   the updated expander. You may have to manually discard
-   "compiled/cache-src" when things change.
-
- % make demo
- % make run ARGS="<arg> ..."
-
-   More shortcuts. Use `make run ARGS="<arg> ..."` as a shorthand for `racket
+   More shortcuts. Use `zuo . run <arg> ...` as a shorthand for `racket
    run.rkt -c compiled/cache <arg> ...`.
 
-   See "Makefile" for more information and other shortcuts.
+   See "main.zuo" for more information and other shortcuts, and see
+   also "Running zuo" below.
+
+----------------------------------------
+
+Building Racket to use this expander:
+
+After you change the expander, you must perform an explicit build step
+to use it when making Racket CS or Racket BC. Normally, for that case,
+the expander would be modified as part of a Racket repo checkout.
+
+If you're working with a Racket repo checkout, and if you have a
+working `racket` in your `PATH`, use `make derived` in the checkout's
+top-level directory to propagate changes for both BC and CS. Then, you
+can build CS or BC as usual.
+
+Otherwise:
+
+ * For Racket CS, go to "racket/src/cs" in the repo and run `zuo`.
+   (See also "Running zuo" below.) That will update files in
+   "racket/src/cs/schemified", including using the new expander to
+   rebuild the Racket-implemented parts of Racket CS that are in
+   "../thread", "../io", etc.
+
+   After this step, a `make cs` in the top level of the Racket repo
+   will build Racket CS using the new expander.
+
+ * For Racket BC, run `zuo` here, which will update the file
+   "racket/src/bc/src/startup.inc". Then, when you build Racket BC,
+   "startup.inc" will be automatically compiled to bytecode for
+   embedding into the Racket BC executable.
+
+   After this step, a `make bc` in the top level of the Racket repo
+   will build Racket BC using the new expander.
+
+For either of these steps, "main.zuo" will assume that Racket is
+already built in the surrounding checkout, so Racket can be run as
+`../../bin/racket`. Use `zuo . RACKET=....` to use a different Racket
+build, but beware that the version of Racket must be essentially the
+same version as the target build.
+
+Before building new CS and BC executables, increment the target Racket
+version in "../version/racket_version.h" if you change the
+serialization of syntax objects or the linklet protocol. Updating
+"racket_version.h" is important both for bytecode files and the
+build step that generates the bytecode version of the expander itself.
+
+The `zuo` step for Racket BC generates source files in
+"compiled/cache-src". In some cases (hopefully rare), you may have to
+manually discard "compiled/cache-src" when things change.
+
+----------------------------------------
+
+Running zuo:
+
+If you don't have `zuo` installed, it may already be built as
+"../build/bin/zuo", or you can build it from the sources in "../zuo".
 
 ----------------------------------------
 
@@ -206,6 +237,25 @@ Set the `PLT_LINKLET_TIMES` environment variable to get similar
 information from the underlying runtime system. Except for compile
 times, linklet-level times generally will be disjoint from the times
 reported by the expander.
+
+----------------------------------------
+
+About structures:
+
+Constructors, predicates, accessors, etc., for a non-transparent
+structure type are defined in the implementation of the expander are
+compiled/loaded in a way that makes them claim not to be structure
+procedures when built into Racket. For example,
+
+   (struct-predicate-procedure? syntax?) ; => #f
+
+If a structure type's representation is exported, such as
+`exn:fail:syntax`, then operations do claim to be structure operations
+
+   (struct-predicate-procedure? exn:fail:syntax?) ; => #t
+
+As a consequence, it's ok to directly expose predicates, accessors,
+etc., without exposing an implementation detail.
 
 ----------------------------------------
 

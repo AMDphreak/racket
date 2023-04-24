@@ -14,6 +14,11 @@ rktio_t *rktio_init(void)
   rktio = malloc(sizeof(rktio_t));
   memset(rktio, 0, sizeof(rktio_t));
 
+  if (!rktio_environ_init(rktio)) {
+    rktio_destroy(rktio);
+    return NULL;
+  }
+
   rktio_alloc_global_poll_set(rktio);
   if (!rktio_initialize_signal(rktio)) {
     rktio_destroy(rktio);
@@ -31,12 +36,14 @@ rktio_t *rktio_init(void)
     return NULL;
   }
 #endif
-  
+
   rktio_init_time(rktio);
   rktio_init_wide(rktio);
   rktio_init_cpu(rktio);
 
   rktio_syslog_init(rktio);
+
+  rktio_convert_init(rktio);
 
 #ifdef OS_X
   {
@@ -66,12 +73,14 @@ void rktio_destroy(rktio_t *rktio)
 {
   rktio_stop_background(rktio);
   rktio_syslog_clean(rktio);
+  rktio_convert_deinit(rktio);
   rktio_dll_clean(rktio);
   rktio_error_clean(rktio);
   rktio_process_deinit(rktio);
   rktio_free_ghbn(rktio);
   rktio_free_global_poll_set(rktio);
   rktio_stop_fs_change(rktio);
+  rktio_free_signal(rktio);
 #ifdef RKTIO_SYSTEM_WINDOWS
   rktio_winsock_done(rktio);
 #endif

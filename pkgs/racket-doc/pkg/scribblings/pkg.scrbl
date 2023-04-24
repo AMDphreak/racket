@@ -3,7 +3,7 @@
           scribble/core
           "common.rkt"
           (for-label pkg
-                     (except-in racket/base remove)
+                     (except-in racket/base remove version)
                      setup/dirs
                      setup/matching-platform))
 
@@ -243,21 +243,23 @@ URLs is:
 @optional{@exec{.git}}@optional{@exec{/}}@optional{@exec{?path=}@nonterm{path}}@;
 @optional{@exec{#}@nonterm{rev}}}
 
-where @nonterm{scheme} is @litchar{git}, @litchar{http}, or
-@litchar{https}, and where @nonterm{host} is any address other than
-@litchar{github.com} (which is treated more specifically as a GitHub
+where @nonterm{scheme} is @litchar{git}, @litchar{http},
+@litchar{https}, @litchar{git+http}, or @litchar{git+https},
+except when @nonterm{scheme} is @litchar{git} and
+@nonterm{host} is @litchar{github.com} (which is treated more specifically as a GitHub
 reference). The @nonterm{path} can contain multiple
 @litchar{/}-separated elements to form a path within the repository,
 and it defaults to the empty path. The @nonterm{rev} can be a branch,
-tag, or commit, and it defaults to @exec{master}.
+tag, or commit, and it defaults to using the default branch as reported
+by the server.
 
 @margin-note{Due to properties of the Git protocol, the archive might
 be accessed more efficiently when @nonterm{rev} refers to a branch or
 tag (even if it is written as a commit). In those cases, the content
 typically can be obtained without downloading irrelevant history.}
 
-For example, @filepath{http://bitbucket.org/game/tic-tac-toe#master}
-is a Git package source. 
+For example, @filepath{http://bitbucket.org/game/tic-tac-toe#main}
+is a Git package source.
 
 A checkout of the repository at @nonterm{rev} provides the content of
 the package, and @nonterm{scheme} determines the protocol
@@ -270,11 +272,17 @@ A package source is inferred to be a Git reference when it starts with
 source is also inferred to be a Git reference when it starts with
 @litchar{http://} or @litchar{https://} and the last non-empty path
 element ends in @litchar{.git}; a @litchar{.git} suffix is added if
-the source is otherwise specified to be a Git reference. The inferred
-package name is the last element of @nonterm{path} if it is non-empty,
-otherwise the inferred name is @nonterm{repo}.
+the source is otherwise specified to be a Git reference. Finally, a
+package source is inferred to be a Git reference when it starts with
+@litchar{git+https://} or @litchar{git+http://}, in which case no
+@litchar{.git} suffix in the path is needed to designate the source as
+a Git reference (and no @litchar{.git} suffix is implicitly added).
+The inferred package name is the last element of @nonterm{path} if it
+is non-empty, otherwise the inferred name is @nonterm{repo}.
 
-@history[#:changed "6.1.1.1" @elem{Added Git repository support.}]}
+@history[#:changed "6.1.1.1" @elem{Added Git repository support.}
+         #:changed "8.0.0.13" @elem{Added @litchar{git+https://}
+                                    and @litchar{git+http://} support.}]}
 
 @; ----------------------------------------
 @item{a remote URL naming a GitHub repository --- The format for such
@@ -285,7 +293,7 @@ URLs is the same as for a Git repository reference starting
 @optional{@exec{.git}}@optional{@exec{/}}@optional{@exec{?path=}@nonterm{path}}@;
 @optional{@exec{#}@nonterm{rev}}}
 
-For example, @filepath{git://github.com/game/tic-tac-toe#master}
+For example, @filepath{git://github.com/game/tic-tac-toe#main}
 is a GitHub package source.
 
 @margin-note{A Github repository source that starts with
@@ -410,7 +418,7 @@ in its search path for installed packages (see @secref["config-file"
 scope}, operations such as dependency checking will use all paths in
 the configured search path starting with the one that is designed as a
 @tech{package scope}; if the designated path is not in the configured
-search path, then the dierctory by itself is used as the search path.
+search path, then the directory by itself is used as the search path.
 
 Conflict checking disallows installation of the same or conflicting
 package in different scopes, but if such a configuration is forced,
@@ -419,6 +427,11 @@ scope}. Search then proceeds in a configured order, where
 @exec{installation} @tech{package scope} typically precedes other
 directory @tech{package scopes}.
 
+The default package scope is determined by first checking the
+configuration at @racket['user] scope, and then checking for
+configuration in wider scopes like @racket['installation]. If the
+default package scope is not configured in any scope, then it defaults
+to @racket['user].
 
 @; ----------------------------------------
 
@@ -447,8 +460,10 @@ sub-commands.
  @itemlist[
 
  @item{@DFlag{type} @nonterm{type} or @Flag{t} @nonterm{type} --- Specifies an interpretation of the package source,
-       where @nonterm{type} is either @exec{file}, @exec{dir}, @exec{file-url}, @exec{dir-url}, @exec{git}, @exec{github}, 
-       or @exec{name}. The type is normally inferred for each @nonterm{pkg-source}.}
+       where @nonterm{type} is either @exec{file}, @exec{dir}, @exec{file-url}, @exec{dir-url}, @exec{git},
+       @exec{git-url}, @exec{github}, or @exec{name}. The difference between @exec{git} and @exec{git-url}
+       is that a @litchar{.git} suffix is added to a @litchar{http} or @litchar{https} URL for type @exec{git}, but
+       not for type @exec{git-url}. The type is normally inferred for each @nonterm{pkg-source}.}
 
  @item{@DFlag{name} @nonterm{pkg} or @Flag{n} @nonterm{pkg} --- Specifies the name of the package,
        which makes sense only when a single @nonterm{pkg-source} is provided. The name is normally
@@ -466,25 +481,34 @@ sub-commands.
    @item{@exec{fail} --- Cancels the installation if dependencies are uninstalled or version requirements are unmet. 
         This behavior is the default for non-@tech{interactive mode}.}
    @item{@exec{force} --- Installs the package(s) despite missing dependencies or version requirements.
-         Forcing an installation may leave package content in an inconsistent state.}
+         Forcing an installation may leave package content in an inconsistent state. Implied packages
+         via @racketidfont{implies} or @racketidfont{update-implies} (see @secref["metadata"]) are not updated,
+         even if @DFlag{ignore-implies} is not specified.}
    @item{@exec{search-ask} --- Looks for dependencies (when uninstalled) or updates (when version requirements are unmet)
          via the configured @tech{package catalogs},
          but asks the user whether packages should be installed or updated. This behavior is the default in @tech{interactive mode}.}
-   @item{@exec{search-auto} --- Like @exec{search-ask}, but does not ask for permission to install or update.}
-  ]}
+   @item{@exec{search-auto} --- Like @exec{search-ask}, but does not ask for permission to install or update a dependency.}
+  ]
+
+         Unless @DFlag{ignore-implies} is specified, when a package is updated or installed, any package that
+         it implies via @racketidfont{implies} or @racketidfont{update-implies} (see @secref["metadata"]) is automatically
+         updated independent of @exec{fail}, @exec{search-ask}, or @exec{search-auto}, but implied dependencies
+         are not updated for @exec{force} behavior.}
 
   @item{@DFlag{auto} --- Shorthand for @exec{@DFlag{deps} search-auto}.}
 
   @item{@DFlag{update-deps} --- With @exec{search-ask} or @exec{search-auto} dependency behavior, checks
         already-installed dependencies transitively for updates (even when
-        not forced by version requirements), asking or automatically updating a
-        package when an update is available. When a package is updated or installed,
-        unless @DFlag{skip-implies} is specified, any package that
-        it implies (see @secref["metadata"]) is automatically updated independent of the behavior
-        requested via @DFlag{update-deps} and @DFlag{deps}.}
+        not forced by version requirements, @racketidfont{implies}, or @racketidfont{update-implies}), asking or automatically updating a
+        package when an update is available.
 
-  @item{@DFlag{skip-implies} --- Disables special treatment of dependencies that are listed
-        in @racketidfont{implies} (see @secref["metadata"]) for an installed or updated package.}
+        Unless @DFlag{ignore-implies} or @exec{@DFlag{deps} force} is specified, when a package is updated or installed,
+        any package that it implies @racketidfont{implies} or @racketidfont{update-implies} (see @secref["metadata"]) is
+        automatically updated independent of the behavior requested via @DFlag{update-deps}.}
+
+  @item{@DFlag{ignore-implies} --- Disables special treatment of dependencies that are listed
+        in @racketidfont{implies} or @racketidfont{update-implies} (see @secref["metadata"])
+        for an installed or updated package.}
 
   @item{@DFlag{link} --- Implies @exec{--type dir}
         and links the existing directory as an installed package, instead of copying the
@@ -544,8 +568,8 @@ sub-commands.
  @item{@Flag{u} or @DFlag{user} --- Shorthand for @exec{--scope user}.}
  @item{@DFlag{scope-dir} @nonterm{dir} --- Select @nonterm{dir} as the @tech{package scope}.}
  
- @item{@DFlag{catalog} @nonterm{catalog} --- Uses @nonterm{catalog} instead of of the currently configured 
-       @tech{package catalogs}.}
+ @item{@DFlag{catalog} @nonterm{catalog} --- Uses @nonterm{catalog}s instead of of the currently configured
+       @tech{package catalogs}. This flag can be provided multiple times. The catalogs are tried in the order provided.}
 
   @item{@DFlag{skip-installed} --- Ignores any @nonterm{pkg-source}
         whose name corresponds to an already-installed package, except for promoting @seclink["concept:auto"]{auto-installed}
@@ -642,7 +666,9 @@ sub-commands.
          #:changed "6.1.1.8" @elem{Added the @DFlag{pull} flag.}
          #:changed "6.4.0.14" @elem{Added the @DFlag{dry-run} flag.}
          #:changed "7.2.0.8" @elem{Added the @DFlag{recompile-only} flag.}
-         #:changed "7.4.0.4" @elem{Added the @DFlag{no-docs}, @Flag{D} flags.}]}
+         #:changed "7.4.0.4" @elem{Added the @DFlag{no-docs}, @Flag{D} flags.}
+         #:changed "7.6.0.14" @elem{Allowed multiple @DFlag{catalog} flags.}
+         #:changed "8.0.0.13" @elem{Added @litchar{git-url} as a @DFlag{type} option.}]}
 
 
 @subcommand{@command/toc{update} @nonterm{option} ... @nonterm{pkg-source} ... 
@@ -713,7 +739,7 @@ the given @nonterm{pkg-source}s.
  @item{@DFlag{auto} --- Shorthand for @exec{@DFlag{deps} search-auto} plus @DFlag{update-deps}.}
  @item{@DFlag{update-deps} --- Same as for @command-ref{install}, but
        implied by @DFlag{auto} only for @command-ref{update}.}
- @item{@DFlag{skip-implies} --- Same as for @command-ref{install}.}
+ @item{@DFlag{ignore-implies} --- Same as for @command-ref{install}.}
  @item{@DFlag{link} --- Same as for @command-ref{install}, but a
        directory package source is treated as a link by default only
        when it does not correspond to a link or a Git repository
@@ -774,7 +800,8 @@ the given @nonterm{pkg-source}s.
          #:changed "6.4.0.14" @elem{Added the @DFlag{dry-run} flag.}
          #:changed "6.90.0.27" @elem{Added the @DFlag{unclone} flag.}
          #:changed "7.2.0.8" @elem{Added the @DFlag{recompile-only} flag.}
-         #:changed "7.4.0.4" @elem{Added the @DFlag{no-docs}, @Flag{D} flags.}]}
+         #:changed "7.4.0.4" @elem{Added the @DFlag{no-docs}, @Flag{D} flags.}
+         #:changed "7.6.0.14" @elem{Allowed multiple @DFlag{catalog} flags.}]}
 
 @subcommand{@command/toc{remove} @nonterm{option} ... @nonterm{pkg} ... 
 --- Attempts to remove the given packages. By default, if a package is the dependency
@@ -904,7 +931,8 @@ package is created.
 
 @history[#:changed "6.4.0.14" @elem{Added the @DFlag{dry-run} flag.}
          #:changed "7.2.0.8" @elem{Added the @DFlag{recompile-only} flag.}
-         #:changed "7.4.0.4" @elem{Added the @DFlag{no-docs}, @Flag{D} flags.}]}
+         #:changed "7.4.0.4" @elem{Added the @DFlag{no-docs}, @Flag{D} flags.}
+         #:changed "7.6.0.14" @elem{Allowed multiple @DFlag{catalog} flags.}]}
 
 @subcommand{@command/toc{create} @nonterm{option} ... @nonterm{directory-or-package}
 --- Bundles a package into an archive. Bundling
@@ -1024,12 +1052,13 @@ for @nonterm{key}.
                               @DFlag{all}, but when a @nonterm{package-name} is provided,
                               catalogs are consulted to ensure that he package is available.}
  @item{@DFlag{modules} --- Shows the modules that are implemented by a package.}
- @item{@DFlag{catalog} @nonterm{catalog} --- Queries @nonterm{catalog} instead of the currently configured 
-       @tech{package catalogs}.}
+ @item{@DFlag{catalog} @nonterm{catalog} --- Queries @nonterm{catalog}s instead of the currently configured
+       @tech{package catalogs}. This flag can be provided multiple times. The catalogs are tried in the order provided.}
  @item{@DFlag{version} @nonterm{version} or @Flag{v} @nonterm{version} --- Queries catalogs 
        for a result specific to @nonterm{version},
        instead of the installation's Racket version.}
  ]
+@history[#:changed "7.6.0.14" @elem{Allowed multiple @DFlag{catalog} flags.}]
 }
 
 @subcommand{@command/toc{catalog-copy} @nonterm{option} ... @nonterm{src-catalog} ... @nonterm{dest-catalog}
@@ -1096,9 +1125,33 @@ for @nonterm{key}.
          @item{@exec{continue} --- like @exec{skip}, but @exec{raco pkg catalog-archive}
                exits with a status code of @exec{5} if any package was skipped.}
        ]}
+
+ @item{@DFlag{include} @nonterm{pkg} --- Can be specified multiple times. If @DFlag{include} is
+       specified at least once, then the archive and generated catalog includes only
+       the @nonterm{pkg}s specified with @DFlag{include}, plus the dependencies
+       of each @nonterm{pkg} if @DFlag{include-deps} is specified, modulo packages
+       excluded via @DFlag{exclude}.}
+ @item{@DFlag{include-deps} --- Modifies the @DFlag{includes} @nonterm{pkg} flag to imply all
+       dependencies of @nonterm{pkg}.}
+ @item{@DFlag{include-deps-platform} @nonterm{sys} @nonterm{subpath} --- Modifies @DFlag{include-deps}
+       to imply only dependencies that match the platform @nonterm{sys}, which should be
+       a possible result of @racket[(system-type)], and @nonterm{subpath}, which should be
+       a possible result of @racket[(system-library-subpath #f)]}
+ @item{@DFlag{exclude} @nonterm{pkg} --- Can be specified multiple times. Removes @nonterm{pkg}
+       from the set of packages in the archive and generated catalog. If @DFlag{include} is
+       used for the same @nonterm{pkg}, then @DFlag{exclude} takes
+       precedence. If @DFlag{include} is used with
+       @DFlag{include-deps} for @nonterm{pkg} or a package that depends on @nonterm{pkg},
+       then @DFlag{exclude} stops the consideration of @nonterm{pkg}'s
+       dependencies (but does not necessarily exclude the dependencies, because they
+       may be dependencies of an included package).}
+ @item{@DFlag{fast-file-copy} --- Directly copies package files from the @nonterm{src-catalog}s
+       when available on the local filesystem, instead of extracting and repacking.}
  ]
 
- @history[#:added "6.0.17"]
+ @history[#:added "6.0.17"
+          #:changed "7.7.0.1" @elem{Added @DFlag{include}, @DFlag{include-deps}, @DFlag{include-deps-platform},
+                                    @DFlag{exclude}, and @DFlag{fast-file-copy}.}]
 }
 
 @subcommand{@command/toc{archive} @nonterm{option} ... @nonterm{dest-dir} @nonterm{pkg} ...
@@ -1162,7 +1215,7 @@ For example, a basic @filepath{info.rkt} file might be
 @codeblock{
 #lang info
 (define version "1.0")
-(define deps (list _package-source-string ...))
+(define deps (list "base"))
 }
 
 The following @filepath{info.rkt} fields are used by the package manager:
@@ -1260,8 +1313,8 @@ The following @filepath{info.rkt} fields are used by the package manager:
        @racketidfont{build-deps} when converting a package for
        @DFlag{binary} mode.}
 
- @item{@definfofield{implies} --- a list of strings and
-       @racket['core]. Each string refers to a package listed in
+ @item{@definfofield{implies} --- a list where each element is either
+       a string or @racket['core]. Each string refers to a package listed in
        @racketidfont{deps} and indicates that a dependency on the
        current package counts as a dependency on the named package;
        for example, the @pkgname{gui} package is defined to ensure
@@ -1289,6 +1342,56 @@ The following @filepath{info.rkt} fields are used by the package manager:
        set up (plus collections for global documentation indexes and
        links).}
 
+ @item{@definfofield{license} --- a @deftech{license S-expression}
+  specifying the package's license. A license S-expression represents an @deftech{SPDX}
+  @hyperlink["https://spdx.github.io/spdx-spec/appendix-IV-SPDX-license-expressions/"]{
+   license expression} as a datum with the quoted form:
+
+  @racketgrammar[#:literals (AND OR WITH) license-sexp
+                 license-id
+                 (license-id WITH exception-id)
+                 (license-sexp AND license-sexp)
+                 (license-sexp OR license-sexp)]
+
+  @margin-note{See @elemref["spdx-plus-operator"]{further details below}
+   about @racket[_license-id] and the @litchar{+} operator.}
+
+  where:
+
+  @itemize[
+ @item{a @racket[_license-id] is a short-form identifier from the
+    @hyperlink["https://spdx.org/licenses/index.html"]{SPDX License List},
+    e.g@._ @racketvalfont{LGPL-3.0-or-later}, @racketvalfont{Apache-2.0},
+    or @racketvalfont{BSD-3-Clause}; and}
+ @item{an @racket[_exception-id] is an identifier from the
+    @hyperlink["https://spdx.org/licenses/exceptions-index.html"]{
+     SPDX License Exceptions} list, e.g@._ @racketvalfont{Classpath-exception-2.0}.}]
+
+  For example, packages in the main Racket distribution
+  define @racketidfont{license} as:
+  @racketblock[(define license
+                 '(Apache-2.0 OR MIT))]
+
+  The grammar of @tech{license S-expressions} is designed so that
+  @racket[(format "~s" license)] produces a string conforming to the grammar in
+  @hyperlink["https://spdx.github.io/spdx-spec/SPDX-license-expressions/"]{
+  Annex D} and
+  @hyperlink["https://spdx.github.io/spdx-spec/using-SPDX-short-identifiers-in-source-files/"]{
+  Annex E}
+  of the SPDX Specification v2.2.2,
+  which is specified in terms of character sequences.
+
+  @elemtag["spdx-plus-operator"]{If the @litchar{+} operator is used,}
+  it must be written as part of the @racket[_license-id],
+  e.g@._ @racketvalfont{AFL-2.0+}.
+  Note that the @hyperlink["https://spdx.dev/ids/"]{SPDX Workgroup has deprecated}
+  (under ``Allowing later versions of a license'') the use of the @litchar{+}
+  operator with GNU licenses: thus, one writes
+  @racketvalfont{AFL-2.0} or @racketvalfont{AFL-2.0+} but
+  @racketvalfont{GPL-3.0-only} or @racketvalfont{GPL-3.0-or-later}
+  (and neither @racket[GPL-3.0] nor @racket[GPL-3.0+] are correct).
+ }
+
  @item{@definfofield{distribution-preference} --- either
        @racket['source], @racket['built], or @racket['binary],
        indicating the most suitable distribution mode for the package
@@ -1314,7 +1417,8 @@ The following @filepath{info.rkt} fields are used by the package manager:
 ]
 
 @history[#:changed "6.1.0.5" @elem{Added @racketidfont{update-implies}.}
-         #:changed "6.1.1.6" @elem{Added @racketidfont{distribution-preference}.}]
+         #:changed "6.1.1.6" @elem{Added @racketidfont{distribution-preference}.}
+         #:changed "8.2.0.7" @elem{Added @racketidfont{license}.}]
 
 @; ----------------------------------------
 
@@ -1683,7 +1787,7 @@ packages can install DrDr metadata to it.}
 improvements to pieces of Racket. In particular, it would be wonderful
 to have a very thorough @filepath{data} collection of different
 data-structures. However, our existing setup for Scribble would force
-each new data structue to have a different top-level documentation
+each new data structure to have a different top-level documentation
 manual, rather than extending the documentation of the existing
 @filepath{data} collection. Similar issues will exist for the
 @filepath{net} and @filepath{file} collections. We should design a way

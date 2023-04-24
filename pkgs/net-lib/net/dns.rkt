@@ -195,8 +195,9 @@
           (udp-send-to udp nameserver 53 (list->bytes query))
           (sync (handle-evt (udp-receive!-evt udp s)
                             (lambda (r) (bytes->list (subbytes s 0 (car r)))))
-                (handle-evt (alarm-evt (+ (current-inexact-milliseconds)
-                                          timeout))
+                (handle-evt (alarm-evt (+ (current-inexact-monotonic-milliseconds)
+                                          timeout)
+                                       #t)
                             (lambda (v) (retry (* timeout 2)))))))
       (lambda () (udp-close udp))))
 
@@ -262,7 +263,7 @@
 ;; Run the given query function, trying until an answer is found
 (define (try-forwarding k nameserver)
   (let loop ([nameserver nameserver] [tried (list nameserver)])
-    ;; Normally the recusion is done for us, but it's technically optional
+    ;; Normally the recursion is done for us, but it's technically optional
     (let-values ([(v ars auth?) (k nameserver)])
       (or v
           (and (not auth?)
@@ -397,7 +398,7 @@
              (define line (read-line))
              (or (and (string? line)
                       (let ([m (regexp-match
-                                #rx"nameserver[ \t]+([0-9]+[.][0-9]+[.][0-9]+[.][0-9]+)"
+                                #rx"^[^#]*nameserver[ \t]+([0-9]+[.][0-9]+[.][0-9]+[.][0-9]+)"
                                 line)])
                         (and m (cadr m))))
                  (and (not (eof-object? line))

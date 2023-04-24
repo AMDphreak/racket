@@ -1,9 +1,30 @@
-This directory contains scripts, solution files, and project files for
-building Racket using Visual Studio. Some parts or variants can be
-built using projects, but most use Visual Studio command-line tools.
+This directory contains scripts, resources, and other Windows-specific
+content for a Racket build.
 
-The traditional Racket implementation also compiles with MinGW; see
-"...\README.txt".
+========================================================================
+ Building from a Source Distribution
+========================================================================
+
+If you are building from a source distribution (as opposed to a Git
+repository checkout), then beware that a regular/full Racket
+distribution will not build correctly. A regular source distribution
+is intended for Unix platforms, and it does not include native
+libraries that are needed on Windows. You should start with a source
+distribution that is labelled "Minimal Racket", instead.
+
+When building from a minimal Racket source distribution, then most
+likely "racket-lib" is already included and installed as part of the
+the distribution, but without Windows-specific dependencies of
+"racket-lib". After following steps below to build and install,
+complete the build (in the "src" parent directory of "worksp") with
+
+   ..\raco pkg update --auto racket-lib
+
+If your goal is to arrive at the same content as a regular Racket
+distribution, then after building and installing minimal Racket,
+finish with
+
+   ..\raco pkg install -i main-distribution
 
 
 ========================================================================
@@ -18,207 +39,95 @@ with many associated environment variables --- then you can run
 from any directory to configure your environment, assuming that Visual
 Studio is in one of its usual locations. The "msvcprep.bat" script
 tries to find Visual Studio and run its "vcvarsall.bat". Provide an
-argument such as "x86" (32-bit mode) or "x86_amd64" (64-bit mode) to
-select the build mode.
+argument such as "x86" (32-bit Intel mode), "x86_amd64" (64-bit Intel
+mode), or "x64_arm64" (64-bit Arm mode) to select the build mode.
+
+When using PowerShell, run the "msvcprep.ps1" script instead of
+"msvcprep.bat".  Running the latter from PowerShell will appear to
+work, but will not actually change any environment variables.
 
 After you have Visual Studio command-line tools set up, then you can
-build either the traditional Racket implementation or Racket-on-Chez
-(or both).
+build either the Racket BC or Racket CS implementations (or both).
 
-Traditional Racket
-------------------
+Racket CS
+---------
 
-Build the traditional Racket implementation using
+Build the Racket CS implementation from the "src" parent directory of
+"worksp" using
 
-   build.bat
+   winfig.bat
+   nmake
+   nmake install
 
-The result is "..\..\Racket.exe", DLLs and "GRacket.exe" in
-"..\..\lib", and other files in "..\..\lib", "..\..\etc", etc.
+The result is "..\Racket.exe", DLLs and "GRacket.exe" in "..\lib", and
+other files in "..\lib", "..\etc", etc.
 
-A "..\..\RacketCGC.exe" executable and associated DLLs are built in
-the process of building "..\..\Racket.exe".
+To add a "CS" suffix to the generated executables, call "winfig.bat"
+with `/suffix CS`.
 
-See also "Completing the Build" below.
-
-Racket-on-Chez
---------------
-
-Build the Racket-on-Chez implementation using
-
-   build-cs.bat
-
-which builds "..\..\RacketCGC.exe" to bootstrap the build.
-
-To instead build using an existing Racket installation, use
-
-   racket.exe csbuild.rkt --racketcs-suffix ""
-
-The result is "..\..\Racket.exe", DLLs and "GRacket.exe" in
-"..\..\lib", and other files in "..\..\lib", "..\..\etc", etc.
-
-Many intermediate files will be put in "../build", including a Chez
-Scheme checkout if it's not already present there; if a "ChezScheme"
-directory exists in the Racket suorce directory, it is copied to the
-build directory, otherwise it is cloned from a Git repository (in
-which case `git` must be available).
+To disable compression of embedded boot files, set the
+`PLT_BOOTFILE_NO_COMPRESS` environment variable (to anything). To
+increase compression of compiled code (at the expense of load times),
+set the `PLT_CS_MAKE_COMPRESSED_DATA`. To instead disable the
+compression of compiled code, set `PLT_CS_MAKE_NO_COMPRESSED`.
 
 See also "Completing the Build" below.
 
-Both Traditional Racket and Racket-on-Chez
-------------------------------------------
+Racket BC
+---------
 
-When using "csbuild.rkt" directly, omit the `--racketcs-suffix ""`
-arguments to create "..\..\RacketCS.exe" executable instead of
-"..\..\RacketCS.exe". A build with a "CS" suffix is also configured to
-read and bytecode in a subdirectory of "compiled" as described in
-"..\cs\README.txt".
+Build the Racket BC implementation from the "src" parent directory of
+"worksp" using
 
-A "CS" and using a subdirectoryu of "compiled" means that a
-Racket-on-Chez build as "RacketCS.exe" can coexist with a
-traditional build as "Racket.exe". So, the sequence
+   winfig.bat /bconly /suffix BC
+   nmake
+   nmake install
 
-   build.bat
-   ..\..\Racket.exe csbuild.rkt
+The result is "..\RacketBC.exe", DLLs and "GRacketBC.exe" in "..\lib",
+and other files in "..\lib", "..\etc", etc.
 
-builds both.
+To avoid the "BC" suffix, omit `/suffix BC`.
+
+See also "Completing the Build" below.
+
+Both Racket BC and Racket CS
+----------------------------
+
+A Racket BC build with a "BC" suffix is also configured to read and
+bytecode in a "bc" subdirectory of "compiled". Consequently, a
+"RacketBC.exe" build can coexist with a CS build as "Racket.exe". So,
+the sequence
+
+   winfig.bat /both
+
+configures a build for both, but `nmake bc` and `nmake bc-install`
+will be needed to build and install BC.
 
 Completing the Build
 --------------------
 
-The "build.bat" and "csbuild.rkt" scripts do not install support DLLs
-for encoding conversion, extflonums, and OpenSLL. To install those
+The build scripts for Racket do not install support DLLs for encoding
+conversion, extflonums (in BC), and OpenSLL. To install those
 libraries, finish with
 
-   ..\..\raco pkg install racket-lib
+   ..\raco pkg install racket-lib
 
-See also "..\native-lib\README.txt".
+If you are building from a source distribution (as opposed to a Git
+repository checkout), see "Building from a Source Distribution" above.
+
+Only if you are starting completely from scratch, see also
+"..\..\native-lib\README.txt".
 
 
 ========================================================================
- Building via Visual Studio Projects/Solutions
+ Building from the Command Line via MinGW
 ========================================================================
 
-Traditional Racket implementation's CGC variant can be built and
-debugged using visual Studio solutions and project. (See
-"..\racket\README.txt" for information on traditional Racket
-variants.) Further steps using the command line can then build the 3m
-variant and related executables.
-
-The CGC implementation is split into several projects that are grouped
-into a few solutions. To build the `X' solution with Visual Studio,
-open the file racket\src\worksp\X\X.sln, but add `9' before ".sln" if
-you're using Visual Studio 2008 (i.e., version 9.0). The solution
-files without a number are for Visual Studio 2010, but they should
-upgrade automatically for later versions.
-
- [The .vcproj files are used by the ...9.sln solutions, while the
-  .vcxproj files are used by the other .sln solutions. The latter are
-  compatible with Visual Studio 2010. For Visual Studio versions later
-  than 2010, "build.bat" script auto-upgrades projects in a copy whose
-  file name ends with a literal "X" to match the current tool version,
-  but you can also just upgrade them within your version of Visual
-  Studio.]
-
-To build RacketCGC, build the Racket solution in
-
-  racket\src\worksp\racket - makes racket\RacketCGC.exe
-
-  [When you open the solution, switch to a "Release" configuration
-   before building.]
-
-To build GRacketCGC, build the GRacket solution:
-
-  racket\src\worksp\gracket - makes racket\GRacketCGC.exe
-
-  [Again, switch to a "Release" configuration if necessary.]
-
-The build processes for RacketCGC and GRacketCGC automatically builds
-
-  libmzgc    - makes racket\lib\libmzgcxxxxxxx.dll and
-               racket\src\worksp\libmzgc\Release\libmzgcxxxxxxx.lib
-
-  libracket  - makes racket\lib\libracketxxxxxxx.dll and
-               racket\src\worksp\mzsrc\Release\mzsrcxxxxxxx.lib
-
-In addition, building RacketCGC executes
-
-    ..\racket\dynsrc\mkmzdyn.bat
-
-which copies ".exp", ".obj", and ".lib" files into "..\..\lib".
-
-Building Racket3m and GRacket3m
--------------------------------
-
-After "RacketCGC.exe" is built, you can can build 3m executables:
-
-  1. Ensure that the Visual Studio command-line tools are in your path
-     as described above in "Building from the Command Line via Visual
-     Studio".
-
-  2. Change directories to "gc2" and run
-
-       ..\..\..\racketcgc.exe -c make.rkt
-
-The resulting "..\..\Racket.exe" will appear with the DLL
-"libracket3mxxxxxxx.dll" in "..\..\\lib". (Unlike the CGC build, there
-is no corresponding "libmzgc3mxxxxxxx.dll". Instead, it is merged with
-"libracket3mxxxxxxx.dll".)
-
-Building Collections and Other Executables
-------------------------------------------
-
-If you're building from scratch, you'll also want the starter programs
-used by the launcher collection to create "raco.exe". Build the
-following solutions:
-
-  racket\src\worksp\mzstart - makes racket\collects\launcher\mzstart.exe
-  racket\src\worksp\mrstart - makes racket\collects\launcher\mrstart.exe
-
-  [The "mzstart" and "mrstart" programs have no CGC versus 3m
-   distinction.]
-
-Then, set up all the other executables (besides GRacket[CGC].exe and
-Racket[CGC].exe) by running
-
-    racket.exe -l- setup
-
-Building MzCOM
---------------
-
-Building "MzCOMCGC.exe" is similar to building "RacketCGC.exe".
-Building the 3m variant "MzCOM.exe" is a little different.
-
-To build MzCOMCGC, make the MzCOM solution in
-
-    racket\src\worksp\mzcom - makes racket\MzCOMCGC.exe
-
-Use the "Release" configuration. The result is
-"..\..\lib\MzCOMCGC.exe".
-
-After building MzCOMCGC, you can build the 3m variant by
-
-  1. Change directories to "mzcom" and run
-
-       ..\..\..\racketcgc.exe -c xform.rkt
-
-  2. Switch to the "3m" configuration in the MzCOM solution (in Visual
-     Studio).
-
-  3. Build (in Visual Studio).
-
-The result is "..\..\lib\MzCOM.exe".
-
-SenoraGC versus the Boehm GC
-----------------------------
-
-The "Release" and "Debug" solution configurations use SenoraGC (SGC),
-while the "AltGCRelease" and "AltGCDebug" configurations use the
-variant of the Boehm GC that is included with Racket.
-
-In project files, "SRelease" and "SDebug" (as used by the "Release"
-and "Debug" solution configurations) build against SGC, while
-"BRelease" and "BDebug" (as used by the "AltGCRelease" and
-"AltGCDebug" solution configurations) build against the Boehm GC.
+You can build Racket on Windows using MinGW and a Unix-like shell such
+as MSYS2. follow the instructions for a Unix build as described in
+"..\README.txt" --- but see also "Completing the Build" in the Visual
+Studio section above, because that also applies to a MinGW-based
+build.
 
 
 ========================================================================
@@ -274,18 +183,20 @@ See also "..\start\README.txt" for information on the embedded
  Embedding
 ========================================================================
 
-The traditional Racket implementation's DLLs can be used within an
-embedding application.
+The Racket implementation's DLLs can be used within an embedding
+application.
 
-The libraries
+The definition files
 
-    racket\lib\win32\msvc\libracket3mxxxxxxx.lib
-    racket\lib\win32\msvc\libracketxxxxxxx.lib
-    racket\lib\win32\msvc\libmzgcxxxxxxx.lib
+    racket\lib\libracketcsxxxxxxx.def
+    racket\lib\libracket3mxxxxxxx.def
+    racket\lib\libracketxxxxxxx.def
+    racket\lib\libmzgcxxxxxxx.def
 
-provide linking information for using the "libracket3mxxxxxxx.dll",
-"libracketxxxxxxx.dll", and "libmzgcxxxxxxx.dll" DLLs. The versioning
-script adjusts the names, as described above.
+provide linking information for using the "libracketcsxxxxxxx.dll",
+"libracket3mxxxxxxx.dll", "libracketxxxxxxx.dll", and
+"libmzgcxxxxxxx.dll" DLLs. The versioning script adjusts the names, as
+described above.
 
 See the "Inside Racket" manual for more information about using these
 libraries to embed Racket in an application.

@@ -1,12 +1,12 @@
 (module template '#%kernel
-(#%require "stx.rkt" "small-scheme.rkt" "performance-hint.rkt"
-           (rename "small-scheme.rkt" define -define)
-           (rename "small-scheme.rkt" define-syntax -define-syntax)
+(#%require "stx.rkt" "define-et-al.rkt" "qq-and-or.rkt" "cond.rkt" "performance-hint.rkt"
+           (rename "define-et-al.rkt" define -define)
+           (rename "define-et-al.rkt" define-syntax -define-syntax)
            "ellipses.rkt"
-           (for-syntax "stx.rkt" "small-scheme.rkt"
-                       (rename "small-scheme.rkt" define -define)
-                       (rename "small-scheme.rkt" define-syntax -define-syntax)
-                       "member.rkt" "sc.rkt" '#%kernel))
+           (for-syntax "stx.rkt" "define-et-al.rkt" "qq-and-or.rkt" "cond.rkt"
+                       (rename "define-et-al.rkt" define -define)
+                       (rename "define-et-al.rkt" define-syntax -define-syntax)
+                       #;"member.rkt" "sc.rkt" '#%kernel))
 (#%provide syntax
            syntax/loc
            datum
@@ -364,7 +364,7 @@
     (define (lookup id depth0)
       (define (make-pvar var check pvar-depth)
         (define (make-ref var)
-          (cond [check `(t-check-var (,check ,var 0 #t (quote-syntax ,id)))]
+          (cond [check `(t-check-var (,check ,var 0 ,stx? (quote-syntax ,id)))]
                 [else `(t-var ,var)]))
         (define (make-src-ref var id)
           (cond [check `(#%expression (,check ,var 1 #f (quote-syntax ,id)))]
@@ -386,7 +386,8 @@
                         (dotsframe-add! (car depth) iter src (make-src-ref src id))
                         iter))]))))
       (let ([v (syntax-local-value id (lambda () #f))])
-        (cond [(and stx? (syntax-pattern-variable? v))
+        (cond [(syntax-pattern-variable? v)
+               ;; syntax variables allowed in both syntax and datum templates
                (define pvar-depth (syntax-mapping-depth v))
                (define attr
                  (let ([attr (syntax-local-value (syntax-mapping-valvar v) (lambda () #f))])
@@ -394,10 +395,15 @@
                (define var (if attr (attribute-mapping-var attr) (syntax-mapping-valvar v)))
                (define check (and attr (attribute-mapping-check attr)))
                (make-pvar var check pvar-depth)]
-              [(and (not stx?) (s-exp-pattern-variable? v))
-               (define pvar-depth (s-exp-mapping-depth v))
-               (define var (s-exp-mapping-valvar v))
-               (make-pvar var #f pvar-depth)]
+              [(s-exp-pattern-variable? v)
+               (cond [stx?
+                      ;; datum variable in syntax template is error
+                      (wrong-syntax id "datum variable not allowed in syntax template")]
+                     [else
+                      ;; datum variable in datum template
+                      (define pvar-depth (s-exp-mapping-depth v))
+                      (define var (s-exp-mapping-valvar v))
+                      (make-pvar var #f pvar-depth)])]
               [else
                ;; id is a constant; check that for all x s.t. id = x.y, x is not an attribute
                (for-each
@@ -576,15 +582,61 @@
       (do-template stx (cadr s) #f #f)
       (raise-syntax-error #f "bad syntax" stx)))
 
-;; check-loc : Symbol Any -> (U Syntax #f)
-;; Raise exn if not syntax. Returns same syntax if suitable for srcloc
+(define (check-option pred x)
+  (if x (pred x) #t))
+
+;; check-loc : Symbol Any -> (U Syntax
+;;                              (List Any (Option Pos) (Option Nonneg) (Option Pos) (Option Nonneg))
+;;                              (Vector Any (Option Pos) (Option Nonneg) (Option Pos) (Option Nonneg))
+;;                              Srcloc
+;;                              #f)
+;; Raise exn if not srcloc-like value. Returns same syntax if suitable for srcloc
 ;; (ie, if at least syntax-source or syntax-position set), #f otherwise.
+
 (define (check-loc who x)
-  (if (syntax? x)
-      (if (or (syntax-source x) (syntax-position x))
-          x
-          #f)
-      (raise-argument-error who "syntax?" x)))
+  (cond
+    [(not x) x]
+    [(srcloc? x) (if (or (srcloc-source x) (srcloc-position x))
+                     x
+                     #f)]
+    [(syntax? x) (check-loc who (syntax-srcloc x))]
+    [(and (list? x)
+          (= (length x) 5)
+          (check-option exact-positive-integer? (list-ref x 1))
+          (check-option exact-nonnegative-integer? (list-ref x 2))
+          (check-option exact-positive-integer? (list-ref x 3))
+          (check-option exact-nonnegative-integer? (list-ref x 4)))
+     (check-loc who (srcloc (list-ref x 0)
+                            (list-ref x 1)
+                            (list-ref x 2)
+                            (list-ref x 3)
+                            (list-ref x 4)))]
+    [(and (vector? x)
+          (= (vector-length x) 5)
+          (check-option exact-positive-integer? (vector-ref x 1))
+          (check-option exact-nonnegative-integer? (vector-ref x 2))
+          (check-option exact-positive-integer? (vector-ref x 3))
+          (check-option exact-nonnegative-integer? (vector-ref x 4)))
+     (check-loc who (srcloc (vector-ref x 0)
+                            (vector-ref x 1)
+                            (vector-ref x 2)
+                            (vector-ref x 3)
+                            (vector-ref x 4)))]
+    [else
+     (raise-argument-error
+      who
+      (string-append "(or/c #f srcloc? syntax?\n"
+                     "      (list/c any/c\n"
+                     "              (or/c exact-positive-integer? #f)\n"
+                     "              (or/c exact-nonnegative-integer? #f)\n"
+                     "              (or/c exact-positive-integer? #f)\n"
+                     "              (or/c exact-nonnegative-integer? #f))\n"
+                     "      (vector/c any/c\n"
+                     "                (or/c exact-positive-integer? #f)\n"
+                     "                (or/c exact-nonnegative-integer? #f)\n"
+                     "                (or/c exact-positive-integer? #f)\n"
+                     "                (or/c exact-nonnegative-integer? #f)))")
+      x)]))
 
 ;; ============================================================
 ;; Run-time support

@@ -4,7 +4,7 @@
    'read-linklet
    (let* ([len (integer-bytes->integer (read-bytes 4 in) #f #f)]
           [bstr (read-bytes len in)])
-     (adjust-linklet-bundle-laziness-and-paths
+     (adjust-linklet-bundle-laziness-and-literals
       (fasl-read (open-bytevector-input-port bstr))))))
 
 (define read-on-demand-source
@@ -18,18 +18,20 @@
                     v)
 		  'read-on-demand-source))
 
-(define (adjust-linklet-bundle-laziness-and-paths ht)
-  (let loop ([i (hash-iterate-first ht)])
+(define (adjust-linklet-bundle-laziness-and-literals ls)
+  (let loop ([ls ls] [ht (hasheq)])
     (cond
-     [(not i) (hasheq)]
+     [(null? ls) ht]
      [else
-      (let-values ([(key val) (hash-iterate-key+value ht i)])
-        (hash-set (loop (hash-iterate-next ht i))
-                  key
-                  (if (linklet? val)
-                      (adjust-linklet-laziness
-                       (decode-linklet-paths val))
-                      val)))])))
+      (let ([key (car ls)]
+            [val (cadr ls)])
+        (loop (cddr ls)
+              (hash-set ht
+                        key
+                        (if (linklet? val)
+                            (adjust-linklet-laziness
+                             (decode-linklet-literals val))
+                            val))))])))
 
 (define (adjust-linklet-laziness linklet)
   (set-linklet-code linklet
@@ -48,10 +50,10 @@
                      [else
                       'faslable-strict])))
 
-(define (decode-linklet-paths linklet)
-  (let ([paths (linklet-paths linklet)])
+(define (decode-linklet-literals linklet)
+  (let ([literals (linklet-literals linklet)])
     (cond
-     [(null? paths)
-      linklet]
-     [else
-      (set-linklet-paths linklet (map compiled-path->path paths))])))
+      [(vector? literals) linklet]
+      [else
+       (set-linklet-literals linklet
+                             (unfasl-literals/lazy literals))])))

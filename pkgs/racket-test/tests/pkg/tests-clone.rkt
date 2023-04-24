@@ -51,7 +51,7 @@
     ;; Single-package repository
 
     (make-directory a-dir)    
-    $ (~a "cd " a-dir "; git init")
+    $ (~a "cd " a-dir "; git init -b main")
     (set-file (build-path a-dir "main.rkt") "#lang racket/base 1")
     $ (commit-changes-cmd)
 
@@ -118,13 +118,22 @@
         $ (~a "ls " (build-path clone-dir "a")))))
 
     (delete-directory/files (build-path clone-dir "a"))
+
+    (with-fake-root
+      (shelly-begin
+       (shelly-case
+        "basic --clone installation with git+http"
+        $ (~a "raco pkg install --clone " (build-path clone-dir "a") " --name a git+http://localhost:9998/a/.git")
+        $ "racket -l a" =stdout> "4\n")))
+
+    (delete-directory/files (build-path clone-dir "a"))
     (delete-directory/files a-dir)
 
     ;; ----------------------------------------
     ;; Multi-package repository
 
     (make-directory a-dir)
-    $ (~a "cd " a-dir "; git init")
+    $ (~a "cd " a-dir "; git init -b main")
     (make-directory* (build-path a-dir "one"))
     (set-file (build-path a-dir "one" "main.rkt") "#lang racket/base 1")
     (make-directory* (build-path a-dir "two"))
@@ -168,7 +177,7 @@
         "conflicting repositories with the same name"
         (define another-a-dir (build-path tmp-dir "another" "a"))
         (make-directory* another-a-dir)
-        $ (~a "cd " another-a-dir "; git init")
+        $ (~a "cd " another-a-dir "; git init -b main")
         (make-directory* (build-path another-a-dir "two"))
         (set-file (build-path another-a-dir "two" "main.rkt") "#lang racket/base 'two")
         $ (commit-changes-cmd another-a-dir)
@@ -194,7 +203,7 @@
       (shelly-case
        "Single-package repository that becomes multi-package"
        (make-directory a-dir)
-       $ (~a "cd " a-dir "; git init")
+       $ (~a "cd " a-dir "; git init -b main")
        (set-file (build-path a-dir "main.rkt") "#lang racket/base 1")
        $ (commit-changes-cmd)
        
@@ -246,7 +255,7 @@
     ;; Using local changes for metadata
 
     (make-directory a-dir)
-    $ (~a "cd " a-dir "; git init")
+    $ (~a "cd " a-dir "; git init -b main")
     (set-file (build-path a-dir "main.rkt") "#lang racket/base 1")
     $ (commit-changes-cmd)
 
@@ -273,7 +282,7 @@
     (with-fake-root
       (shelly-begin
        (make-directory a-dir)
-       $ (~a "cd " a-dir "; git init")
+       $ (~a "cd " a-dir "; git init -b main")
        (set-file (build-path a-dir "main.rkt") "#lang racket/base 1")
        (~a "cd " a-dir "; git add .; git commit -m change; git update-server-info")
        $ (commit-changes-cmd)
@@ -325,7 +334,7 @@
     (with-fake-root
       (shelly-begin
        (make-directory a-dir)
-       $ (~a "cd " a-dir "; git init")
+       $ (~a "cd " a-dir "; git init -b main")
        (set-file (build-path a-dir "main.rkt") "#lang racket/base 1")
        (~a "cd " a-dir "; git add .; git commit -m change; git update-server-info")
        $ (commit-changes-cmd)
@@ -381,7 +390,7 @@
              " and --multi-clone " mode)
          
          (make-directory a-dir)
-         $ (~a "cd " a-dir "; git init")
+         $ (~a "cd " a-dir "; git init -b main")
          (make-directory* (build-path a-dir "one"))
          (set-file (build-path a-dir "one" "main.rkt") "#lang racket/base 1")
          (make-directory* (build-path a-dir "two"))

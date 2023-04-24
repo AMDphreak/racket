@@ -2,7 +2,8 @@
 (load-relative "loadtest.rktl")
 (require ffi/file
          ffi/unsafe
-         compiler/find-exe)
+         compiler/find-exe
+         racket/file)
 
 (Section 'file)
 
@@ -164,6 +165,8 @@
 (test "123" read (open-input-string (string #\" #\1 #\\ #\return #\2 #\\ #\newline #\3 #\")))
 (test "12\r3" read (open-input-string (string #\" #\1 #\\ #\return #\newline #\2 #\\ #\newline #\return #\3 #\")))
 (test "1\r23" read (open-input-string (string #\" #\1 #\\ #\newline #\return #\2 #\\ #\return #\newline #\3 #\")))
+
+(test #t string? (system-language+country))
 
 ;; test names of file handling procedures (see racket/private/kw-file)
 (test 'open-input-file object-name open-input-file)
@@ -349,14 +352,211 @@
 (err/rt-test (open-output-file (build-path (current-directory) "baddir" "x"))
 	    exn:fail:filesystem?)
 
+;; Tests for make-temporary-{file,directory}{,*}
+
+;; arities
+(arity-test make-temporary-file 0 3)
+(test 'make-temporary-file object-name make-temporary-file)
+(let-values ([(required accepted) (procedure-keywords make-temporary-file)])
+  (test '() 'make-temporary-file-no-required-keywords required)
+  (test '(#:base-dir #:copy-from) 'make-temporary-file-accepts-keywords accepted))
+(arity-test make-temporary-file* 2 2)
+(test 'make-temporary-file* object-name make-temporary-file*)
+(let-values ([(required accepted) (procedure-keywords make-temporary-file*)])
+  (test '() 'make-temporary-file*-no-required-keywords required)
+  (test '(#:base-dir #:copy-from) 'make-temporary-file*-accepts-keywords accepted))
+(arity-test make-temporary-directory 0 1)
+(test 'make-temporary-directory object-name make-temporary-directory)
+(let-values ([(required accepted) (procedure-keywords make-temporary-directory)])
+  (test '() 'make-temporary-directory-no-required-keywords required)
+  (test '(#:base-dir) 'make-temporary-directory-accepts-keywords accepted))
+(arity-test make-temporary-directory* 2 2)
+(test 'make-temporary-directory* object-name make-temporary-directory*)
+(let-values ([(required accepted) (procedure-keywords make-temporary-directory*)])
+  (test '() 'make-temporary-directory*-no-required-keywords required)
+  (test '(#:base-dir) 'make-temporary-directory*-accepts-keywords accepted))
+
+;; tests for using srcloc in templates
 (let ([tf (make-temporary-file)])
   (let-values ([(base name dir?) (split-path tf)])
-    (test #t 'make-temporary-file-uses-srcloc (and (regexp-match #rx"file.rktl" (path->bytes name)) #t)))
+    (test #t 'make-temporary-file-uses-srcloc (regexp-match? #rx"file.rktl" name)))
   (delete-file tf))
+(let ([tf (make-temporary-file #:copy-from 'directory)])
+  (let-values ([(base name dir?) (split-path tf)])
+    (test #t 'make-temporary-file-with-kw-uses-srcloc (regexp-match? #rx"file.rktl" name)))
+  (delete-directory tf))
+(let ([tf (make-temporary-directory)])
+  (let-values ([(base name dir?) (split-path tf)])
+    (test #t 'make-temporary-directory-uses-srcloc (regexp-match? #rx"file.rktl" name)))
+  (delete-directory tf))
+(let ([tf (make-temporary-directory #:base-dir (find-system-path 'temp-dir))])
+  (let-values ([(base name dir?) (split-path tf)])
+    (test #t 'make-temporary-directory-with-kw-uses-srcloc (regexp-match? #rx"file.rktl" name)))
+  (delete-directory tf))
+(let ([tf (make-temporary-file* #"abc" #"xyz")])
+  (let-values ([(base name dir?) (split-path tf)])
+    (test #t 'make-temporary-file*-uses-srcloc (regexp-match? #rx"file.rktl" name)))
+  (delete-file tf))
+(let ([tf (make-temporary-file* #"abc" #"xyz" #:base-dir (find-system-path 'temp-dir))])
+  (let-values ([(base name dir?) (split-path tf)])
+    (test #t 'make-temporary-file*-with-kw-uses-srcloc (regexp-match? #rx"file.rktl" name)))
+  (delete-file tf))
+(let ([tf (make-temporary-directory* #"abc" #"xyz")])
+  (let-values ([(base name dir?) (split-path tf)])
+    (test #t 'make-temporary-directory*-uses-srcloc (regexp-match? #rx"file.rktl" name)))
+  (delete-directory tf))
+(let ([tf (make-temporary-directory* #"abc" #"xyz" #:base-dir (find-system-path 'temp-dir))])
+  (let-values ([(base name dir?) (split-path tf)])
+    (test #t 'make-temporary-directory*-with-kw-uses-srcloc (regexp-match? #rx"file.rktl" name)))
+  (delete-directory tf))
 
-(let ([tf ((λ (t) (t)) make-temporary-file)])
-  (test #t 'make-temporary-file-in-ho-position (file-exists? tf))
+;; tests for actually using template, prefix, and suffix
+(let ([tf (make-temporary-file "abc~a.xyz")])
+  (let-values ([(base name dir?) (split-path tf)])
+    (test #t 'make-temporary-file-respects-template
+          (regexp-match? #rx"^abc.*\\.xyz$" name)))
   (delete-file tf))
+(let ([tf (make-temporary-file* #"abc" #".xyz")])
+  (let-values ([(base name dir?) (split-path tf)])
+    (test #t 'make-temporary-file*-respects-prefix/suffix
+          (regexp-match? #rx"^abc.*\\.xyz$" name)))
+  (delete-file tf))
+(let ([td (make-temporary-directory "abc~a.xyz")])
+  (let-values ([(base name dir?) (split-path td)])
+    (test #t 'make-temporary-directory-respects-template
+          (regexp-match? #rx"^abc.*\\.xyz$" name)))
+  (delete-directory td))
+(let ([td (make-temporary-directory* #"abc" #".xyz")])
+  (let-values ([(base name dir?) (split-path td)])
+    (test #t 'make-temporary-directory*-respects-prefix/suffix
+          (regexp-match? #rx"^abc.*\\.xyz$" name)))
+  (delete-directory td))
+
+;; tests for higher-order use
+(let ([make-temporary-file ((λ (x) x) make-temporary-file)])
+  (define dir (make-temporary-file "mtf-ho-dir~a" 'directory))
+  (test #t 'make-temporary-file-in-ho-position (directory-exists? dir))
+  (define tf (make-temporary-file #:base-dir dir))
+  (test #t 'make-temporary-file-in-ho-position-with-kw (file-exists? tf))
+  (delete-file tf)
+  (delete-directory dir))
+(let ([make-temporary-directory ((λ (x) x) make-temporary-directory)])
+  (define dir (make-temporary-directory "mtd-ho-dir~a"))
+  (test #t 'make-temporary-directory-in-ho-position (directory-exists? dir))
+  (define td (make-temporary-directory #:base-dir dir))
+  (test #t 'make-temporary-directory-in-ho-position-with-kw (directory-exists? td))
+  (delete-directory td)
+  (delete-directory dir))
+(let ([make-temporary-file* ((λ (x) x) make-temporary-file*)])
+  (define tf1 (make-temporary-file* #"mtf-star-ho-dir" #""))
+  (test #t 'make-temporary-file*-in-ho-position (file-exists? tf1))
+  (delete-file tf1)
+  (define tf2 (make-temporary-file* #"abc" #"xyz" #:base-dir (find-system-path 'temp-dir)))
+  (test #t 'make-temporary-file*-in-ho-position-with-kw (file-exists? tf2))
+  (delete-file tf2))
+(let ([make-temporary-directory* ((λ (x) x) make-temporary-directory*)])
+  (define dir (make-temporary-directory* #"mtd-star-ho-dir" #""))
+  (test #t 'make-temporary-directory*-in-ho-position (directory-exists? dir))
+  (define td (make-temporary-directory* #"abc" #"xyz" #:base-dir dir))
+  (test #t 'make-temporary-directory*-in-ho-position-with-kw (directory-exists? td))
+  (delete-directory td)
+  (delete-directory dir))
+
+;; tests for #:copy-from
+(let ()
+  (define a (make-temporary-file))
+  (call-with-output-file a
+    #:exists 'truncate
+    (λ (out) (write 'copy-from out)))
+  (define b (make-temporary-file #:copy-from a))
+  (delete-file a)
+  (test 'copy-from 'make-temporary-file-copy-from (call-with-input-file b read))
+  (delete-file b))
+
+;; tests for function names in error messages
+(define rx:tmp-file #rx"make-temporary-file")
+(define rx:tmp-dir #rx"make-temporary-directory")
+(define rx:tmp-file* #rx"make-temporary-file*")
+(define rx:tmp-dir* #rx"make-temporary-directory*")
+(err/rt-test (make-temporary-file "bad\0~a") exn:fail:contract? rx:tmp-file)
+(err/rt-test (make-temporary-directory "bad\0~a") exn:fail:contract? rx:tmp-dir)
+(err/rt-test (make-temporary-file "bad~x") exn:fail:contract? rx:tmp-file)
+(err/rt-test (make-temporary-directory "bad~x") exn:fail:contract? rx:tmp-dir)
+(err/rt-test (make-temporary-file* #"bad\0" #"xyz") exn:fail:contract? rx:tmp-file*)
+(err/rt-test (make-temporary-directory* #"abc" #"bad\0") exn:fail:contract? rx:tmp-dir*)
+(err/rt-test (make-temporary-file* "bad" #"xyz") exn:fail:contract? rx:tmp-file*)
+(err/rt-test (make-temporary-directory* #"abc" "bad~x") exn:fail:contract? rx:tmp-dir*)
+(err/rt-test (make-temporary-file* #"abc" #"xyz" #:copy-from 'directory)
+             exn:fail:contract?
+             rx:tmp-file*)
+
+;; tests for absolute paths
+(let* ([temp-dir (find-system-path 'temp-dir)]
+       [absolute-prefix
+        (path->bytes (build-path temp-dir "absolute"))])
+  (define tf (make-temporary-file* absolute-prefix #""))
+  (test #t 'make-temporary-file-absolute (file-exists? tf))
+  (delete-file tf)
+  (define td (make-temporary-directory* absolute-prefix #""))
+  (test #t 'make-temporary-directory-absolute (directory-exists? td))
+  (delete-directory td)
+  (err/rt-test (make-temporary-file* absolute-prefix #"" #:base-dir temp-dir)
+               exn:fail:contract?
+               rx:tmp-file)
+  (err/rt-test (make-temporary-directory* absolute-prefix #"" #:base-dir temp-dir)
+               exn:fail:contract?
+               rx:tmp-dir))
+
+;; tests for a template that produces a syntactic directory path
+(let ([dir-template
+       (path->string
+        ;; path-element->string would drop directory separator
+        (path->directory-path "syntactically-dir~atmp"))])
+  (define td (make-temporary-directory dir-template))
+  (test #t 'make-temporary-dir-syntactic-dir-template (directory-exists? td))
+  (delete-directory td)
+  (err/rt-test (make-temporary-file dir-template) exn:fail:contract? rx:tmp-file))
+
+;; tests for Windows paths that are absolute but not complete
+(when (eq? 'windows (system-path-convention-type))
+  (define complete-temp-dir
+    (path->complete-path
+     (find-system-path 'temp-dir)))
+  (define elems
+    (explode-path complete-temp-dir))
+  (define drive
+    (car elems))
+  (test #t 'make-temporary-file-w32-drive-spec (complete-path? drive))
+  (define temp-dir-no-drive
+    (apply build-path (cdr elems)))
+  (define abs-not-complete
+    (let* ([pth (build-path temp-dir-no-drive "rkttmp")]
+           [bs (path->bytes pth)])
+      (if (eqv? (char->integer #\\) (bytes-ref bs 0))
+          pth
+          (bytes->path (bytes-append #"\\" bs)))))
+  (test #t 'make-temporary-file-w32-abs-template (absolute-path? abs-not-complete))
+  (test #f 'make-temporary-file-w32-abs-not-complete (complete-path? abs-not-complete))
+  (define abs-not-complete/bytes
+    (path->bytes abs-not-complete))
+  (let ([tf (make-temporary-file* abs-not-complete/bytes #"")])
+    (test #t 'make-temporary-file-w32-abs-no-base-dir (file-exists? tf))
+    (delete-file tf))
+  (let ([tf (make-temporary-file* abs-not-complete/bytes #"" #:base-dir drive)])
+    (test #t 'make-temporary-file-w32-abs-base-drive (file-exists? tf))
+    (delete-file tf))
+  ;; no absolute template w/ relative base-dir
+  (err/rt-test (make-temporary-file* abs-not-complete/bytes #""
+                                     #:base-dir "relative")
+               exn:fail:contract?)
+  ;; no absolute template w/ driveless absolute base-dir
+  (err/rt-test (make-temporary-file* abs-not-complete/bytes #""
+                                     #:base-dir temp-dir-no-drive)
+               exn:fail:contract?)
+  ;; no absolute template w/ complete base-dir that is not just drive spec
+  (err/rt-test (make-temporary-file* abs-not-complete/bytes #""
+                                     #:base-dir (build-path drive (cadr elems)))
+               exn:fail:contract?))
 
 
 (define tempfilename (make-temporary-file))
@@ -679,12 +879,12 @@
 (err/rt-test (read-char (make-input-port #f void void void)))
 (err/rt-test (peek-char (make-input-port #f void void void)))
 (arity-test make-input-port 4 10)
-(err/rt-test (make-custom-input-port #f 8 void void))
-(err/rt-test (make-custom-input-port #f void 8 void))
-(err/rt-test (make-custom-input-port #f void void 8))
-(err/rt-test (make-custom-input-port #f cons void void))
-(err/rt-test (make-custom-input-port #f void add1 void))
-(err/rt-test (make-custom-input-port #f void void add1))
+(err/rt-test (make-input-port #f 8 void void))
+(err/rt-test (make-input-port #f void 8 void))
+(err/rt-test (make-input-port #f void void 8))
+(err/rt-test (make-input-port #f cons void void))
+(err/rt-test (make-input-port #f void add1 void))
+(err/rt-test (make-input-port #f void void add1))
 
 (test #t output-port? (make-output-port #f always-evt void void))
 (test #t output-port? (make-output-port #f always-evt void void))
@@ -695,7 +895,7 @@
 (err/rt-test (make-output-port #f always-evt void 8))
 (err/rt-test (make-output-port #f always-evt add1 void))
 (err/rt-test (make-output-port #f always-evt void add1))
-(err/rt-test (write-special 'foo (make-custom-output-port void always-evt void void)) exn:application:mismatch?)
+(err/rt-test (write-special 'foo (make-output-port void always-evt void void)) exn:application:mismatch?)
 
 (let ([p (make-input-port 
 	  'name
@@ -863,9 +1063,15 @@
   (parameterize ([global-port-print-handler oldd])
      (test (void) print "hello" sp)
      (test (adding "hello") get-output-string sp))
+  (parameterize ([global-port-print-handler (lambda (v p [depth 0])
+                                              (test #t pair? (member depth '(0 1)))
+                                              (write 'changes-to-Y p))])
+    (test (void) print "hello" sp)
+    (parameterize ([print-as-expression #f])
+      (test (void) print "hello" sp))
+    (test (adding "YY") get-output-string sp))
   (test (void) print "hello" sp)
   (test (adding "\"hello\"") get-output-string sp)
-		
 
   (port-print-handler sp (lambda (v p) (oldd "Z" p) 5))
   (test (void) display "hello" sp)
@@ -922,6 +1128,7 @@
   (port-write-handler p (lambda (x p)
                           (write-bytes #"W" p)))
   (port-print-handler p (lambda (x p [d 0])
+                          (test #t pair? (memq d '(0 1)))
                           (write-bytes #"P" p)))
 
   (display 'x p)
@@ -1272,6 +1479,18 @@
   (close-input-port e)
   (subprocess-wait s))
 
+;;-----------------------------------------------------
+
+(parameterize ([current-directory work-dir])
+  (define fn (make-temporary-file "subproc~a"))
+  (define i (open-input-file fn))
+  (define o (open-output-file fn #:exists 'update))
+  (close-input-port i)
+  (close-output-port o)
+  (err/rt-test (subprocess o #f #f (find-exe)) exn:fail? #rx"closed")
+  (err/rt-test (subprocess #f i #f (find-exe)) exn:fail? #rx"closed")
+  (err/rt-test (subprocess #f #f o (find-exe)) exn:fail? #rx"closed"))
+
 ;;------------------------------------------------------------
 
 ;; Test custom output port
@@ -1439,6 +1658,7 @@
   (err/rt-test (format "apple~"))
   (err/rt-test (format "~"))
   (err/rt-test (format "~~~"))
+  (err/rt-test (format "~s") (lambda (e) (regexp-match "requires one")))
   (err/rt-test (format "~o") exn:application:mismatch?)
   (err/rt-test (format "~o" 1 2) exn:application:mismatch?)
   (err/rt-test (format "~c" 1) exn:application:mismatch?)
@@ -1594,6 +1814,18 @@
   (tcp-close l))
 
 ;;----------------------------------------------------------------------
+;; Directory and permissions
+
+(unless (eq? 'windows (system-type))
+  (let ([dir (make-temporary-file "perms~a" 'directory)])
+    (define d2 (build-path dir "created"))
+    (make-directory d2 #o500)
+    (test #o500 file-or-directory-permissions d2 'bits)
+    (delete-directory/files dir)))
+(err/rt-test (make-directory "would-be-new" 'a))
+(err/rt-test (make-directory "would-be-new" -1))
+
+;;----------------------------------------------------------------------
 ;; Filesystem-change events
 
 (test #f filesystem-change-evt? 'evt)
@@ -1686,6 +1918,8 @@
        (lambda (evt? localhost [serve-localhost #f])
 	 (let* ([l (tcp-listen 0 5 #t serve-localhost)]
                 [pn (listen-port l)])
+           (test #f tcp-accept-ready? l)
+           (test #f sync/timeout 0 l)
 	   (let-values ([(r1 w1) (tcp-connect localhost pn)]
 			[(r2 w2) (if evt?
 				     (apply values (sync (tcp-accept-evt l)))
@@ -1711,7 +1945,7 @@
   (do-once #f "localhost")
   (do-once #t "localhost")
   (with-handlers ([exn:fail:network:errno? (lambda (e)
-                                             ;; Catch forms of non-suport for IPv6:
+                                             ;; Catch forms of non-support for IPv6:
                                              ;;       EAFNOSUPPORT "Address family not supported by protocol"
                                              ;;    or getaddrinfo failure "no address associated with name"
                                              ;; In case IPv6 is supported by the OS but not for the loopback
@@ -1751,7 +1985,10 @@
   (sync t)
   
   (custodian-shutdown-all c)
-  (port-closed? i))
+  (test #t port-closed? i)
+  (tcp-close l)
+  (close-input-port ci)
+  (close-output-port co))
 
 ;;----------------------------------------------------------------------
 ;; Security guards:
@@ -1781,6 +2018,7 @@
   (test #t file-exists? "tmp1")
   (test #f directory-exists? "tmp1")
   (test #f link-exists? "tmp1")
+  (test 'file file-or-directory-type "tmp1")
 
   (err/rt-test (open-output-file "tmp1") (fs-reject? 'open-output-file))
   (err/rt-test (delete-file "tmp1") (fs-reject? 'delete-file))
@@ -1823,6 +2061,7 @@
   (err/rt-test (file-exists? "tmp1") (fs-reject? 'file-exists?))
   (err/rt-test (directory-exists? "tmp1") (fs-reject? 'directory-exists?))
   (err/rt-test (link-exists? "tmp1") (fs-reject? 'link-exists?))
+  (err/rt-test (file-or-directory-type "tmp1") (fs-reject? 'file-or-directory-type))
   (err/rt-test (path->complete-path "tmp1") (fs-reject? 'path->complete-path))
   (err/rt-test (filesystem-root-list) (fs-reject? 'filesystem-root-list))
   (err/rt-test (find-system-path 'temp-dir) (fs-reject? 'find-system-path)))
@@ -1831,6 +2070,126 @@
 (for ([f '("tmp1" "tmp2" "tmp3")] #:when (file-exists? f)) (delete-file f))
 
 (current-directory original-dir)
+
+;; ----------------------------------------
+
+(let ([home-dir (path->directory-path (make-temporary-file "test-home~a" 'directory))]
+      [env (environment-variables-copy (current-environment-variables))]
+      [racket (find-exe)])
+  (environment-variables-set! env
+                              #"PLTUSERHOME"
+                              (path->bytes home-dir))
+  (define (get-dirs)
+    (parameterize ([current-environment-variables env])
+      (define-values (s i o e) (subprocess #f #f #f racket "-I" "racket/base" "-e"
+                                           (string-append
+                                            "(map path->bytes "
+                                            "     (list (find-system-path 'home-dir)"
+                                            "           (find-system-path 'pref-dir)"
+                                            "           (find-system-path 'pref-file)"
+                                            "           (find-system-path 'init-dir)"
+                                            "           (find-system-path 'init-file)"
+                                            "           (find-system-path 'addon-dir)"
+                                            "           (find-system-path 'cache-dir)))")))
+      (begin0
+        (cadr (read i))
+        (subprocess-wait s)
+        (close-input-port i)
+        (close-output-port o)
+        (close-input-port e))))
+  (define (touch f) (close-output-port (open-output-file f #:exists 'truncate)))
+
+  (define dir-syms '(home-dir pref-dir pref-file init-dir init-file addon-dir cache-dir))
+  (define expected-default-dirs
+    (case (system-type)
+      [(unix) (list home-dir
+                    (build-path home-dir ".config" "racket/")
+                    (build-path home-dir ".config" "racket" "racket-prefs.rktd")
+                    (build-path home-dir ".config" "racket/")
+                    (build-path home-dir ".config" "racket" "racketrc.rktl")
+                    (build-path home-dir ".local" "share" "racket/")
+                    (build-path home-dir ".cache" "racket/"))]
+      [(macosx) (list home-dir
+                      (build-path home-dir "Library" "Preferences/")
+                      (build-path home-dir "Library" "Preferences" "org.racket-lang.prefs.rktd")
+                      (build-path home-dir "Library" "Racket/")
+                      (build-path home-dir "Library" "Racket" "racketrc.rktl")
+                      (build-path home-dir "Library" "Racket/")
+                      (build-path home-dir "Library" "Caches" "Racket/"))]
+      [(windows) (list home-dir
+                       (build-path home-dir "Racket\\")
+                       (build-path home-dir "Racket" "racket-prefs.rktd")
+                       home-dir
+                       (build-path home-dir "racketrc.rktl")
+                       (build-path home-dir "Racket\\")
+                       (build-path home-dir "Racket\\"))]
+      [else (error "unexpected system type")]))
+
+  (define default-dirs (get-dirs))
+  (for-each (lambda (name expect got)
+              (test got `(,name default) expect))
+            dir-syms
+            (map bytes->path default-dirs)
+            expected-default-dirs)
+
+  ;; Create files/directories that trigger legacy paths:
+  (case (system-type)
+    [(unix)
+     (touch (build-path home-dir ".racketrc"))
+     (make-directory (build-path home-dir ".racket"))]
+    [(macosx)
+     (touch (build-path home-dir ".racketrc"))
+     ;; Make sure just the existence of the would-be init dir doesn't override legacy:
+     (make-directory (build-path home-dir "Library"))
+     (make-directory (build-path home-dir "Library" "Racket"))])
+
+  (define legacy-dirs (get-dirs))
+  (for-each (lambda (name expect got)
+              (test got `(,name legacy) expect))
+            dir-syms
+            (map bytes->path legacy-dirs)
+            (case (system-type)
+              [(unix) (list home-dir
+                            (build-path home-dir ".racket/")
+                            (build-path home-dir ".racket/" "racket-prefs.rktd")
+                            home-dir
+                            (build-path home-dir ".racketrc")
+                            (build-path home-dir ".racket/")
+                            (build-path home-dir ".racket/"))]
+              [(macosx) (list home-dir
+                              (build-path home-dir "Library" "Preferences/")
+                              (build-path home-dir "Library" "Preferences" "org.racket-lang.prefs.rktd")
+                              home-dir
+                              (build-path home-dir ".racketrc")
+                              (build-path home-dir "Library" "Racket/")
+                              (build-path home-dir "Library" "Caches" "Racket/"))]
+              [(windows) expected-default-dirs]
+              [else (error "unexpected system type")]))
+
+  ;; Create files/directories that cause legacy paths to be ignored:
+  (case (system-type)
+    [(unix)
+     (make-directory (build-path home-dir ".config"))
+     (make-directory (build-path home-dir ".config" "racket"))
+     (touch (build-path home-dir ".config" "racket" "racketrc.rktl"))
+     (make-directory (build-path home-dir ".local"))
+     (make-directory (build-path home-dir ".local" "share"))
+     (make-directory (build-path home-dir ".local" "share" "racket"))
+     (make-directory (build-path home-dir ".cache"))
+     (make-directory (build-path home-dir ".cache" "racket"))]
+    [(macosx)
+     (touch (build-path (build-path home-dir "Library" "Racket" "racketrc.rktl")))])
+
+  (define back-to-default-dirs (get-dirs))
+  (for-each (lambda (name expect got)
+              (test got `(,name back-to-default) expect))
+            dir-syms
+            (map bytes->path back-to-default-dirs)
+            expected-default-dirs)
+
+  (delete-directory/files home-dir))
+
+;; ----------------------------------------
 
 (unless (eq? 'windows (system-type))
   (define can-open-nonblocking-fifo?
@@ -1885,8 +2244,6 @@
 (test #f port-waiting-peer? (open-input-bytes #""))
 (err/rt-test (port-waiting-peer? 10))
 
-(delete-directory work-dir)
-
 ;; Network - - - - - - - - - - - - - - - - - - - - - -
 
 (define (net-reject? who host port what)
@@ -1912,6 +2269,9 @@
     (err/rt-test (udp-bind! early-udp "localhost" 40000)  (net-reject? 'udp-bind! "localhost" 40000 'server))
     (err/rt-test (udp-connect! early-udp "localhost" 40000)  (net-reject? 'udp-connect! "localhost" 40000 'client))
     (err/rt-test (udp-send-to early-udp "localhost" 40000 #"hi")  (net-reject? 'udp-send-to "localhost" 40000 'client))))
+
+(when early-udp
+  (udp-close early-udp))
 
 ;; Interaction with `system-type` - - - - - - - - - - - - - - - - - - -
 
@@ -1995,7 +2355,9 @@
     (sc-run #t #:check security-guard-check-network
             "localhost" 500 'client)
     (sc-run #t #:check security-guard-check-network
-            "localhost" 500 'server))
+            "localhost" 500 'server)
+    (sc-run #t #:check security-guard-check-network
+            #f #f 'server))
 
   (parameterize ((current-security-guard sg-ro))
     (sc-run #t "foo.txt" '(read))
@@ -2011,7 +2373,9 @@
     (sc-run #t #:check security-guard-check-network
             "localhost" 500 'client)
     (sc-run #f #:check security-guard-check-network
-            "localhost" 500 'server))
+            "localhost" 500 'server)
+    (sc-run #f #:check security-guard-check-network
+            #f #f 'server))
 
   (parameterize ((current-security-guard sg-priv))
     (sc-run #t pub-mod '(read))
@@ -2084,7 +2448,7 @@
                                                                    ;; Wait until the other end has read:
                                                                    (write-bytes-avail #"noise" (current-output-port))
                                                                    (close-output-port (current-output-port))
-                                                                   ;; Drain the OS-level input pipe, suceeding if we
+                                                                   ;; Drain the OS-level input pipe, succeeding if we
                                                                    ;; find a "!".
                                                                    (let loop ()
                                                                      (define b (read-byte (current-input-port)))
@@ -2151,7 +2515,9 @@
           'in-dir/no-arg
           (parameterize ([current-directory tmp-dir])
             (for/hash ([f (in-directory)])
-              (values f #t))))
+              (let ([real-f f])
+                (set! f 'trying-to-break-in-directory)
+                (values real-f #t)))))
     (define (mk) (in-directory))
     (test ht
           'in-dir/no-arg/outline
@@ -2211,9 +2577,12 @@
     (define z (build-path z-dir "z"))
     (parameterize ([current-directory (pick-directory made)])
       (test #f directory-exists? z-dir)
+      (test #f file-or-directory-type z-dir)
+      (err/rt-test (file-or-directory-type z-dir #t) exn:fail:filesystem?)
       (test #f file-exists? z)
       (make-parent-directory* z)
       (test #t directory-exists? z-dir)
+      (test 'directory file-or-directory-type z-dir)
       (make-parent-directory* z)
       (delete-directory/files z-dir)
       (test #f directory-exists? z-dir)
@@ -2305,16 +2674,90 @@
   (delete-file file)
   (delete-directory dir))
 
+;; Check that permissions for file creation work
+(let ()
+  (define dir (make-temporary-file "~a-tmp" 'directory))
+  (define file (build-path dir "f"))
+
+  (define (check open)
+    (for ([replace? (in-list '(#f #t))]
+          [mode (in-list '(#o444 #o666))])
+      (open file mode replace?)
+      (if (eq? 'windows (system-type))
+          (test (and (positive? (bitwise-and mode #x2)) '(write read))
+                memq 'write (file-or-directory-permissions file))
+          (if replace?
+              (test mode bitwise-and #o777 (file-or-directory-permissions file 'bits))
+              ;; umask might drop additional bits from mode #o444
+              (test 0 bitwise-and (bitwise-not mode) (file-or-directory-permissions file 'bits))))
+      (delete-file file)))
+
+  (check (lambda (file perms replace?)
+           (close-output-port (open-output-file file #:exists 'truncate #:permissions perms
+                                                #:replace-permissions? replace?))))
+  (check (lambda (file perms replace?)
+           (close-output-port (open-output-file file #:exists 'truncate #:permissions perms))
+           (close-output-port (open-output-file file #:exists 'replace #:permissions perms
+                                                #:replace-permissions? replace?))))
+  (check (lambda (file perms replace?)
+           (define-values (i o)
+             (open-input-output-file file #:exists 'truncate #:permissions perms
+                                     #:replace-permissions? replace?))
+           (close-input-port i)
+           (close-output-port o)))
+  (check (lambda (file perms replace?)
+           (with-output-to-file file
+             #:permissions perms
+             #:exists 'truncate
+             #:replace-permissions? replace?
+             void)))
+  (check (lambda (file perms replace?)
+           (call-with-output-file file
+             #:permissions perms
+             #:exists 'truncate
+             #:replace-permissions? replace?
+             void)))
+  (check (lambda (file perms replace?)
+           (call-with-output-file* file
+             #:permissions perms
+             #:exists 'truncate
+             #:replace-permissions? replace?
+             void)))
+
+  (delete-directory dir))
+
+
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (let ([tf (make-temporary-file)])
   (test tf resolve-path (path->string tf))
-  (unless (eq? 'windows (system-type))
-    (delete-file tf)
-    (make-file-or-directory-link "other.txt" tf)
-    (err/rt-test (make-file-or-directory-link "other.txt" tf) exn:fail:filesystem? (regexp-quote tf))
-    (test (string->path "other.txt") resolve-path tf))
   (delete-file tf)
+  (define link-created?
+    (with-handlers ([(lambda (exn) (and (eq? 'windows (system-type))
+                                        (exn:fail:filesystem? exn)))
+                     (lambda (exn) #f)])
+      (make-file-or-directory-link "other.txt" tf)
+      #t))
+  (when link-created?
+    (err/rt-test (make-file-or-directory-link "other.txt" tf) exn:fail:filesystem? (regexp-quote tf))
+    (test (string->path "other.txt") resolve-path tf)
+    (test #t link-exists? tf)
+    (test 'link file-or-directory-type tf)
+    (delete-file tf)
+
+    (make-file-or-directory-link (path->directory-path "other") tf)
+    (test #t link-exists? tf)
+    (test (if (eq? (system-type) 'windows) 'directory-link 'link) file-or-directory-type tf)
+    (if (eq? (system-type) 'windows)
+        (delete-directory tf)
+        (delete-file tf))
+
+    (test #f link-exists? tf)
+    (make-file-or-directory-link (path->directory-path "other") tf)
+    (test #t link-exists? tf)
+    (delete-directory/files tf)
+    (test #f link-exists? tf))
+
   (case (system-path-convention-type)
     [(unix)
      (test (string->path "/testing-root/testing-dir/testing-file")
@@ -2330,6 +2773,22 @@
      (test (string->path "C:/testing-root/testing-dir\\testing-file")
            resolve-path
            "C://testing-root////testing-dir\\\\testing-file")]))
+
+(unless (link-exists? (current-directory))
+  ;; Make sure directoryness is preserved
+  (test (current-directory) resolve-path (current-directory)))
+
+(when (eq? (system-type) 'windows)
+  ;; special filenames exist everywhere 
+  (test #t file-exists? "aux")
+  (test #t file-exists? "aux.anything")
+  (test #t file-exists? "c:/aux")
+  (test #t file-exists? "c:/com1")
+  (test #t file-exists? "a:/x/lpt6")
+  (test 'file file-or-directory-type "a:/x/lpt6")
+  ;; \\?\ paths don't refer to special filenames
+  (test #f file-exists? "\\\\?\\C:\\aux")
+  (test #f file-or-directory-type "\\\\?\\C:\\aux"))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Make sure `write-byte` and `write-char` don't try to test
@@ -2420,5 +2879,124 @@
 (test-sha-more sha256-bytes)
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; file-or-directory-identity
+
+(test #t number? (file-or-directory-identity (current-directory)))
+(test #t = (file-or-directory-identity (current-directory)) (file-or-directory-identity (current-directory)))
+(err/rt-test (file-or-directory-identity "thisDoesNotExistAtAll") exn:fail:filesystem?)
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; file-or-directory-stat
+
+(arity-test file-or-directory-stat 1 2)
+
+; Write regular file and check stat data.
+(let ()
+  (define temp-file-path (build-path work-dir "stat-test"))
+  (define TEST-CONTENT "stat test content")
+  (display-to-file TEST-CONTENT temp-file-path #:exists 'truncate)
+  (void (call-with-input-file temp-file-path read-byte))
+  (define stat-result (file-or-directory-stat temp-file-path))
+  (test #t hash-eq? stat-result)
+  (define expected-stat-keys '(device-id
+                               inode
+                               mode
+                               hardlink-count
+                               user-id
+                               group-id
+                               device-id-for-special-file
+                               size
+                               block-size
+                               block-count
+                               access-time-seconds
+                               modify-time-seconds
+                               change-time-seconds
+                               creation-time-seconds
+                               access-time-nanoseconds
+                               modify-time-nanoseconds
+                               change-time-nanoseconds
+                               creation-time-nanoseconds))
+  (test #t 'ok-stat-keys (for/and ([(k v) (in-hash stat-result)])
+                           (and (memq k expected-stat-keys)
+                                (exact-nonnegative-integer? v))))
+  (test (length expected-stat-keys) hash-count stat-result)
+  (define (stat-ref key) (hash-ref stat-result key))
+  ;
+  (test #t = (stat-ref 'size) (string-length TEST-CONTENT))
+  (test #t = (stat-ref 'hardlink-count) 1)
+  (define (positive-fixnum-key? key)
+    (define n (stat-ref key))
+    (and (positive-integer? n) (fixnum? n)))
+  (unless (eq? (system-type) 'windows)
+    (test #t positive-fixnum-key? 'inode)
+    (test #t positive-fixnum-key? 'device-id))
+  (define stat-mode (stat-ref 'mode))
+  (test #t = (bitwise-and stat-mode file-type-bits) regular-file-type-bits)
+  (test #f = (bitwise-and stat-mode file-type-bits) directory-type-bits)
+  (test #f = (bitwise-and stat-mode file-type-bits) fifo-type-bits)
+  (test #f = (bitwise-and stat-mode file-type-bits) symbolic-link-type-bits)
+  (test #f = (bitwise-and stat-mode file-type-bits) socket-type-bits)
+  (when (eq? (system-type) 'windows)
+    ; Windows doesn't provide a user and group id and sets both values to 0.
+    (test #t = (stat-ref 'user-id) 0)
+    (test #t = (stat-ref 'group-id) 0))
+  (unless (eq? (system-type) 'windows)
+    ; Check user and group id. Assuming the tests don't run as root, this is
+    ; probably all we can sensibly do.
+    ; ... but the tests do run as root in some CI configuration, so disabled
+    (when #f
+      (test #t positive-fixnum-key? 'user-id)
+      (test #t positive-fixnum-key? 'group-id)))
+  (test #t = (stat-ref 'device-id-for-special-file) 0)
+  (unless (eq? (system-type) 'windows)
+    (test #t positive-fixnum-key? 'block-size)
+    ; On my system, I had expected 1 block, but it's actually 8. This number
+    ; is supported by the `stat` command line tool.
+    (test #t positive-fixnum-key? 'block-count))
+  (test #t >= (stat-ref 'access-time-seconds)
+              (stat-ref 'modify-time-seconds))
+  (test #t >= (stat-ref 'access-time-nanoseconds)
+              (stat-ref 'modify-time-nanoseconds))
+  (unless (eq? (system-type) 'windows)
+    ; Only true for Poxis, since Windows doesn't provide the status change
+    ; time.
+    (test #t = (stat-ref 'change-time-nanoseconds)
+          (stat-ref 'modify-time-nanoseconds)))
+  (define (nano->secs ns) (quotient ns #e1e9))
+  (test (stat-ref 'access-time-seconds) nano->secs (stat-ref 'access-time-nanoseconds))
+  (test (stat-ref 'modify-time-seconds) nano->secs (stat-ref 'modify-time-nanoseconds))
+  (test (stat-ref 'change-time-seconds) nano->secs (stat-ref 'change-time-nanoseconds))
+  (test (stat-ref 'creation-time-seconds) nano->secs (stat-ref 'creation-time-nanoseconds))
+  (delete-file temp-file-path))
+
+(err/rt-test (file-or-directory-stat "thisDoesNotExistAtAll") exn:fail:filesystem?)
+
+; Test symlink-related features.
+(unless (eq? (system-type) 'windows)
+  ; Test that stat'ing a dangling link causes a filesystem exception.
+  (let ()
+    (define link-file-path (build-path work-dir "stat-test-dangling-link"))
+    (make-file-or-directory-link "/nonexistent_target" link-file-path)
+    (err/rt-test (file-or-directory-stat link-file-path) exn:fail:filesystem?)
+    (delete-file link-file-path))
+
+  ; On the other hand, stat'ing the link itself should work.
+  (let ()
+    (define link-file-path (build-path work-dir "stat-test-dangling-link"))
+    (define link-target "/nonexistent_target")
+    (make-file-or-directory-link link-target link-file-path)
+    (define stat-result (file-or-directory-stat link-file-path #t))
+    (define stat-mode (hash-ref stat-result 'mode))
+    (test #t = (bitwise-and stat-mode file-type-bits) symbolic-link-type-bits)
+    (test #f = (bitwise-and stat-mode file-type-bits) directory-type-bits)
+    (test #f = (bitwise-and stat-mode file-type-bits) regular-file-type-bits)
+    (test #t = (hash-ref stat-result 'size) (string-length link-target))
+    (delete-file link-file-path)))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(delete-directory/files work-dir)
 
 (report-errs)

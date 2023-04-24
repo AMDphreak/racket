@@ -12,6 +12,7 @@
                             ;; Shortcuts, instead of using the metadata linklet:
                             original-self
                             requires
+                            recur-requires
                             provides
                             phase-to-link-module-uses
                             ;; Maybe provide more capability than the module's declaration inspector:
@@ -23,6 +24,7 @@
                             ;; inner list is #f or an extra inspector that has been carried
                             ;; over from the originally compiled reference
                             phase-to-link-extra-inspectorsss ; phase -> list of hash tables to "extra inspectors"
+                            portal-stxes ; phase -> sym -> position
                             ;; For using existing values directly, instead of unmarshaling:
                             mpis
                             syntax-literals

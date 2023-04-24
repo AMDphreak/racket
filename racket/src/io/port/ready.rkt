@@ -4,6 +4,7 @@
          "../host/thread.rkt"
          "../string/utf-8-decode.rkt"
          "port.rkt"
+         "parameter.rkt"
          "input-port.rkt"
          "read-and-peek.rkt"
          "bytes-input.rkt"
@@ -13,7 +14,7 @@
 (provide byte-ready?
          char-ready?)
 
-(define/who (byte-ready? in)
+(define/who (byte-ready? [in (current-input-port)])
   (check who input-port? in)
   (let loop ([in (->core-input-port in)])
     (define byte-ready (method core-input-port in byte-ready))
@@ -25,9 +26,10 @@
        (check-not-closed who in)
        (define r (byte-ready in void))
        (end-atomic)
-       (eq? #t r)])))
+       (or (eq? #t r)
+           (and r (sync/timeout 0 r) #t))])))
 
-(define/who (char-ready? in)
+(define/who (char-ready? [in (current-input-port)])
   (check who input-port? in)
   (let ([in (->core-input-port in)])
     (cond

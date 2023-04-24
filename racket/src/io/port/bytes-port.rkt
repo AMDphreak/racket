@@ -45,7 +45,9 @@
      (set! bstr #f)
      (define b buffer)
      (when (direct-bstr b)
-       (set! offset (direct-pos b))
+       (define pos (direct-pos b))
+       (set! offset pos)
+       (set-direct-end! b pos)
        (set-direct-bstr! b #f)))]
   [file-position
    (case-lambda
@@ -102,7 +104,8 @@
 
   [byte-ready
    (lambda (work-done!)
-     ((in-buffer-pos) . < . (direct-end buffer)))]
+     ;; byte or EOF is always ready:
+     #t)]
   
   [get-progress-evt
    (lambda ()

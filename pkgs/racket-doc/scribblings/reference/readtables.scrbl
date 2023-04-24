@@ -48,7 +48,7 @@ a character that is mapped to the default behavior of @litchar{;}, the
 readtable is ignored until the comment's terminating newline is
 discovered. Similarly, the readtable does not affect string parsing
 until a closing double-quote is found.  Meanwhile, if a character is
-mapped to the default behavior of @litchar{(}, then it starts sequence
+mapped to the default behavior of @litchar{(}, then it starts a sequence
 that is closed by any character that is mapped to a closing parenthesis
 @litchar{)}. An apparent exception is that the default parsing of
 @litchar{|} quotes a symbol until a matching character is found, but
@@ -69,20 +69,21 @@ otherwise.
 
 @defproc[(make-readtable [readtable (or/c readtable? #f)]
                          [key (or/c char? #f)]
-                         [mode (or/c (or/c 'terminating-macro
-                                           'non-terminating-macro
-                                           'dispatch-macro)
+                         [mode (or/c 'terminating-macro
+                                     'non-terminating-macro
+                                     'dispatch-macro
                                      char?)]
                          [action (or/c procedure?
-                                       readtable?)]
-                        ...+)
+                                       readtable?
+                                       #f)]
+                        ...)
            readtable?]{
 
 Creates a new readtable that is like @racket[readtable] (which can be
 @racket[#f] to indicate the default readtable),
 except that the reader's behavior is modified for each
 @racket[key] according to the given @racket[mode] and
-@racket[action]. The @racket[...+] for @racket[make-readtable] applies
+@racket[action]. The @racket[...] for @racket[make-readtable] applies
 to all three of @racket[key], @racket[mode], and @racket[action]; in
 other words, the total number of arguments to @racket[make-readtable]
 must be @math{1} modulo @math{3}.
@@ -165,8 +166,8 @@ character to be treated as whitespace, and it might use
 
 @defproc[(readtable-mapping [readtable readtable?] [char char?])
          (values (or/c char?
-                       (or/c 'terminating-macro
-                             'non-terminating-macro))
+                       'terminating-macro
+                       'non-terminating-macro)
                  (or/c #f procedure?)
                  (or/c #f procedure?))]{
 

@@ -21,14 +21,13 @@
 ;; linklet-level symbol.
 
 ;; As a concession to top-level evaluation, reserve plain symbols for
-;; identifers that have only the module's scopes. That way, if a
+;; identifiers that have only the module's scopes. That way, if a
 ;; reference to an identifier is encountered before a definition, the
 ;; reference can still work in normal cases.
 
 ;; One further twist is that top-level expansion uses a "top level
-;; bind scope", which is used to create bindings while expanding so
-;; that definitions and uses expanded to together work in the expected
-;; way, but no binding is actually created until a definition is
+;; bind scope", which is used to create bindings while expanding,
+;; but no binding is actually created until a definition is
 ;; evaluated. For the purposes of selecting a symbol, we need to treat
 ;; as equivalent identifiers with and without the top level bind
 ;; scope.
@@ -63,7 +62,7 @@
     (define b (make-module-binding self phase defined-sym #:frame-id frame-id
                                    #:nominal-sym sym))
     (when requires+provides
-      (remove-required-id! requires+provides id phase #:unless-matches b))
+      (remove-required-id! requires+provides id phase))
     (add-binding! id b phase #:in orig-s)
     (when requires+provides
       (add-defined-or-required-id! requires+provides id phase b #:as-transformer? as-transformer?))

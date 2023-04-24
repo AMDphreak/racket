@@ -2,13 +2,11 @@
 (require (prefix-in pl- '#%place)
          '#%boot
          (only-in '#%paramz parameterization-key)
-         (only-in '#%unsafe unsafe-make-custodian-at-root)
          '#%place-struct
-         racket/fixnum
-         racket/flonum
-         racket/vector
-         (only-in ffi/unsafe cpointer?)
-         racket/tcp)
+         '#%flfxnum
+         (only-in '#%unsafe unsafe-make-custodian-at-root)
+         (only-in '#%foreign cpointer?)
+         (only-in '#%network tcp-port? tcp-listener?))
 
 (provide th-dynamic-place
          ;th-dynamic-place*
@@ -24,6 +22,17 @@
          th-place-message-allowed?
          th-place-dead-evt
          )
+
+(define-syntax-rule (copiers fXvector-copy! fXvector-set! fXvector-ref)
+  (define (fXvector-copy! vec dest-start flv start end)
+    (let ([len (- end start)])
+      (for ([i (in-range len)])
+        (fXvector-set! vec (+ i dest-start)
+                       (fXvector-ref flv (+ i start)))))))
+
+(copiers fxvector-copy! fxvector-set! fxvector-ref)
+(copiers flvector-copy! flvector-set! flvector-ref)
+
 
 
 (define-struct TH-place (th ch cust cust-box result-box)
@@ -53,27 +62,29 @@
   (define result-box (box 0))
   (define plumber (make-plumber))
   (define done? #f)
-  (define th (thread
-              (lambda ()
-                (with-continuation-mark
-                    parameterization-key
-                    (get-original-parameterization)
-                  (parameterize ([current-namespace (make-base-namespace)]
-                                 [current-custodian cust]
-                                 [exit-handler (lambda (v)
-                                                 (plumber-flush-all plumber)
-                                                 (set-box! result-box (if (byte? v) v 0))
-                                                 (custodian-shutdown-all cust))]
-                                 [current-plumber plumber])
-                    (dynamic-wind
-                     void
-                     (lambda ()
-                       ((dynamic-require mod funcname) cch)
-                       (plumber-flush-all plumber)
-                       (set! done? #t))
-                     (lambda ()
-                       (unless done?
-                         (set-box! result-box 1)))))))))
+  (define th
+    (parameterize ([current-custodian cust])
+      (thread
+       (lambda ()
+         (with-continuation-mark
+          parameterization-key
+          (get-original-parameterization)
+          (parameterize ([current-namespace (make-base-namespace)]
+                         [current-custodian cust]
+                         [exit-handler (lambda (v)
+                                         (plumber-flush-all plumber)
+                                         (set-box! result-box (if (byte? v) v 0))
+                                         (custodian-shutdown-all cust))]
+                         [current-plumber plumber])
+            (dynamic-wind
+             void
+             (lambda ()
+               ((dynamic-require mod funcname) cch)
+               (plumber-flush-all plumber)
+               (set! done? #t))
+             (lambda ()
+               (unless done?
+                 (set-box! result-box 1))))))))))
   (parameterize ([current-custodian cust])
     ;; When main thread ends, all threads, etc., should end:
     (thread (lambda () (thread-wait th) (custodian-shutdown-all cust))))
@@ -109,25 +120,47 @@
       [(cond
         [(path-for-some-system? o) o]
         [(bytes? o) (if (pl-place-shared? o) o (record o (bytes-copy o)))]
-        [(fxvector? o) (if (pl-place-shared? o) o (record o (fxvector-copy o)))]
-        [(flvector? o) (if (pl-place-shared? o) o (record o (flvector-copy o)))]
+        [(fxvector? o) (if (pl-place-shared? o)
+                           o
+                           (let* ([c (make-fxvector (fxvector-length o))])
+                             (fxvector-copy! c 0 o 0 (fxvector-length o))
+                             (record o c)))]
+        [(flvector? o) (if (pl-place-shared? o)
+                           o
+                           (let* ([c (make-flvector (flvector-length o))])
+                             (flvector-copy! c 0 o 0 (flvector-length o))
+                             (record o c)))]
         [else #f])
         => values]
       [(TH-place? o) (dcw (TH-place-ch o))]
-      [(pair? o) 
+      [(pair? o)
        (with-placeholder
         o
         (lambda ()
           (cons (dcw (car o)) (dcw (cdr o)))))]
-      [(vector? o) 
-       (vector-map! dcw (record o (vector-copy o)))]
-      [(hash? o) 
+      [(box? o)
+       (define new-b (box (unbox o)))
+       (define r (record o new-b))
+       (set-box! new-b (dcw (unbox r)))
+       r]
+      [(vector? o)
+       (define new-v (make-vector (vector-length o)))
+       (vector-copy! new-v 0 o)
+       (define r (record o new-v))
+       (for ([i (in-naturals)]
+             [v (in-vector r)])
+         (vector-set! new-v i (dcw v)))
+       r]
+      [(hash? o)
        (with-placeholder
         o
         (lambda ()
           (cond
            [(hash-equal? o)
             (for/fold ([nh (hash)]) ([p (in-hash-pairs o)])
+              (hash-set nh (dcw (car p)) (dcw (cdr p))))]
+           [(hash-equal-always? o)
+            (for/fold ([nh (hashalw)]) ([p (in-hash-pairs o)])
               (hash-set nh (dcw (car p)) (dcw (cdr p))))]
            [(hash-eq? o)
             (for/fold ([nh (hasheq)]) ([p (in-hash-pairs o)])
@@ -181,7 +214,9 @@
       [(ormap (lambda (x) (x o)) (list number? char? boolean? null? void? string? symbol? keyword? TH-place-channel?
                                        path? bytes? fxvector? flvector? TH-place?)) #t]
       [(pair? o) (and (dcw (car o)) (dcw (cdr o)))]
-      [(vector? o) 
+      [(box? o)
+       (dcw (unbox o))]
+      [(vector? o)
        (for/fold ([nh #t]) ([i (in-vector o)])
         (and nh (dcw i)))]
       [(hash? o)

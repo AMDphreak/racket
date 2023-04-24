@@ -1,6 +1,7 @@
 #lang racket/base
 (require racket/contract/base
          "private/dict.rkt"
+         "private/keyword-apply-dict.rkt"
          "private/custom-hash.rkt")
 
 (define (dict-implements/c . syms)
@@ -244,6 +245,11 @@
  [dict-for-each
   (->i ([d dict?] [proc (d) (-> (dict-key-contract d) (dict-value-contract d) any)])
        [_r void?])]
+ [dict-map/copy
+  (->i ([d dict?]
+        [proc (d) (-> (dict-key-contract d) (dict-value-contract d)
+                      (values (dict-key-contract d) (dict-value-contract d)))])
+       [_r dict?])]
 
  [dict-keys
   (->i ([d dict?])
@@ -286,6 +292,8 @@
          in-dict-keys
          in-dict-values
          in-dict-pairs
+
+         keyword-apply/dict
 
          dict-key-contract
          dict-value-contract

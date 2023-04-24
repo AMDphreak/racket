@@ -3,7 +3,7 @@
 (Section 'flonum)
 
 (require racket/flonum
-         scheme/unsafe/ops
+         racket/unsafe/ops
          "for-util.rkt")
 
 (define 1nary-table
@@ -26,6 +26,10 @@
   (define (same-results fl unsafe-fl args)
     (test (apply fl args) apply unsafe-fl args))
 
+  (for ([line (in-list 1nary-table)])
+    (test #t 'single (and ((car line) +nan.0) #t))
+    (test #t 'single (and ((cadr line) +nan.0) #t)))
+
   (for ([ignore (in-range 0 800)])
     (let ([i (random)]
           [j (random)]
@@ -42,6 +46,21 @@
         (test #t same-results (list-ref line 0) (list-ref line 1) (list i j k))
         (test #t same-results (list-ref line 0) (list-ref line 1) (list i k j))
         (test #t same-results (list-ref line 0) (list-ref line 1) (cons i more-flonums))))))
+
+(test 3.0 ->fl 3)
+(test (exact->inexact (expt 2 100)) ->fl (expt 2 100))
+(err/rt-test (->fl 3.0))
+(err/rt-test (->fl 1/3))
+
+(test 3 fl->exact-integer 3.0)
+(test (inexact->exact 1e100) fl->exact-integer 1e100)
+(err/rt-test (fl->exact-integer 3.1))
+(err/rt-test (fl->exact-integer 3))
+(err/rt-test (fl->exact-integer 1/3))
+(err/rt-test (fl->exact-integer 1.0+2.0i))
+
+(err/rt-test (flvector-ref (flvector 4.0 5.0 6.0) 4) exn:fail:contract? #rx"[[]0, 2[]]")
+(err/rt-test (flvector-set! (flvector 4.0 5.0 6.0) 4 0.0) exn:fail:contract? #rx"[[]0, 2[]]")
 
 (define (flonum-close? fl1 fl2)
   (<= (flabs (fl- fl1 fl2))
@@ -212,6 +231,23 @@
 (err/rt-test (for/flvector #:length 10 #:fill 0 ([i 5]) 8.0))
 
 ;; ----------------------------------------
+;; flsingle
+
+(test 1.0 unsafe-flsingle 1.0)
+(test -1.0 unsafe-flsingle -1.0)
+(test +nan.0 unsafe-flsingle +nan.0)
+(test +inf.0 unsafe-flsingle +inf.0)
+(test -inf.0 unsafe-flsingle -inf.0)
+(test 1.2500000360947476e38 unsafe-flsingle 1.25e38)
+(test 1.2500000449239123e-37 unsafe-flsingle 1.25e-37)
+(test -1.2500000360947476e38 unsafe-flsingle -1.25e38)
+(test  -1.2500000449239123e-37 unsafe-flsingle -1.25e-37)
+(test +inf.0 unsafe-flsingle 1e100)
+(test -inf.0 unsafe-flsingle -1e100)
+(test 0.0 unsafe-flsingle 1e-100)
+(test -0.0 unsafe-flsingle -1e-100)
+
+;; ----------------------------------------
 ;; flrandom
 
 (let ([r (make-pseudo-random-generator)]
@@ -361,6 +397,39 @@
 (let ([v (flvector 1.0 2.0 3.0)])
   (unsafe-flvector-set! v 0 10.0)
   (test 10.0 'ref (unsafe-flvector-ref v 0)))
+
+;; ----------------------------------------
+;; Regression test for a compiler bug that happened to be exposed
+;; by flvector combinations
+
+(let ()
+  (define l '(1 2 3 4 5))
+  (define expected (flvector 1.0 2.0 3.0 4.0 5.0))
+
+  (define xs (make-flvector (length l)))
+  (define slow (if (zero? (random 1))
+                   real->double-flonum
+                   values))
+
+  (define (list->flvector vs)
+    (let ([n 5])
+      (let/ec break
+        (let loop ([i 0] [vs vs])
+          (unless (null? vs)
+            (define v (car vs))
+            (unsafe-flvector-set! xs i (slow v))
+            (loop (+ i 1) (cdr vs)))))
+      xs))
+
+  (for ([i 1000000])
+    (flvector-set! xs 0 0.0)
+    (flvector-set! xs 1 0.0)
+    (flvector-set! xs 2 0.0)
+    (flvector-set! xs 3 0.0)
+    (flvector-set! xs 4 0.0)
+    (define v (list->flvector l))
+    (unless (equal? v expected)
+      (error 'regression "~a: bad flvector: ~s\n" i v))))
 
 ;; ----------------------------------------
 

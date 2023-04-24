@@ -8,6 +8,7 @@
            pkg/path
            setup/main-collects
            "private/macfw.rkt"
+           "private/mach-o.rkt"
            "private/windlldir.rkt"
            "private/elf.rkt"
            "private/collects-path.rkt"
@@ -109,12 +110,20 @@
 	;; Copy libs into place
         (install-libs lib-dir types
 		      #:extras-only? (not executables?)
-		      #:no-dlls? (and (eq? 'windows (cross-system-type))
-				      executables?
-				      ;; If all executables have "<system>" the the
-				      ;; DLL dir, then no base DLLS are needed
-				      (for/and ([f (in-list orig-binaries)])
-					(current-no-dlls? f))))
+		      #:no-dlls? (and executables?
+                                      (case (cross-system-type)
+                                        [(windows)
+                                         ;; If all executables have "<system>" the the
+                                         ;; DLL dir, then no base DLLS are needed
+                                         (for/and ([f (in-list orig-binaries)])
+                                           (current-no-dlls? f))]
+                                        [(macosx)
+                                         ;; If no executable refers to a "Racket"
+                                         ;; framework, then they must embed it
+                                         (for/and ([f (in-list orig-binaries)])
+                                           (not (get-current-framework-path (app-to-file f) "Racket")))]
+                                        [else
+                                         (not (ormap needs-original-executable? binaries))])))
 	;; Copy collections into place
 	(unless (null? copy-collects) (make-directory* collects-dir))
 	(for-each (lambda (dir)
@@ -124,13 +133,17 @@
 				 (build-path collects-dir f)))
 			      (directory-list dir)))
 		  copy-collects)
+        ;; Remove signatures, if any
+        (when (and executables? (eq? 'macosx (cross-system-type)))
+          (for-each remove-signature binaries))
 	;; Patch binaries to find libs
         (when executables?
           (patch-binaries binaries types))
         (let ([relative->binary-relative
                (lambda (sub-dir type relative-dir)
                  (cond
-                  [relative-base relative-base]
+                  [relative-base
+                   (build-path relative-base relative-dir)]
                   [(not executables?)
                    (build-path dest-dir relative-dir)]
                   [sub-dir
@@ -160,6 +173,9 @@
                                                    exts-dir 
                                                    relative-exts-dir
                                                    relative->binary-relative)
+            ;; Add signatures, if needed
+            (when (and executables? (eq? 'macosx (cross-system-type)))
+              (for-each add-ad-hoc-signature binaries))
             ;; Restore executable permissions:
             (when old-permss
               (map done-writable binaries old-permss))
@@ -179,7 +195,7 @@
 					 (build-path lib-dir name)))])
 	     (map copy-dll (get-racket-dlls types #:extras-only? extras-only?))))]
       [(macosx)
-       (unless extras-only?
+       (unless (or extras-only? no-dlls?)
          (when (or (memq 'racketcgc types)
                    (memq 'gracketcgc types))
            (copy-framework "Racket" 'cgc lib-dir))
@@ -190,7 +206,9 @@
                    (memq 'gracketcs types))
            (copy-framework "Racket" 'cs lib-dir)))]
       [(unix)
-       (unless extras-only?
+       (unless (or extras-only?
+                   (and no-dlls?
+                        (not (shared-libraries?))))
          (let ([lib-plt-dir (build-path lib-dir "plt")])
            (let ([copy-bin
                   (lambda (name variant gr?)
@@ -296,29 +314,35 @@
 		(memq (car types) '(gracketcgc gracket3m gracketcs)))
 	   ;; Special case for single GRacket app:
 	   (update-framework-path "@executable_path/../Frameworks/"
-				  (car binaries)
-				  #t)
+                                  (car binaries)
+                                  #t)
 	   ;; General case:
 	   (for-each (lambda (b type)
 		       (update-framework-path (if (memq type '(racketcgc racket3m racketcs))
-						  "@executable_path/../lib/" 
-						  "@executable_path/../../../lib/" )
-					      b
-					      (memq type '(gracketcgc gracket3m gracketcs))))
+                                                  "@executable_path/../lib/" 
+                                                  "@executable_path/../../../lib/" )
+                                              b
+                                              (memq type '(gracketcgc gracket3m gracketcs))))
 		     binaries types))]
       [(unix)
        (for-each (lambda (b type)
-		   (patch-stub-exe-paths b
-					 (build-path 
-					  "../lib/plt"
-					  (format "~a-~a" type (version)))
-					 (and (shared-libraries?)
-					      "../lib")))
+                   (when (needs-original-executable? b)
+                     (patch-stub-exe-paths b
+                                           (build-path
+                                            "../lib/plt"
+                                            (format "~a-~a" type (version)))
+                                           (and (shared-libraries?)
+                                                "../lib"))))
 		 binaries
 		 types)]))
 
   (define (patch-stub-exe-paths b exe shared-lib-dir)
     ;; Adjust paths to executable and DLL that is embedded in the executable
+    (define rx:rackprog #rx#"^[.]rackprog\0")
+    (define section-offset+size (get-racket-section-offset+size b rx:rackprog))
+    (define section-offset (if section-offset+size
+			       (car section-offset+size)
+			       0))
     (let-values ([(config-pos all-start start end prog-len dll-len rest)
 		  (with-input-from-file b
 		    (lambda ()
@@ -332,7 +356,7 @@
 			(read-one-int i) ; start of program
 			(let ([start (read-one-int i)] ; start of data
 			      [end (read-one-int i)]) ; end of data
-			  (file-position i start)
+			  (file-position i (+ start section-offset))
 			  (let ([prog-len (next-bytes-length i)]
 				[dll-len (next-bytes-length i)])
 			    (values (+ (cdar m) 1) ; position after "cOnFiG:[" tag
@@ -356,7 +380,7 @@
                 (file-position o (+ config-pos 12)) ; update the end of the program data
                 (write-one-int (- end delta) o)
                 (flush-output o)
-                (file-position o start)
+                (file-position o (+ start section-offset))
                 (write-bytes exe-bytes o)
                 (write-bytes #"\0" o)
                 (write-bytes shared-lib-bytes o)
@@ -366,7 +390,7 @@
           ;; May need to fix the size of the ELF section:
           (adjust-racket-section-size
            b
-           #rx#"^[.]rack(?:cmdl|prog)\0"
+           rx:rackprog
            (- (- end all-start) delta))))))
 
   (define (copy-and-patch-binaries copy? magic
@@ -427,10 +451,9 @@
                                                 (loop (cdr exts) (inc-counter counter))])
                                     (values (if src
                                                 (cons (transform-entry
-                                                       (path->bytes 
-                                                        (relative->binary-relative (car sub-dirs) 
-                                                                                   (car types)
-                                                                                   (build-path relative-exts-dir sub dest)))
+                                                       (relative->binary-relative (car sub-dirs) 
+                                                                                  (car types)
+                                                                                  (build-path relative-exts-dir sub dest))
                                                        (car exts))
                                                       rest-exts)
                                                 (cons (car exts)
@@ -476,7 +499,7 @@
                                  name))
                              ;; transform-entry
                              (lambda (new-path ext)
-                               (list new-path (cadr ext)))
+                               (list (path->cross-bytes new-path) (cadr ext)))
                              0 add1 ; <- counter
                              orig-binaries binaries types sub-dirs 
                              exts-dir relative-exts-dir
@@ -600,7 +623,7 @@
                                            (set! exploded (cdr exploded)))))
                                    ;; transform-entry
                                    (lambda (new-path ext)
-                                     (cons (car ext) (list new-path)))
+                                     (cons (car ext) (list (path->cross-bytes new-path))))
                                    "rt" values ; <- counter
                                    orig-binaries binaries types sub-dirs 
                                    exts-dir relative-exts-dir
@@ -617,35 +640,65 @@
 	(string->path s)
 	s))
 
+  (define (path->cross-bytes p)
+    (define cross-convention
+      ;; it would be nice to have `cross-system-path-convention`:
+      (case (cross-system-type)
+        [(windows) 'windows]
+        [else 'unix]))
+    (cond
+      [(eq? cross-convention (system-path-convention-type)) (path->bytes p)]
+      [else
+       (let loop ([p p] [accum '()])
+         (define-values (base name dir?) (split-path p))
+         (define new-accum (cons (if (path? name)
+                                     (bytes->path-element (path-element->bytes name)
+                                                          cross-convention)
+                                     name)
+                                 accum))
+         (cond
+           [(eq? base 'relative) (path->bytes (apply build-path/convention-type
+                                                     cross-convention
+                                                     new-accum))]
+           [else (loop base new-accum)]))]))
+
   (define (get-binary-type b)
     ;; Since this is called first, we also check that the executable
-    ;; is a stub binary for Unix.
+    ;; is a stub binary for Unix or doesn't depend on shared libraries.
     (with-input-from-file (app-to-file b)
       (lambda ()
 	(let ([m (regexp-match #rx#"bINARy tYPe:(e?)(.)(.)(.)" (current-input-port))])
 	  (if m
-	      (begin
-		(when (eq? 'unix (cross-system-type))
-		  (unless (equal? (cadr m) #"e")
-		    (error 'assemble-distribution
-			   "file is an original PLT executable, not a stub binary: ~e"
-			   b)))
-		(let ([variant (case (list-ref m 4)
+              (begin
+                (when (eq? 'unix (cross-system-type))
+                  (unless (or (equal? (cadr m) #"e")
+                              (not (shared-libraries?)))
+                    (error 'assemble-distribution
+                           "file is an original PLT executable that relies on a shared library: ~e"
+                           b)))
+                (let ([variant (case (list-ref m 4)
                                  [(#"3") '3m]
                                  [(#"s") 'cs]
                                  [else 'cgc])])
-		  (if (equal? (caddr m) #"r")
-		      (case variant
+                  (if (equal? (caddr m) #"r")
+                      (case variant
                         [(3m) 'gracket3m]
                         [(cs) 'gracketcs]
                         [else 'gracketcgc])
-		      (case variant
+                      (case variant
                         [(3m) 'racket3m]
                         [(cs) 'racketcs]
                         [else 'racketcgc]))))
 	      (error 'assemble-distribution
 		     "file is not a PLT executable: ~e"
 		     b))))))
+
+  (define (needs-original-executable? b)
+    (and (eq? 'unix (cross-system-type))
+         (with-input-from-file (app-to-file b)
+           (lambda ()
+             (let ([m (regexp-match #rx#"bINARy tYPe:(e?)" (current-input-port))])
+               (equal? (cadr m) #"e"))))))
 
   (define (write-one-int n out)
     (write-bytes (integer->integer-bytes n 4 #t #f) out))
@@ -686,6 +739,7 @@
   
   (define (app-to-file b)
     (if (and (eq? 'macosx (cross-system-type))
+             (directory-exists? b)
 	     (regexp-match #rx#"[.][aA][pP][pP]$" 
 			   (path->bytes (if (string? b)
 					    (string->path b)

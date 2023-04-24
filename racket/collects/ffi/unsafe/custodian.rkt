@@ -16,8 +16,9 @@
 
 (define (register-custodian-shutdown obj proc [custodian (current-custodian)]
                                      #:at-exit? [at-exit? #f]
-                                     #:weak? [weak? #f])
-  (unsafe-custodian-register custodian obj proc at-exit? weak?))
+                                     #:weak? [weak? #f]
+                                     #:ordered? [late? #f])
+  (unsafe-custodian-register custodian obj proc at-exit? weak? late?))
 
 (define (unregister-custodian-shutdown obj mref)
   (when mref
@@ -26,14 +27,15 @@
 (define (register-finalizer-and-custodian-shutdown value callback
                                                    [custodian (current-custodian)]
                                                    #:at-exit? [at-exit? #f]
-                                                   #:custodian-unavailable [custodian-unavailable (lambda (r) (r))])
+                                                   #:custodian-unavailable [custodian-unavailable (lambda (r) (r))]
+                                                   #:custodian-available [success-k (lambda (unregister) (void))])
   (define done? #f)
   (define (do-callback obj) ; called in atomic mode
     (unless done?
       (set! done? #t)
       (callback obj)))
   (define registration
-    (register-custodian-shutdown value do-callback custodian #:at-exit? at-exit?))
+    (register-custodian-shutdown value do-callback custodian #:at-exit? at-exit? #:ordered? #t))
   (define (do-finalizer)
     (register-finalizer
      value
@@ -42,6 +44,13 @@
         (lambda ()
           (unregister-custodian-shutdown obj registration)
           (do-callback obj))))))
-  (if registration
-      (do-finalizer)
-      (custodian-unavailable do-finalizer)))
+  (cond
+    [registration
+     (do-finalizer)
+     (success-k (lambda (obj)
+                  (call-as-atomic
+                   (lambda ()
+                     (set! done? #t)
+                     (unregister-custodian-shutdown obj registration)))))]
+    [else
+     (custodian-unavailable do-finalizer)]))

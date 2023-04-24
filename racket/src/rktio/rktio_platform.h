@@ -7,7 +7,6 @@
 # include <errno.h>
 # ifdef ECHRNG
 /* Solaris */
-#  define DIRENT_NO_NAMLEN
 #  define NO_USLEEP
 #  define USE_ULIMIT
 #  define SOME_FDS_ARE_NOT_SELECTABLE
@@ -44,15 +43,14 @@
 
 #if defined(__linux__)
 
-# define DIRENT_NO_NAMLEN
-
-# define USE_TIMEZONE_VAR_W_DLS
+# define USE_TM_GMTOFF_FIELD
 # define USE_TZNAME_VAR
 
 # define RKTIO_TCP_LISTEN_IPV6_ONLY_SOCKOPT
 
 # ifdef __ANDROID__
 #  define PROTOENT_IS_INT IPPROTO_TCP
+#  define NO_PTHREAD_CANCEL
 # endif
 
 #endif
@@ -91,8 +89,6 @@
 #if  (defined(mips) || defined(__mips)) \
      && !(defined(ultrix) || defined(__ultrix) || defined(__linux__) || defined(__OpenBSD__))
 
-# define DIRENT_NO_NAMLEN
-
 # define BSTRING_INCLUDE
 
 # define NO_USLEEP
@@ -105,8 +101,6 @@
   /************** Ultrix ****************/
 
 #if defined(ultrix) || defined(__ultrix)
-
-# define DIRENT_NO_NAMLEN
 
 # define NO_USLEEP
 
@@ -136,15 +130,6 @@
 
 #endif
 
-  /************** x86/SCO Unix with gcc ****************/
-  /* Contributed by Atanas Ivanov <nasko@noac.bg>      */
-
-#if defined(_M_XENIX) && defined(_M_SYSV)
-
-# define DIRENT_NO_NAMLEN
-
-#endif
-
   /****************** Windows with MSVC or MinGW *****************/
 
 #if (defined(__BORLANDC__) \
@@ -157,7 +142,6 @@
 #  define MKDIR_NO_MODE_FLAG
 # endif
 # if defined(__BORLANDC__)
-#  define DIRENT_NO_NAMLEN
 #  define MKDIR_NO_MODE_FLAG
 # endif
 
@@ -168,8 +152,6 @@
 #if defined(__CYGWIN32__)
 
 # define RKTIO_BINARY O_BINARY
-
-# define DIRENT_NO_NAMLEN
 
 # define SIGCHILD_DOESNT_INTERRUPT_SELECT
 
@@ -194,6 +176,8 @@
 # define UDP_DISCONNECT_EADRNOTAVAIL_OK
 
 # define RKTIO_GROWABLE_FDSET
+
+# define RKTIO_STAT_TIMESPEC_FIELD
 
 # endif
 
@@ -275,12 +259,11 @@
  /* NO_READDIR means that there is no opendir() and readdir() for
      implementing directory-list. */
 
- /* DIRENT_NO_NAMLEN specifies that dirent entries do not have a
-     d_namlen field; this is used only when NO_READDIR is not
-     specified. */
-
  /* MKDIR_NO_MODE_FLAG specifies that mkdir() takes only one argument,
      instead of a directory name and mode flags. */
+
+ /* RKTIO_STAT_TIMESPEC_FIELD selects the names `st_atimespec`, etc.,
+    from a `struct stat` instead of `st_atim`. */
 
   /***********************/
  /*  File descriptors   */
@@ -365,3 +348,7 @@
     standalone Racket. Used only if NO_SLEEP is undefined. */
 
  /* NO_STRERROR_AVAILABLE means that strerror() is not available. */
+
+ /* NO_PTHREAD_CANCEL means that pthread_setcanceltype() is
+    not available, which means it can't be used to implement
+    non-blocking open(). */

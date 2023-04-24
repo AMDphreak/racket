@@ -60,7 +60,7 @@
     (define-ftype uintptr_t uptr)
     (define-ftype rktio_int64_t integer-64)
     (define-ftype function-pointer uptr)
-    (define _uintptr _uint64)
+    (define _uintptr (if (> (fixnum-width) 32) _uint64 _uint32))
     (define NULL 0)
 
     (define (<< a b) (bitwise-arithmetic-shift-left a b))
@@ -125,6 +125,10 @@
       (syntax-case stx (ref)
         [(_ (ref _) v) #'(address->ptr v)]
         [(_ _ v) #'v]))
+
+    (define-syntax (wrap-result/allow-callbacks stx)
+      (syntax-case stx ()
+        [(_ t v) #'(call-enabling-ffi-callbacks (lambda () (wrap-result t v)))]))
     
     (meta define (convert-function stx)
           (syntax-case stx ()
@@ -133,7 +137,10 @@
                            [(arg-type ...) (map convert-type #'(orig-arg-type ...))]
                            [(conv ...) (if (#%memq 'blocking (map syntax->datum #'(flag ...)))
                                            #'(__collect_safe)
-                                           #'())])
+                                           #'())]
+                           [wrap-result (if (#%memq 'msg-queue (map syntax->datum #'(flag ...)))
+                                            #'wrap-result/allow-callbacks
+                                            #'wrap-result)])
                #'(let ([proc (foreign-procedure conv ... (rktio-lookup 'name)
                                                 (arg-type ...)
                                                 ret-type)])
@@ -180,13 +187,25 @@
 
     (define loaded-librktio
       (or (foreign-entry? "rktio_init")
-          (load-shared-object (string-append (string-append (current-directory) "/../../lib/librktio")
-                                             (utf8->string (system-type 'so-suffix))))))
+          (load-shared-object (path-build (or (#%getenv "RACKET_IO_SOURCE_DIR")
+                                              (#%current-directory))
+                                          (string-append "../../lib/librktio" (utf8->string (system-type 'so-suffix)))))))
 
     (define (rktio-lookup name)
       (foreign-entry (symbol->string name)))
 
-    (include "../rktio/rktio.rktl")
+    ;; workaround for `include` not using `(source-directories)` when
+    ;; a path starts with "..":
+    (define-syntax (include-rel stx)
+      (syntax-case stx ()
+        [(inc path)
+         (let ([new-path (ormap (lambda (dir)
+                                  (let ([p (path-build dir (#%syntax->datum #'path))])
+                                    (and (#%file-exists? p)
+                                         p)))
+                                (source-directories))])
+           (#%datum->syntax #'inc `(include ,(or new-path #'path))))]))
+    (include-rel "../rktio/rktio.rktl")
 
     (define (rktio_filesize_ref fs)
       (ftype-ref rktio_filesize_t () (make-ftype-pointer rktio_filesize_t (ptr->address fs))))
@@ -203,6 +222,27 @@
       (make-ptr
        (ftype-ref rktio_length_and_addrinfo_t (address) (make-ftype-pointer rktio_length_and_addrinfo_t (ptr->address fs)) 0)))
 
+    (define (rktio_stat_to_vector p)
+      (let ([p (make-ftype-pointer rktio_stat_t (ptr->address p))])
+        (vector
+         (ftype-ref rktio_stat_t (device_id) p)
+         (ftype-ref rktio_stat_t (inode) p)
+         (ftype-ref rktio_stat_t (mode) p)
+         (ftype-ref rktio_stat_t (hardlink_count) p)
+         (ftype-ref rktio_stat_t (user_id) p)
+         (ftype-ref rktio_stat_t (group_id) p)
+         (ftype-ref rktio_stat_t (device_id_for_special_file) p)
+         (ftype-ref rktio_stat_t (size) p)
+         (ftype-ref rktio_stat_t (block_size) p)
+         (ftype-ref rktio_stat_t (block_count) p)
+         (ftype-ref rktio_stat_t (access_time_seconds) p)
+         (ftype-ref rktio_stat_t (access_time_nanoseconds) p)
+         (ftype-ref rktio_stat_t (modify_time_seconds) p)
+         (ftype-ref rktio_stat_t (modify_time_nanoseconds) p)
+         (ftype-ref rktio_stat_t (ctime_seconds) p)
+         (ftype-ref rktio_stat_t (ctime_nanoseconds) p)
+         (ftype-ref rktio_stat_t (ctime_is_change_time) p))))
+
     (define (rktio_identity_to_vector p)
       (let ([p (make-ftype-pointer rktio_identity_t (ptr->address p))])
         (vector
@@ -212,23 +252,83 @@
          (ftype-ref rktio_identity_t (a_bits) p)
          (ftype-ref rktio_identity_t (b_bits) p)
          (ftype-ref rktio_identity_t (c_bits) p))))
-    
+
+    (define (in-date-range? si)
+      (if (> (fixnum-width) 32)
+          (<= -9223372036854775808 si 9223372036854775807)
+          (<= -2147483648 si 2147483647)))
+
+    (define unknown-zone-name (string->immutable-string "?"))
+
+    (define (rktio_seconds_to_date* rktio si nsecs get-gmt)
+      (cond
+       [(not (in-date-range? si))
+        (vector RKTIO_ERROR_KIND_RACKET
+                RKTIO_ERROR_TIME_OUT_OF_RANGE)]
+       [else
+        (unsafe-start-atomic)
+        (begin0
+          (let ([p (rktio_seconds_to_date rktio si nsecs get-gmt)])
+            (cond
+             [(vector? p) p]
+             [else
+              (let* ([dt (make-ftype-pointer rktio_date_t (ptr->address p))]
+                     [tzn (address->ptr (ftype-ref rktio_date_t (zone_name) dt))])
+                (begin0
+                  (date*
+                   (ftype-ref rktio_date_t (second) dt)
+                   (ftype-ref rktio_date_t (minute) dt)
+                   (ftype-ref rktio_date_t (hour) dt)
+                   (ftype-ref rktio_date_t (day) dt)
+                   (ftype-ref rktio_date_t (month) dt)
+                   (ftype-ref rktio_date_t (year) dt)
+                   (ftype-ref rktio_date_t (day_of_week) dt)
+                   (ftype-ref rktio_date_t (day_of_year) dt)
+                   (if (fx= 0 (ftype-ref rktio_date_t (is_dst) dt))
+                       #f
+                       #t)
+                   (ftype-ref rktio_date_t (zone_offset) dt)
+                   (ftype-ref rktio_date_t (nanosecond) dt)
+                   (if (eqv? tzn NULL)
+                       unknown-zone-name
+                       (string->immutable-string (utf8->string (rktio_to_bytes tzn)))))
+                  (unless (eqv? tzn NULL)
+                    (rktio_free tzn))
+                  (rktio_free p)))]))
+          (unsafe-end-atomic))]))
+
     (define (rktio_convert_result_to_vector p)
       (let ([p (make-ftype-pointer rktio_convert_result_t (ptr->address p))])
         (vector
          (ftype-ref rktio_convert_result_t (in_consumed) p)
          (ftype-ref rktio_convert_result_t (out_produced) p)
          (ftype-ref rktio_convert_result_t (converted) p))))
-      (define (cast v from to)
-        (let ([p (malloc from)])
-          (ptr-set! p from v)
-          (ptr-ref p to)))
 
+    (define (copy-bytes x i)
+      (let ([bstr (make-bytevector i)])
+        (let loop ([j 0])
+          (unless (fx= j i)
+            (bytes-set! bstr j (foreign-ref 'unsigned-8 x j))
+            (loop (fx+ j 1))))
+        bstr))
+
+    (define (copy-terminated-bytes x)
+      (let loop ([i 0])
+        (if (fx= 0 (foreign-ref 'unsigned-8 x i))
+            (copy-bytes x i)
+            (loop (fx+ i 1)))))
+
+    (define (copy-terminated-shorts x)
+      (let loop ([i 0])
+        (if (fx= 0 (foreign-ref 'unsigned-16 x i))
+            (copy-bytes x i)
+            (loop (fx+ i 2)))))
+      
     (define (rktio_to_bytes fs)
-      (cast (ptr->address fs) _uintptr _bytes))
+      (copy-terminated-bytes (ptr->address fs)))
 
     (define (rktio_to_shorts fs)
-      (cast (ptr->address fs) _uintptr _short_bytes))
+      (copy-terminated-shorts (ptr->address fs)))
 
     ;; Unlike `rktio_to_bytes`, frees the array and strings
     (define rktio_to_bytes_list
@@ -244,7 +344,7 @@
              (let ([bs (foreign-ref 'uptr (ptr->address lls) (* i (foreign-sizeof 'uptr)))])
                (if (not (eqv? NULL bs))
                    (cons (begin0
-                          (cast bs _uintptr _bytes)
+                          (copy-terminated-bytes bs)
                           (rktio_free (make-ptr bs)))
                          (loop (add1 i)))
                    '()))]))
@@ -339,7 +439,9 @@
                                  'rktio_is_timestamp rktio_is_timestamp
                                  'rktio_recv_length_ref rktio_recv_length_ref
                                  'rktio_recv_address_ref rktio_recv_address_ref
+                                 'rktio_stat_to_vector rktio_stat_to_vector
                                  'rktio_identity_to_vector rktio_identity_to_vector
+                                 'rktio_seconds_to_date* rktio_seconds_to_date*
                                  'rktio_convert_result_to_vector rktio_convert_result_to_vector
                                  'rktio_to_bytes rktio_to_bytes
                                  'rktio_to_bytes_list rktio_to_bytes_list
@@ -360,7 +462,7 @@
                                  'rktio_do_install_os_signal_handler rktio_do_install_os_signal_handler
                                  'rktio_get_ctl_c_handler rktio_get_ctl_c_handler]
                                 form ...)]))
-        (include "../rktio/rktio.rktl"))))
+        (include-rel "../rktio/rktio.rktl"))))
 
   (define (immobile-cell->address p)
     (address->ptr (rumble:immobile-cell->address p)))
@@ -395,49 +497,51 @@
 
   ;; ----------------------------------------
 
-  ;; `#%windows-version-instance` is used for `(system-type 'machine)`
-  ;; (via `get-machine-info`) on Windows
-  (meta-cond
-   [(#%memq (machine-type) '(a6nt ta6nt i3nt ti3nt))
-    (define |#%windows-version-instance|
-      (hash 'get-windows-version
-            (lambda ()
-              (define-ftype DWORD integer-32)
-              (define-ftype BOOL int)
-              (define-ftype OSVERSIONINFOA
-                (|struct|
-                 [dwOSVersionInfoSize DWORD]
-                 [dwMajorVersion DWORD]
-                 [dwMinorVersion DWORD]
-                 [dwBuildNumber DWORD]
-                 [dwPlatformId DWORD]
-                 [szCSDVersion (array 128 unsigned-8)]))
-              (define GetVersionEx
-                (begin
-                  (load-shared-object "Kernel32.dll")
-                  (foreign-procedure "GetVersionExA" ((* OSVERSIONINFOA)) BOOL)))
-              (define v (make-ftype-pointer OSVERSIONINFOA
-                                            (foreign-alloc (ftype-sizeof OSVERSIONINFOA))))
-              (ftype-set! OSVERSIONINFOA (dwOSVersionInfoSize) v (ftype-sizeof OSVERSIONINFOA))
-              (cond
-               [(GetVersionEx v)
-                (values (ftype-ref OSVERSIONINFOA (dwMajorVersion) v)
-                        (ftype-ref OSVERSIONINFOA (dwMinorVersion) v)
-                        (ftype-ref OSVERSIONINFOA (dwBuildNumber) v)
-                        (list->bytes
-                         (let loop ([i 0])
-                           (define b (ftype-ref OSVERSIONINFOA (szCSDVersion i) v))
-                           (cond
-                            [(fx= b 0) '()]
-                            [else (cons b (loop (fx+ i 1)))]))))]
-               [else
-                (values 0 0 0 #vu8())]))))]
-   [else
-    (define |#%windows-version-instance|
-      (hash 'get-windows-version
-            (lambda () (raise-arguments-error 'get-windows-version
-                                              "not on Windows"))))])
+  ;; For glib logging, we need a function pointer that works across
+  ;; places and logs to the main place's root logger. Although it's
+  ;; kind of a hack, it's much simpler to implement that here and
+  ;; export the function pointer as a primitive.
+  
+  (export glib-log-message
+          ;; Make sure the callable is retained:
+          glib-log-message-callable)
 
+  (define G_LOG_LEVEL_ERROR    2)
+  (define G_LOG_LEVEL_CRITICAL 3)
+  (define G_LOG_LEVEL_WARNING  4)
+  (define G_LOG_LEVEL_MESSAGE  5)
+  (define G_LOG_LEVEL_INFO     6)
+  (define G_LOG_LEVEL_DEBUG    7)
+  
+  (define-values (glib-log-message glib-log-message-callable)
+    (let ([glib-log-message
+           (lambda (domain glib-level message)
+             (let ([level (cond
+                           [(fxbit-set? glib-level G_LOG_LEVEL_ERROR) 'fatal]
+                           [(fxbit-set? glib-level G_LOG_LEVEL_CRITICAL) 'error]
+                           [(fxbit-set? glib-level G_LOG_LEVEL_WARNING) 'warning]
+                           [(fxbit-set? glib-level G_LOG_LEVEL_MESSAGE) 'warning]
+                           [(fxbit-set? glib-level G_LOG_LEVEL_INFO) 'info]
+                           [else 'debug])])
+               (let ([go (lambda ()
+                           (unsafe-start-atomic)
+                           (disable-interrupts)
+                           (let ([message (if domain
+                                              (string-append domain ": " message)
+                                              message)])
+                             (log-message* (unsafe-root-logger) level #f message #f #f #f))
+                           (enable-interrupts)
+                           (unsafe-end-atomic))])
+                 (cond
+                  [(eqv? 0 (get-thread-id)) (go)]
+                  [else
+                   (ensure-virtual-registers)
+                   (post-as-asynchronous-callback go)]))))])
+      (let ([callable (foreign-callable __collect_safe glib-log-message (string int string) void)])
+        (values
+         (foreign-callable-entry-point callable)
+         callable))))
+  
   ;; ----------------------------------------
 
   (export system-library-subpath)
@@ -465,19 +569,22 @@
       [(|#%pthread|) (hasheq)]
       [(|#%thread|) |#%thread-instance|]
       [(|#%rktio|) |#%rktio-instance|]
-      [(|#%windows-version|) |#%windows-version-instance|]
       [else #f]))
 
   (include "include.ss")
   (include-generated "io.scm")
 
-   ;; Initialize:
+  (include "io/terminal.ss")
+
+  ;; Initialize:
   (set-log-system-message! (lambda (level str)
                              (1/log-message (|#%app| 1/current-logger) level str #f)))
   (set-error-display-eprintf! (lambda (fmt . args)
-                                (apply 1/fprintf (|#%app| 1/current-error-port) fmt args)))
+                                (apply 1/fprintf (|#%app| 1/current-error-port) fmt args))
+                              1/srcloc->string
+                              1/error-print-source-location)
   (set-ffi-get-lib-and-obj! ffi-get-lib ffi-get-obj ffi-unload-lib ptr->address)
-  (set-make-async-callback-poll-wakeup! unsafe-make-signal-received)
+  (set-make-async-callback-poll-wakeup! 1/unsafe-make-signal-received)
   (set-get-machine-info! get-machine-info)
   (set-processor-count! (1/processor-count))
   (install-future-logging-procs! logging-future-events? log-future-event)

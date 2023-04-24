@@ -82,6 +82,9 @@
 (syntax-test #'(+ 3 . 4))
 (syntax-test #'(apply + 1 . 2))
 
+(test 'ok 'check-literal-quote-syntax-as-test (if (quote-syntax yes) 'ok 'bug!))
+(test 'ok2 'check-literal-quote-syntax-as-test (if (quote-syntax #f) 'ok2 'bug!))
+
 (test 8 (lambda (x) (+ x x)) 4)
 (define reverse-subtract
   (lambda (x y) (- y x)))
@@ -231,9 +234,9 @@
 (test 0 'when (when (< 1 2) (cons 1 2) 0))
 (test-values '(0 10) (lambda () (when (< 1 2) (values 0 10))))
 (syntax-test #'when)
-(syntax-test #'(when))
+(syntax-test #'(when) #rx"missing test expression and body")
 (syntax-test #'(when . 1))
-(syntax-test #'(when 1))
+(syntax-test #'(when 1) #rx"missing body")
 (syntax-test #'(when 1 . 2))
 (error-test #'(when (values 1 2) 0) arity?)
 
@@ -243,9 +246,9 @@
 (test 0 'unless (unless (> 1 2) (cons 1 2) 0))
 (test-values '(0 10) (lambda () (unless (> 1 2) (values 0 10))))
 (syntax-test #'unless)
-(syntax-test #'(unless))
+(syntax-test #'(unless) #rx"missing test expression and body")
 (syntax-test #'(unless . 1))
-(syntax-test #'(unless 1))
+(syntax-test #'(unless 1) #rx"missing body")
 (syntax-test #'(unless 1 . 2))
 (error-test #'(unless (values 1 2) 0) arity?)
 
@@ -569,6 +572,33 @@
   (test 1 f #s(o n e))
   (test (void) f #f))
 
+;; Make sure a mixture of fixnums and non-fixnums works:
+(let ()
+  (define (f x)
+    (case x
+      [(1) 'one]
+      [(1000) 'onek]
+      [(1001) 'onek+]
+      [(1002) 'onek+]
+      [(1003) 'onek+]
+      [(1000000) 'onem]
+      [(1000000000) 'onet]
+      [(1000000000000) 'oneqd]
+      [(1000000000001) 'oneqd+]
+      [(1000000000002) 'oneqd+]
+      [(1000000000003) 'oneqd+]
+      [(1000000000000000) 'oneqt]
+      [(1000000000000000000) 'ones]
+      [(1000000000000000001) 'ones+]
+      [(1000000000000000002) 'ones+]))
+  (test 'one f 1)
+  (test 'onek f 1000)
+  (test 'onem f 1000000)
+  (test 'onet f 1000000000)
+  (test 'oneqd f 1000000000000)
+  (test 'oneqt f 1000000000000000)
+  (test 'ones f 1000000000000000000))
+
 (test #t 'and (and (= 2 2) (> 2 1)))
 (test #f 'and (and (= 2 2) (< 2 1)))
 (test '(f g) 'and (and 1 2 'c '(f g)))
@@ -880,6 +910,20 @@
 (error-test #'(let () (define x 0)) exn:begin-possibly-implicit?)
 (error-test #'(let () (struct a ())) exn:begin-possibly-implicit?)
 (error-test #'(cond [#t (define x 0)]) exn:begin-possibly-implicit?)
+(error-test #'(letrec () (define x 0)) exn:begin-possibly-implicit?)
+(error-test #'(let-syntax () (define x 0)) exn:begin-possibly-implicit?)
+(error-test #'(letrec-values () () (define x 0)) exn:begin-possibly-implicit?)
+;; Check that the exceptions have the source location of the use-site.
+(define (exn:srclocs-from-syntax.rktl? x)
+  (and (exn:srclocs? x)
+       (for/and ([srcloc (in-list ((exn:srclocs-accessor x) x))])
+         (regexp-match? #px"syntax.rktl" (srcloc-source srcloc)))))
+(error-test #'(let () (define x 0)) exn:srclocs-from-syntax.rktl?)
+(error-test #'(let () (struct a ())) exn:srclocs-from-syntax.rktl?)
+(error-test #'(cond [#t (define x 0)]) exn:srclocs-from-syntax.rktl?)
+(error-test #'(letrec () (define x 0)) exn:srclocs-from-syntax.rktl?)
+(error-test #'(let-syntax () (define x 0)) exn:srclocs-from-syntax.rktl?)
+(error-test #'(letrec-values () () (define x 0)) exn:srclocs-from-syntax.rktl?)
 
 ;; Weird test: check that `eval` does not wrap its last argument
 ;; in a prompt, which means that `(foo 10)` replaces the continuation
@@ -926,7 +970,17 @@
   (test #f sync/timeout 0 pr)
   (test 'done force pr)
   (test #t promise-forced? pr)
+  (test #f promise-running? pr)
   (test (void) sync/timeout 0 pr))
+
+(let* ([p (delay/sync (sync never-evt))]
+       [th (thread (lambda () (force p)))])
+  (test #f promise-forced? p)
+  (test #f promise-running? p)
+  (sync (system-idle-evt))
+  (test #f promise-forced? p)
+  (test #t promise-running? p)
+  (kill-thread th))
 
 (test '(list 3 4) 'quasiquote `(list ,(+ 1 2) 4))
 (test '(list a (quote a)) 'quasiquote (let ((name 'a)) `(list ,name ',name)))
@@ -1088,14 +1142,17 @@
 (syntax-test #'(cond [(< 2 3) (define x 2)] [else 5]))
 (syntax-test #'(cond [else (define x 2)]))
 
-;; No good way to test in mzc:
-(error-test #'(define x (values)) exn:application:arity?)
-(error-test #'(define x (values 1 2)) exn:application:arity?)
-(error-test #'(define-values () 3) exn:application:arity?)
-(error-test #'(define-values () (values 1 3)) exn:application:arity?)
-(error-test #'(define-values (x y) (values)) exn:application:arity?)
-(error-test #'(define-values (x y) 3) exn:application:arity?)
-(error-test #'(define-values (x y) (values 1 2 3)) exn:application:arity?)
+(define (definition-arity-error? x)
+  (and (exn:application:arity? x)
+       (regexp-match? #rx"expected number of values not received" (exn-message x))))
+
+(error-test #'(define x (values)) definition-arity-error?)
+(error-test #'(define x (values 1 2)) definition-arity-error?)
+(error-test #'(define-values () 3) definition-arity-error?)
+(error-test #'(define-values () (values 1 3)) definition-arity-error?)
+(error-test #'(define-values (x y) (values)) definition-arity-error?)
+(error-test #'(define-values (x y) 3) definition-arity-error?)
+(error-test #'(define-values (x y) (values 1 2 3)) definition-arity-error?)
 
 (begin (define ed-t1 1) (define ed-t2 2))
 (test 1 'begin-define ed-t1)
@@ -1269,6 +1326,24 @@
 (error-test #'(parameterize ([(lambda (a) 10) 10]) 8))
 (error-test #'(parameterize ([(lambda (a b) 10) 10]) 8))
 
+;; Check documented order of evaluation
+(let ([str (let ([o (open-output-string)])
+             (define p1 (make-parameter 1 (λ (x) (displayln "p1" o) x)))
+             (define p2 (make-parameter 2 (λ (x) (displayln "p2" o) x)))
+             (parameterize ([(begin (displayln "b1" o) p1) (begin (displayln "a1" o) 4)]
+                            [(begin (displayln "b2" o) p2) (begin (displayln "a2" o) 5)])
+               3)
+             (get-output-string o))])
+  (test "b1\na1\nb2\na2\np1\np2\n" values str))
+(let ([str (let ([o (open-output-string)])
+             (define p1 (make-parameter 1 (λ (x) (displayln "p1" o) x)))
+             (err/rt-test/once
+              (parameterize ([(begin (displayln "b1" o) p1) (begin (displayln "a1" o) 4)]
+                             [(begin (displayln "b2" o) 'no) (begin (displayln "a2" o) 5)])
+                3))
+             (get-output-string o))])
+  (test "b1\na1\nb2\na2\np1\n" values str))
+
 (test 1 'time (time 1))
 (test -1 'time (time (cons 1 2) -1))
 (test-values '(-1 1) (lambda () (time (values -1 1))))
@@ -1316,6 +1391,26 @@
 (syntax-test #'(#%app lambda 1))
 (syntax-test #'(let ([#%app 5])
 		 (+ 1 2)))
+
+(err/rt-test ('oops (/ 1 0)) exn:fail:contract:divide-by-zero?)
+(test "#<procedure:*>\n"
+      'left-to-right-error
+      (let ([o (open-output-string)])
+        (parameterize ([current-output-port o])
+          (with-handlers ([exn:fail? void])
+            ((void)
+             (letrec ((E (writeln *))
+                      (H 1))
+               (let () H)))))
+        (get-output-string o)))
+
+
+(err/rt-test ((if (zero? (random 1)) 'oops 'nope) (/ 1 0)) exn:fail:contract:divide-by-zero?)
+(err/rt-test ((void)
+              (letrec ((E (/ 1 0))
+                       (H 1))
+                (let () H)))
+             exn:fail:contract:divide-by-zero?)
 
 (test 3 '#%app (#%app + 1 2))
 (syntax-test #'())
@@ -1479,6 +1574,11 @@
                                                                        [(_) (abcdefg 10)]
                                                                        [(_ x) (+ 3 x)])])
                                                            (abcdefg))))
+(test 10 'splicing-letrec-syntax (let ()
+                                   (splicing-letrec-syntax ([m (syntax-rules ()
+                                                                 [(_ id) (define id 10)])])
+                                     (m x))
+                                   x))
 (test 12 'splicing-let-syntax (splicing-let-syntax ([abcdefg (syntax-rules ()
                                                                [(_) 12])])
                                                    (abcdefg)))
@@ -1491,6 +1591,12 @@
                                                                  [(_) (+ 2 (abcdefg 9))]
                                                                  [(_ ?) 77])])
                                                      (abcdefg))))
+(test 10 'splicing-let-syntax (let ()
+                                (splicing-let-syntax ([m (syntax-rules ()
+                                                           [(_ id) (define id 10)])])
+                                  (m x))
+                                x))
+
 (define expand-test-use-toplevel? #t)
 (splicing-let-syntax ([abcdefg (syntax-rules ()
                                  [(_) 8])])
@@ -1532,6 +1638,15 @@
                                     (define y a)))
         (list x y)))
 
+(test 11 'nested-splicing-def-use-site
+      (let ()
+        (splicing-let ([z 1])
+          (define-syntax-rule (m a b)
+            (splicing-let ([a 10])
+              (define b (+ a z))))
+          (m x y))
+        y))
+
 (test '(1 2)
       'nested-splicing-syntax
       (let ()
@@ -1553,6 +1668,17 @@
                                         [x q])
                            (define (z) x))
                          (z)))
+(test 10 'splicing-let (let ()
+                         (define-syntax-rule (m a b)
+                           (splicing-let ([a 10])
+                             (define b a)))
+                         (m x y)
+                         y))
+(test #t 'splicing-let (let ()
+                         (splicing-let ()
+                           (define id1 (quote-syntax x)))
+                         (bound-identifier=? id1 (quote-syntax x))))
+
 (test 81 'splicing-letrec (let ()
                             (define q 77)
                             (splicing-letrec ([q 81]
@@ -1579,6 +1705,15 @@
                                                  [q (lambda () 82)])
                                                 (define (z) x))
                                ((z)))))
+
+(test 10 'splicing-letrec
+      (let ()
+        (define-syntax-rule (m a b)
+          (splicing-letrec ([a 10])
+            (define b a)))
+        (m x y)
+        y))
+
 (err/rt-test (eval
               '(begin
                  (splicing-letrec ([x q]
@@ -1668,6 +1803,18 @@
          (define-syntax outer-x (make-rename-transformer #'x)))
         outer-x))
 
+(test 10 'splicing-local
+      (let ()
+        (define-syntax-rule (m a b)
+          (splicing-local ((define a 10))
+            (define b a)))
+        (m x y)
+        y))
+(test #t 'splicing-local (let ()
+                           (splicing-local ()
+                             (define id1 (quote-syntax x)))
+                           (bound-identifier=? id1 (quote-syntax x))))
+
 (test 10 'splicing+begin-for-syntax
       (eval
        '(begin
@@ -1741,6 +1888,28 @@
           (splicing-parameterize ([param 42])
             (deflocal x (param))
             x))))
+(test 10 'splicing-parameterize
+      (let ()
+        (define x (make-parameter #f))
+        (define-syntax-rule (m a b)
+          (splicing-parameterize ([a 10])
+            (define b (a))))
+        (m x y)
+        y))
+(test 11 'splicing-parameterize
+      (let ()
+        (define z (make-parameter #f))
+        (splicing-parameterize ([z 1])
+          (define-syntax-rule (m a b)
+            (splicing-let ([a 10])
+              (define b (+ a (z)))))
+          (m x y))
+        y))
+(test #t 'splicing-parameterize
+      (let ()
+        (splicing-parameterize ()
+          (define id1 (quote-syntax x)))
+        (bound-identifier=? id1 (quote-syntax x))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Check keyword & optionals for define-syntax 
@@ -1823,7 +1992,7 @@
                                   (q)))))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; check that the compiler is not too agressive with `letrec' -> `let*'
+;; check that the compiler is not too aggressive with `letrec' -> `let*'
 
 (test "<undefined>\nready\n"
       get-output-string
@@ -1983,6 +2152,65 @@
 
 (compile '(#%variable-reference))
 (expand '(#%variable-reference))
+
+(test #t variable-reference? (#%variable-reference (#%top . test)))
+(test #t variable-reference? (#%variable-reference (#%top . list)))
+
+(define this-is-going-to-be-defined-as-syntax 5)
+(define-syntax this-is-going-to-be-defined-as-syntax #f)
+(syntax-test #'(#%variable-reference this-is-going-to-be-defined-as-syntax))
+(test #t variable-reference? (#%variable-reference (#%top . this-is-going-to-be-defined-as-syntax)))
+(test 5 values (#%top . this-is-going-to-be-defined-as-syntax))
+
+(define this-is-going-to-be-defined-as-macro 5)
+(define-syntax this-is-going-to-be-defined-as-macro (lambda (stx) #f))
+(syntax-test #'(#%variable-reference this-is-going-to-be-defined-as-macro))
+(test #t variable-reference? (#%variable-reference (#%top . this-is-going-to-be-defined-as-macro)))
+(test 5 values (#%top . this-is-going-to-be-defined-as-macro))
+
+(test #t variable-reference-constant? (#%variable-reference cons))
+(test #f variable-reference-constant? (#%variable-reference (#%top . cons)))
+
+(test #t procedure? (lambda () (#%variable-reference assume-this-name-is-not-defined-anywhere)))
+
+(syntax-test #'(let ([local #f]) (#%variable-reference (#%top . local))))
+
+(syntax-test #'(module m racket/base
+                 (let ([local #f])
+                   (#%variable-reference (#%top . local)))))
+(syntax-test #'(module m racket/base
+                 (require (for-syntax racket/base))
+                 (define-syntax (m stx) #'#f)
+                 (#%top . m)))
+(syntax-test #'(module m racket/base
+                 (require (for-syntax racket/base))
+                 (define-syntax m #f)
+                 (#%top . m)))
+(syntax-test #'(module m racket/base
+                 (require (for-syntax racket/base))
+                 (define-syntax (m stx) #'#f)
+                 (#%variable-reference (#%top . m))))
+(syntax-test #'(module m racket/base
+                 (require (for-syntax racket/base))
+                 (define-syntax m #f)
+                 (#%variable-reference (#%top . m))))
+(syntax-test #'(module m racket/base
+                 (require (for-syntax racket/base))
+                 (define-syntax (m stx) #'#f)
+                 (#%variable-reference m)))
+(syntax-test #'(module m racket/base
+                 (require (for-syntax racket/base))
+                 (define-syntax m #f)
+                 (#%variable-reference m)))
+(syntax-test #'(module m racket/base
+                 (#%variable-reference not-defined-anywhere)))
+(syntax-test #'(module m racket/base
+                 (#%top . not-defined-anywhere)))
+(syntax-test #'(module m racket/base
+                 (#%variable-reference (#%top . not-defined-anywhere))))
+
+(syntax-test #'(#%variable-reference (oops . x)))
+(syntax-test #'(#%variable-reference ((this is a test) . x)))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Check marshal & unmarshal of a syntax object
@@ -2156,6 +2384,50 @@
    (syntax-property expanded-body-stx 'origin)))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Make sure that `strip-context` works on prefabs, hash tables, etc.
+
+(let ()
+  (define (same? a b)
+    (cond
+      [(syntax? a)
+       (and (syntax? b)
+            (equal? (for/hash ([k (in-list (hash-ref (syntax-debug-info a) 'context))])
+                      (values k #t))
+                    (for/hash ([k (in-list (hash-ref (syntax-debug-info b) 'context))])
+                      (values k #t)))
+            (same? (syntax-e a) (syntax-e b)))]
+      [(pair? a) (and (pair? b)
+                      (same? (car a) (car b))
+                      (same? (cdr a) (cdr b)))]
+      [(box? a) (and (box? b)
+                     (same? (unbox a) (unbox b)))]
+      [(vector? a) (and (vector? b)
+                        (= (vector-length a) (vector-length b))
+                        (for/and ([a (in-vector a)]
+                                  [b (in-vector b)])
+                          (same? a b)))]
+      [(hash? a) (and (eq? (hash-eq? a) (hash-eq? b))
+                      (eq? (hash-eqv? a) (hash-eqv? b))
+                      (eq? (hash-equal? a) (hash-equal? b))
+                      (for/and ([(ak av) (in-hash a)])
+                        (same? av (hash-ref b ak #f))))]
+      [(prefab-struct-key a)
+       => (lambda (ak)
+            (and (equal? ak (prefab-struct-key b))
+                 (same? (struct->vector a) (struct->vector b))))]
+      [else (eqv? a b)]))
+
+  (define (check v)
+    (same? (datum->syntax #f v)
+           (strip-context (datum->syntax #'here v))))
+
+  (test #t check '(a b))
+  (test #t check '#(a b #hash((c . 9))))
+  (test #t check '#(a b #hashalw(("c" . 10) ("d" . 11))))
+  (test #t check '(#hasheqv((10 . 11) (12 . 13)) #&"str" #s(color r G #b0)))
+  (test #t check '(#hasheq((x . 11) (y . 13) (z . #f)) (1 . 2))))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (module tries-to-use-foo-before-defined racket/base
   (provide result)
@@ -2254,6 +2526,38 @@
   (test #t procedure? (eval c))
   (err/rt-test (write c (open-output-bytes))
                exn:fail?))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Regression test to make sure `(set! ...)` on a local variable
+;; in the first position of ` begin0` is not miscompiled
+
+(test (void) (let ([i 0])
+               (λ () (begin0
+                       (set! i (add1 i))
+                       (+ i 1)))))
+
+
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Regression test to make sure a `values` wrapper is not
+;; discarded:
+
+(err/rt-test (for/fold ([x 0]
+                        [y 0])
+                       ([i '(1)])
+               (values (values x y)))
+             exn:fail:contract:arity?)
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Regression test to make that an ok reference to `unsafe-undefined`
+;; isn't mangled to a disallowed reference:
+
+(parameterize ([current-code-inspector (current-code-inspector)])
+  (parameterize ([current-namespace (make-base-namespace)])
+    (eval '(module test racket/base
+             (provide t)
+             (define (t #:a [a "12345678"]) (list a))
+             (t)))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 

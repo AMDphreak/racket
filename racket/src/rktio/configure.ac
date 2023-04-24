@@ -26,8 +26,7 @@ use_flag_posix_pthread=no
 
 # For standalone builds:
 rktio_version=1.0
-HIDE_STANDALONE=hide_standalone_
-HIDE_NOT_STANDALONE=
+AS_STANDALONE=f
 
 ###### Autoconfigure #######
 
@@ -98,7 +97,10 @@ case "$host_os" in
     ;;
   *mingw*)
     skip_iconv_check=yes
-    ;;    
+    PREFLAGS="$PREFLAGS -DWIN32"
+    # force pthread off for Windows:
+    enable_pthread=no
+    ;;
   cygwin*)
     ;;
   darwin*)
@@ -147,6 +149,48 @@ fi
 if test "${endianness}" = "big" ; then
   AC_DEFINE(RKTIO_BIG_ENDIAN,1,[Big endian])
 fi
+
+# Struct dirent
+AC_CHECK_MEMBER([struct dirent.d_namelen],
+                [AC_DEFINE(HAVE_DIRENT_NAMELEN, 1, [struct dirent has field namelen])],,
+		[#include <dirent.h>])
+AC_CHECK_MEMBER([struct dirent.d_namlen],
+                [AC_DEFINE(HAVE_DIRENT_NAMLEN, 1, [struct dirent has field namlen])],,
+		[#include <dirent.h>])
+
+[ msg="for xlocale.h" ]
+AC_MSG_CHECKING($msg)
+AC_COMPILE_IFELSE([AC_LANG_SOURCE([
+   # include <xlocale.h>
+   int main() {
+      return 0;
+   }])],
+   AC_DEFINE(RKTIO_USE_XLOCALE_HEADER,1,[Use xlocale.h])
+  xlocalehon=yes, xlocalehon=no)
+AC_MSG_RESULT($xlocalehon)
+
+SAVE_CFLAGS="$CFLAGS"
+if test "${xlocalehon}" = "yes" ; then
+  CFLAGS="$CFLAGS -DRKTIO_USE_XLOCALE_HEADER"
+fi
+[ msg="for xlocale functions" ]
+AC_MSG_CHECKING($msg)
+AC_LINK_IFELSE([AC_LANG_SOURCE([
+   #ifdef RKTIO_USE_XLOCALE_HEADER
+   # include <xlocale.h>
+   #endif
+   #include <locale.h>
+   int main() {
+      locale_t l = newlocale(LC_COLLATE_MASK | LC_CTYPE_MASK, "C", NULL);
+      locale_t old_l = uselocale(l);
+      uselocale(old_l);
+      freelocale(l);
+      return 0;
+   }])],
+   AC_DEFINE(RKTIO_USE_XLOCALE,1,[Use xlocale])
+  xlocaleon=yes, xlocaleon=no)
+AC_MSG_RESULT($xlocaleon)
+CFLAGS="$SAVE_CFLAGS"
 
 AC_MSG_CHECKING([for getaddrinfo])
 AC_TRY_LINK([#include <sys/types.h>
@@ -335,8 +379,7 @@ fi
 ############## libtool ################
 
 if test "${enable_standalone}" = "yes" ; then
-   HIDE_STANDALONE=""
-   HIDE_NOT_STANDALONE=hide_not_standalone_
+   AS_STANDALONE=t
    if test "${enable_shared}" = "" ; then
      enable_shared=yes
    fi
@@ -371,7 +414,7 @@ if test "${enable_shared}" = "yes" ; then
   fi
 
   # Use only for standalone builds:
-  AR="${LIBTOOLPROG} --mode=link --tag=CC $CC${need_gcc_static_libgcc}${ar_libtool_no_undefined} -release ${rktio_version} -rpath ${abslibdir} \$(ARLIBFLAGS) -o"
+  AR="${LIBTOOLPROG} --mode=link --tag=CC $CC${need_gcc_static_libgcc}${ar_libtool_no_undefined} -release ${rktio_version} -rpath ${abslibdir} -o"
   # Used for a librktio convenience library:
   STATIC_AR="${LIBTOOLPROG} --mode=link --tag=CC $CC -o"
   ARFLAGS=""
@@ -388,13 +431,13 @@ else
   ICP=cp
   LTO="o"
   LTA="a"
-  RKTLINKER='$(CC)'
+  RKTLINKER="$CC"
   STATIC_AR="$AR"
   LIBSFX=so
   ICP_LIB=cp
   if test "${make_darwin_dylib}" = "yes" ; then
      LIBSFX="dylib"
-     AR='$(RKTLINKER) --shared -o'
+     AR="${RKTLINKER} --shared -o"
      ARFLAGS=""
      LIBS="${LIBS} -framework CoreFoundation"
      ICP_LIB=cp
@@ -421,10 +464,12 @@ AC_SUBST(LIBSFX)
 AC_SUBST(LTO)
 AC_SUBST(LTA)
 
-AC_SUBST(HIDE_NOT_STANDALONE)
-AC_SUBST(HIDE_STANDALONE)
+AC_SUBST(AS_STANDALONE)
 
 AC_SUBST(RKTIO_NO_ICONV)
+
+AC_SUBST(HAVE_DIRENT_NAMLEN)
+AC_SUBST(HAVE_DIRENT_NAMELEN)
 
 makefiles="Makefile"
 

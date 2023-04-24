@@ -1,5 +1,6 @@
 #lang scribble/doc
-@(require "mz.rkt")
+@(require "mz.rkt"
+          (for-label racket/async-channel))
 
 @(define eventspaces @tech[#:doc '(lib "scribblings/gui/gui.scrbl")]{eventspaces})
 
@@ -80,9 +81,8 @@ down, then it cannot be a subordinate of @racket[super].}
 
 @defproc[(custodian-memory-accounting-available?) boolean?]{
 
-@margin-note{Memory accounting is normally available in Racket 3m,
-which is the main variant of Racket, and not normally available in
-Racket CGC.}
+@margin-note{Memory accounting is normally available, but not in
+the @tech{CGC} implementation.}
 
 Returns @racket[#t] if Racket is compiled with support for
 per-custodian memory accounting, @racket[#f] otherwise.}
@@ -134,8 +134,54 @@ individual allocations that are initially charged to
 @racket[limit-cust] can be arbitrarily large, then @racket[stop-cust]
 must be the same as @racket[limit-cust], so that excessively large
 immediate allocations can be rejected with an
-@racket[exn:fail:out-of-memory] exception.}
+@racket[exn:fail:out-of-memory] exception.
 
+@margin-note{New memory allocation will be accounted to the running
+ @seclink["threads"]{thread}'s managing custodian. In other words, a custodian's limit applies
+ only to the allocation made by the threads that it manages.
+ See also @racket[call-in-nested-thread] for a simpler setup.}
+
+@examples[
+ (require racket/async-channel)
+ (define ch (make-async-channel))
+ (eval:alts
+  (parameterize ([current-custodian (make-custodian)])
+    (thread-wait
+     (thread
+      (λ ()
+        (with-handlers ([exn:fail:out-of-memory?
+                         (λ (e) (async-channel-put ch e))])
+          (custodian-limit-memory (current-custodian) (* 1024 1024))
+          (make-bytes (* 4 1024 1024))
+          (async-channel-put ch "Not OK")))))
+    (async-channel-get ch))
+   (exn:fail:out-of-memory "out of memory" (current-continuation-marks)))
+ (define cust (make-custodian))
+ (eval:alts
+   (with-handlers ([exn:fail:out-of-memory?
+                    (λ (e) (error "Caught OOM exn"))])
+     (call-in-nested-thread
+      (λ ()
+        (custodian-limit-memory cust (* 1024 1024))
+        (make-bytes (* 4 1024 1024))
+        "Not OK")
+      cust))
+   (eval:error
+    (error "Caught OOM exn")))
+ ]
+
+@examples[
+ #:label "Non-examples:"
+ (eval:alts
+  (parameterize ([current-custodian (make-custodian)])
+    (custodian-limit-memory (current-custodian) (* 1024 1024))
+    (code:comment @#,elem{Allocation of @racket[make-bytes] is charged to the current thread's})
+    (code:comment @#,elem{managing custodian, not the new custodian.})
+    (make-bytes (* 4 1024 1024))
+    "Not OK")
+   "Not OK")
+ ]
+}
 
 @defproc[(make-custodian-box [cust custodian?] [v any/c]) custodian-box?]{
 

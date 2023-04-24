@@ -36,6 +36,7 @@
         make-engine
         engine-timeout
         engine-return
+        engine-roots
         call-with-engine-completion
         current-process-milliseconds
         set-ctl-c-handler!
@@ -70,18 +71,19 @@
         [disable-interrupts host:disable-interrupts]
         [enable-interrupts host:enable-interrupts]
 
-        ;; Support for the thre scheduler and interrupts
+        ;; Support for the thread scheduler and interrupts
         ;; across places
         [sleep host:sleep]
         [get-wakeup-handle host:get-wakeup-handle]
         [wakeup host:wakeup]
 
         [fork-place host:fork-place]
+        [place-get-inherit host:place-get-inherit]
         [start-place host:start-place]
         [exit host:exit]
         [current-place-roots host:current-place-roots]
         [get-initial-place host:get-initial-place]
-        [call-with-current-pthread-continuation host:call-with-current-place-continuation]
+        [call-with-current-continuation-roots host:call-with-current-continuation-roots]
 
         fork-pthread
         pthread?
@@ -98,4 +100,6 @@
         [call-as-asynchronous-callback host:call-as-asynchronous-callback]
         [post-as-asynchronous-callback host:post-as-asynchronous-callback]
 
-        continuation-current-primitive)
+        continuation-current-primitive
+
+        [prop:unsafe-authentic-override host:prop:unsafe-authentic-override])

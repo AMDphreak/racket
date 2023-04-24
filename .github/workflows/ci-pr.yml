@@ -1,0 +1,103 @@
+name: CI Pull Request
+
+on: [pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+
+  buildtest-linux-x86:
+    container:
+      image: racket/racket-ci:latest
+      options: --init
+
+    runs-on: ubuntu-22.04
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: Build
+      run: make CPUS=$(nproc) PKGS="racket-test db-test unstable-flonum-lib net-test"
+    - name: Test
+      run: |
+        export PATH=$PATH:`pwd`/racket/bin
+        raco test -l tests/racket/test
+        racket -l tests/racket/contract/all
+        raco test -l tests/json/json
+        raco test -l tests/file/main
+        raco test -l tests/net/head
+        raco test -l tests/net/uri-codec
+        raco test -l tests/net/url
+        raco test -l tests/net/url-port
+        raco test -l tests/net/encoders
+        raco test -l tests/openssl/basic
+        raco test -l tests/openssl/https
+        raco test -l tests/match/main
+        raco test -l tests/zo-path
+        raco test -c tests/xml
+        raco test --timeout 300 -c tests/future
+        raco test -l tests/db/all-tests
+        raco test -c tests/stxparse
+        raco test -c tests/syntax
+
+  buildtest-macos:
+
+    runs-on: macos-latest
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: Build
+      run: make CPUS=$(sysctl -n hw.physicalcpu) PKGS="racket-test db-test unstable-flonum-lib net-test"
+    - name: Test
+      run: |
+        export PATH=$PATH:`pwd`/racket/bin
+        raco test -l tests/racket/test
+        racket -l tests/racket/contract/all
+        raco test -l tests/json/json
+        raco test -l tests/file/main
+        raco test -l tests/net/head
+        raco test -l tests/net/uri-codec
+        raco test -l tests/net/url
+        raco test -l tests/net/url-port
+        raco test -l tests/net/encoders
+        raco test -l tests/openssl/basic
+        raco test -l tests/openssl/https
+        raco test -l tests/match/main
+        raco test -l tests/zo-path
+        raco test -c tests/xml
+        raco test --timeout 300 -c tests/future
+        raco test -l tests/db/all-tests
+        raco test -c tests/stxparse
+        raco test -c tests/syntax
+    - name: Tarball
+      run: tar -cvjf racketcs-macos-x64_git${{ github.sha }}.tar.bz2 racket
+    - uses: actions/upload-artifact@v3
+      with:
+        name: racketcs-macos-x64_git${{ github.sha }}
+        path: racketcs-macos-x64_git${{ github.sha }}.tar.bz2
+
+  build-ios:
+    runs-on: macos-latest
+    needs: buildtest-macos
+    steps:
+    - uses: actions/checkout@v3
+    - uses: actions/download-artifact@v3
+      with:
+        name: racketcs-macos-x64_git${{ github.sha }}
+        path: ${{ github.workspace }}
+    - name: Untar host Racket
+      run: |
+        mkdir host-racket
+        tar -xvjf racketcs-macos-x64_git${{ github.sha }}.tar.bz2 -C host-racket --strip-components 1
+    - name: Build iOS Racket
+      run: |
+        set -euxo pipefail
+        mkdir -p racket/src/build-ios
+        pushd racket/src/build-ios
+        ../configure \
+          --host=aarch64-apple-darwin \
+          --enable-ios=iPhoneOS \
+          --enable-racket=${{ github.workspace }}/host-racket/bin/racket \
+          --enable-scheme=${{ github.workspace }}/host-racket/src/build/cs/c
+        make
+        make install

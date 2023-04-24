@@ -1,6 +1,6 @@
 #lang racket/base
 
-(require racket/date racket/file racket/port racket/tcp racket/list)
+(require racket/date racket/file racket/port racket/tcp racket/list racket/string)
 
 (provide ftp-connection?
          ftp-cd
@@ -13,7 +13,8 @@
          ftp-delete-file
          ftp-make-directory
          ftp-delete-directory
-         ftp-rename-file)
+         ftp-rename-file
+         ftp-current-directory)
 
 ;; opqaue record to represent an FTP connection:
 (define-struct ftp-connection (in out))
@@ -138,17 +139,21 @@
 ;; need PASS command. "or 230? (rege..." means if 230? is true already
 ;; , then do not check the line anymore, it's just true.
 (define (ftp-establish-connection* in out username password)
-  (ftp-check-response in out #"220" void (void))
-  (fprintf out "USER ~a\r\n" username)
-  (let ([no-password? (ftp-check-response
-                       in out (list #"331" #"230")
-                       (lambda (line 230?)
-                         (or 230? (regexp-match #rx#"^230" line)))
-                       #f)])
-    (unless no-password?
-      (fprintf out "PASS ~a\r\n" password)
-      (ftp-check-response in out #"230" void (void))))
-  (make-ftp-connection in out))
+  (with-handlers ([exn:fail? (λ (e)
+                               (close-input-port in)
+                               (close-output-port out)
+                               (raise e))])
+    (ftp-check-response in out #"220" void (void))
+    (fprintf out "USER ~a\r\n" username)
+    (let ([no-password? (ftp-check-response
+                         in out (list #"331" #"230")
+                         (lambda (line 230?)
+                           (or 230? (regexp-match #rx#"^230" line)))
+                         #f)])
+      (unless no-password?
+        (fprintf out "PASS ~a\r\n" password)
+        (ftp-check-response in out #"230" void (void))))
+    (make-ftp-connection in out)))
 
 (define (ftp-establish-connection server-address server-port username password)
   (let-values ([(tcpin tcpout) (tcp-connect server-address server-port)])
@@ -167,6 +172,15 @@
   (ftp-check-response (ftp-connection-in ftp-ports)
                       (ftp-connection-out ftp-ports)
                       #"250" void (void)))
+
+(define (ftp-current-directory ftp-ports)
+  (fprintf (ftp-connection-out ftp-ports) "PWD\r\n")
+  (ftp-check-response (ftp-connection-in ftp-ports)
+                      (ftp-connection-out ftp-ports)
+                      #"257"
+                      (lambda (line acc)
+                        (cadr (string-split (bytes->string/latin-1 line) "\"")))
+                      (void)))
 
 (define re:dir-line
   (regexp (string-append
@@ -197,22 +211,29 @@
     (define r `(,(car m) ,@(cddr m)))
     (if size `(,@r ,size) r)))
 
-(define (ftp-download-file ftp-ports folder filename
+(define (ftp-download-file ftp-ports folder-or-port filename
                            #:progress [progress-proc #f])
   ;; Save the file under a temporary name, rename it once download is
   ;; complete this assures we don't over write any existing file without
   ;; having a good file down
-  (let* ([tmpfile (make-temporary-file "~a.download" #f folder)]
-         [new-file (open-output-file tmpfile #:exists 'truncate)]
-         [tcp-data (establish-data-connection ftp-ports 'in)])
+  (if (output-port? folder-or-port)
+      (let ([tcp-data (establish-data-connection ftp-ports 'in)])
 
-    (transfer-data ftp-ports 'download tcp-data new-file filename progress-proc)
+        (transfer-data ftp-ports 'download tcp-data folder-or-port filename progress-proc))
 
-    (rename-file-or-directory tmpfile (build-path folder filename) #t)))
+      (let* ([tmpfile (make-temporary-file "~a.download" #f folder-or-port)]
+             [new-file (open-output-file tmpfile #:exists 'truncate)]
+             [tcp-data (establish-data-connection ftp-ports 'in)])
 
-(define (ftp-upload-file ftp-ports filepath
+        (transfer-data ftp-ports 'download tcp-data new-file filename progress-proc)
+
+        (rename-file-or-directory tmpfile (build-path folder-or-port filename) #t))))
+
+(define (ftp-upload-file ftp-ports filepath [port #f]
                          #:progress [progress-proc #f])
-  (let ([upload-file (open-input-file filepath)]
+  (let ([upload-file (if port
+                         port
+                         (open-input-file filepath))]
         [tcp-data (establish-data-connection ftp-ports 'out)])
 
     (let ([system-type (system-path-convention-type)]

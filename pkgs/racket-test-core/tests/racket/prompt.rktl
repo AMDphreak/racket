@@ -9,6 +9,18 @@
   (err/rt-test (break-thread (current-thread)) exn:break?))
 
 
+;; ----------------------------------------
+;; the names of prompt tags
+
+(test 'default object-name (default-continuation-prompt-tag))
+(test #f object-name (make-continuation-prompt-tag))
+(test 'myprompt object-name (make-continuation-prompt-tag 'myprompt))
+(test #t regexp-match? #rx"default" (format "~a" (default-continuation-prompt-tag)))
+(test #f regexp-match? #rx":" (format "~a" (make-continuation-prompt-tag)))
+(test #t regexp-match? #rx"myprompt" (format "~a" (make-continuation-prompt-tag 'myprompt)))
+
+;; ----------------------------------------
+
 (test (void) call-with-continuation-prompt void)
 (test (void) call-with-continuation-prompt void (default-continuation-prompt-tag))
 (test (void) call-with-continuation-prompt void (default-continuation-prompt-tag) list)
@@ -117,6 +129,78 @@
           (unless (eof-object? r)
             (eval r)
             (loop))))))))
+
+;; ----------------------------------------
+;; Check that winder chains are detected independent of
+;; whether extra prompts show up between the winders.
+
+(let ()
+  (define-syntax-rule (% tag-val expr)
+    (call-with-continuation-prompt
+     (λ () expr)
+     tag-val
+     (lambda (v) v)))
+
+  (letrec ((tag-1 (make-continuation-prompt-tag 'one))
+           (tag-2 (make-continuation-prompt-tag 'two))
+           (tag-3 (make-continuation-prompt-tag 'three))
+           (tag-4 (make-continuation-prompt-tag 'four))
+           (tag-5 (make-continuation-prompt-tag 'five)))
+
+    (define (check-dw capture-wrap apply-wrap)
+      (define output '())
+      (define counter 0)
+      (let ([k
+             ;; `k` is a composable continuation that
+             ;; calls a function within a DW frame
+             (% tag-1
+                (dynamic-wind
+                 (λ ()
+                   (set! counter (add1 counter))
+                   (set! output (append output (list counter))))
+                  (λ ()
+                    ((call-with-composable-continuation
+                      (λ (k)
+                        (abort-current-continuation tag-1 k))
+                      tag-1)))
+                  (λ ()
+                    (set! output (append output (list 'out))))))])
+        ;; at least one of the `values` is needed below
+        (let ([k2
+               ;; `k2` is a non-composable continuation that has
+               ;; the `k` DW frame
+               (% tag-2
+                  (capture-wrap
+                   (lambda ()
+                     (k (λ ()
+                          (call/cc (λ (k2)
+                                     (abort-current-continuation tag-2 k2))
+                                   tag-2))))))])
+          (% tag-2
+             (apply-wrap
+              (lambda ()
+                (k (λ ()
+                     (k2 'ignored))))))))
+
+      ;; if winder sharing is confused by extra prompts, then
+      ;; a 4th entry and exit may show up in `output`
+      (test '(1 out 2 out 3 out) values output))
+
+    (check-dw (lambda (f) (f)) (lambda (f) (f)))
+
+    ;; composable continuations in non-tail positoins involve an implement prompt
+    (check-dw (lambda (f) (values (f))) (lambda (f) (f)))
+    (check-dw (lambda (f) (f)) (lambda (f) (values (f))))
+    (check-dw (lambda (f) (values (f))) (lambda (f) (values (f))))
+
+    (check-dw (lambda (f) (% tag-3 (f))) (lambda (f) (f)))
+    (check-dw (lambda (f) (% tag-3 (f))) (lambda (f) (values (f))))
+    (check-dw (lambda (f) (f)) (lambda (f) (% tag-3 (f))))
+    (check-dw (lambda (f) (values (f))) (lambda (f) (% tag-3 (f))))
+
+    (check-dw (lambda (f) (% tag-3 (f))) (lambda (f) (% tag-3 (f))))
+    (check-dw (lambda (f) (% tag-4 (f))) (lambda (f) (% tag-5 (% tag-3 (f)))))
+    (void)))
 
 ;; ----------------------------------------
 ;; Check that a constant-space loop doesn't
@@ -585,6 +669,104 @@
    (lambda ()
      (dw2+dw1 (lambda () (dw3+dw1 (lambda () (output! "inside")))))))
   (check-output! '("+2" "+1" "-1" "-2" "+3" "+1" "inside" "-1" "-3")))
+
+;;----------------------------------------
+
+(let* ([t (make-continuation-prompt-tag 't)])
+  (test #t continuation-prompt-available? t
+        (call-with-continuation-prompt
+         (lambda ()
+           (call/cc (lambda (k) k)
+                    t))
+         t))
+  (test #f continuation-prompt-available? t
+        (call-with-continuation-prompt
+         (lambda ()
+           (call-with-composable-continuation
+            (lambda (k) k)
+            t))
+         t))
+  (let ([k (call-with-continuation-prompt
+            (lambda ()
+              ((call-with-composable-continuation
+                (lambda (k) (lambda () k))
+                t)))
+            t)])
+    (test #f continuation-prompt-available? t k)
+    (test #f values
+          (k (lambda ()
+               (continuation-prompt-available? t))))
+    (test #f continuation-prompt-available? (default-continuation-prompt-tag) k))
+  (let ([k (call-with-continuation-prompt
+            (lambda ()
+              ((call-with-current-continuation
+                (lambda (k) (lambda () k))
+                t)))
+            t)])
+    (test #t continuation-prompt-available? t k)
+    (test #t values
+          (call-with-continuation-prompt
+            (lambda ()
+              (k (lambda ()
+                   (continuation-prompt-available? t))))
+            t))
+    (test #f continuation-prompt-available? (default-continuation-prompt-tag) k))
+  (test #t continuation-prompt-available? t
+        (call-with-continuation-prompt
+         (lambda ()
+           (call-with-continuation-prompt
+            (lambda ()
+              (call-with-current-continuation
+               (lambda (k) k)))
+            t))))
+  (test #t continuation-prompt-available? t
+        (call-with-continuation-prompt
+         (lambda ()
+           (call-with-continuation-prompt
+            (lambda ()
+              (call-with-composable-continuation
+               (lambda (k) k)))
+            t))))
+  (test #t 'continuation-prompt-available?
+        (call-with-continuation-prompt
+         (lambda ()
+           (call-with-escape-continuation
+            (lambda (k) (continuation-prompt-available? t k))))
+         t))
+  (err/rt-test (continuation-prompt-available?
+                t
+                (call-with-continuation-prompt
+                 (lambda ()
+                   (call-with-escape-continuation
+                    (lambda (k) k)))
+                 t))
+               exn:fail:contract:continuation?))
+
+;;----------------------------------------
+;; Make sure prompt at top level can propagate multiple values
+
+(test '(1 2 3)
+      call-with-continuation-prompt
+      (lambda ()
+        (eval (quote (begin (abort-current-continuation (default-continuation-prompt-tag) 1 2 3) 10))))
+      (default-continuation-prompt-tag)
+      list)
+
+;;----------------------------------------
+;; Check error message as "result" or not
+
+(err/rt-test (call-with-continuation-prompt (lambda () (abort-current-continuation (default-continuation-prompt-tag))))
+             exn:fail:contract:arity?
+             #rx"result arity mismatch")
+(err/rt-test (call-with-continuation-prompt (lambda () (abort-current-continuation (default-continuation-prompt-tag)))
+                                            (default-continuation-prompt-tag))
+             exn:fail:contract:arity?
+             #rx"result arity mismatch")
+(err/rt-test (call-with-continuation-prompt (lambda () (abort-current-continuation (default-continuation-prompt-tag)))
+                                            (default-continuation-prompt-tag)
+                                            (lambda (x) x))
+             exn:fail:contract:arity?
+             #rx": arity mismatch")
 
 ;;----------------------------------------
 

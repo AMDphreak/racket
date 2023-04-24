@@ -24,21 +24,26 @@
          internal-definition-context-introduce
          internal-definition-context-seal
          identifier-remove-from-definition-context
+         internal-definition-context-add-scopes
+         internal-definition-context-splice-binding-identifier
          
          make-local-expand-context
          flip-introduction-scopes
          flip-introduction-and-use-scopes
+         remove-intdef-use-site-scopes
 
          intdefs?
          intdefs?-string
          intdefs-or-false?
          intdefs-or-false?-string)
 
-(struct internal-definition-context (frame-id      ; identifies the frame for use-site scopes
-                                     scope         ; scope that represents the context
-                                     add-scope?    ; whether the scope is auto-added for expansion
-                                     env-mixins    ; bindings for this context: box of list of mix-binding
-                                     parent-ctx))  ; parent definition context or #f
+(struct internal-definition-context (frame-id        ; identifies the frame for use-site scopes
+                                     outside-edge    ; outside-edge scope for the context
+                                     inside-edge     ; inside-edge scope for the context
+                                     add-scope?      ; whether the scope is auto-added for expansion
+                                     env-mixins      ; bindings for this context: box of list of mix-binding
+                                     use-site-scopes ; boxed list of use-site scopes that should be pruned from definition context binders
+                                     parent-ctx))    ; parent definition context or #f
 
 (struct env-mixin (id
                    sym
@@ -51,14 +56,20 @@
               (internal-definition-context? parent-ctx))
     (raise-argument-error 'syntax-local-make-definition-context "(or/c #f internal-definition-context?)" parent-ctx))
   (define ctx (get-current-expand-context 'syntax-local-make-definition-context))
-  (define frame-id (or (root-expand-context-frame-id ctx)
-                       (and parent-ctx (internal-definition-context-frame-id parent-ctx))
-                       (gensym)))
-  (define sc (new-scope 'intdef))
+  (define frame-id
+    ;; keep parent or context frame-id in order to add use-site scopes to uses of spliced macros
+    (or (and parent-ctx (internal-definition-context-frame-id parent-ctx))
+        ;; but if the context is 'expression, no splicing is possible
+        (and (not (eq? 'expression (expand-context-context ctx)))
+             (root-expand-context-frame-id ctx))
+        (gensym)))
+  (define outside-edge (new-scope 'intdef-outside))
+  (define inside-edge (new-scope 'intdef))
   (define def-ctx-scopes (expand-context-def-ctx-scopes ctx))
   (when def-ctx-scopes
-    (set-box! def-ctx-scopes (cons sc (unbox def-ctx-scopes))))
-  (internal-definition-context frame-id sc add-scope? (box null) parent-ctx))
+    (set-box! def-ctx-scopes (cons inside-edge (cons outside-edge (unbox def-ctx-scopes)))))
+  (define use-site-scopes (box '()))
+  (internal-definition-context frame-id outside-edge inside-edge add-scope? (box null) use-site-scopes parent-ctx))
 
 ;; syntax-local-bind-syntaxes
 (define (syntax-local-bind-syntaxes ids s intdef [extra-intdefs '()])
@@ -74,12 +85,14 @@
   (define ctx (get-current-expand-context 'local-expand))
   (log-expand ctx 'local-bind ids)
   (define phase (expand-context-phase ctx))
-  (define all-intdefs (if (list? extra-intdefs)
-                          (cons intdef extra-intdefs)
-                          (list intdef extra-intdefs)))
+  (define all-intdefs (if (null? extra-intdefs)
+                          intdef
+                          (if (list? extra-intdefs)
+                              (cons intdef extra-intdefs)
+                              (list intdef extra-intdefs))))
   (define intdef-ids (for/list ([id (in-list ids)])
-                       (define pre-id (remove-use-site-scopes (flip-introduction-scopes id ctx)
-                                                              ctx))
+                       (define pre-id (remove-intdef-use-site-scopes (flip-introduction-scopes id ctx)
+                                                                     intdef))
                        (add-intdef-scopes (add-intdef-scopes pre-id intdef #:always? #t)
                                           extra-intdefs)))
   (log-expand ctx 'rename-list intdef-ids)
@@ -98,7 +111,11 @@
            (make-local-expand-context (struct*-copy expand-context ctx
                                                     [env tmp-env])
                                       #:context 'expression
-                                      #:intdefs all-intdefs))))
+                                      #:intdefs all-intdefs
+                                      ;; we're going to evaluate the expansion right away,
+                                      ;; so it's not really "local" in that sense, and we
+                                      ;; want out-of-context identifiers to be flagged
+                                      #:in-local-expand? #f))))
   (define vals
     (cond
      [s
@@ -117,7 +134,9 @@
                                    (maybe-install-free=id-in-context! val intdef-id phase local-ctx))
                                  (env-mixin intdef-id sym val (make-weak-hasheq)))
                                (unbox env-mixins)))
-  (log-expand ctx 'exit-local-bind))
+  (log-expand ctx 'exit-local-bind)
+  (for/list ([id (in-list intdef-ids)])
+    (flip-introduction-scopes id ctx)))
 
 ;; internal-definition-context-binding-identifiers
 (define (internal-definition-context-binding-identifiers intdef)
@@ -132,16 +151,20 @@
     (raise-argument-error 'internal-definition-context-introduce "internal-definition-context?" intdef))
   (unless (syntax? s)
     (raise-argument-error 'internal-definition-context-introduce "syntax?" s))
-  (add-intdef-scopes s intdef
-                     #:always? #t
-                     #:action (case mode
-                                [(add) add-scope]
-                                [(remove) remove-scope]
-                                [(flip) flip-scope]
-                                [else (raise-argument-error
-                                       'internal-definition-context-introduce
-                                       "(or/c 'add 'remove 'flip)"
-                                       mode)])))
+  (define new-s
+    (add-intdef-scopes s intdef
+                       #:always? #t
+                       #:action (case mode
+                                  [(add) add-scope]
+                                  [(remove) remove-scope]
+                                  [(flip) flip-scope]
+                                  [else (raise-argument-error
+                                         'internal-definition-context-introduce
+                                         "(or/c 'add 'remove 'flip)"
+                                         mode)])))
+  (define ctx (get-current-expand-context #:fail-ok? #t))
+  (when ctx (log-expand ctx 'track-syntax 'internal-definition-context-introduce new-s s))
+  new-s)
 
 ;; internal-definition-context-seal
 (define (internal-definition-context-seal intdef) 
@@ -161,6 +184,39 @@
                           intdef))
   (for/fold ([id id]) ([intdef (in-intdefs intdef)])
     (internal-definition-context-introduce intdef id 'remove)))
+
+
+;; internal-definition-context-add-scopes
+(define (internal-definition-context-add-scopes intdef s)
+  (unless (syntax? s)
+    (raise-argument-error 'internal-definition-context-add-scopes "syntax?" s))
+  (unless (internal-definition-context? intdef)
+    (raise-argument-error 'internal-definition-context-add-scopes
+                          "internal-definition-context?"
+                          intdef))
+  (add-scope
+    (add-scope
+      s
+      (internal-definition-context-inside-edge intdef))
+    (internal-definition-context-outside-edge intdef)))
+
+;; internal-definition-context-splice-binding-identifier
+(define (internal-definition-context-splice-binding-identifier intdef id)
+  (unless (identifier? id)
+    (raise-argument-error 'internal-definition-context-splice-binding-identifier "identifier?" id))
+  (unless (internal-definition-context? intdef)
+    (raise-argument-error 'internal-definition-context-splice-binding-identifier
+                          "internal-definition-context?"
+                          intdef))
+
+  (remove-intdef-use-site-scopes
+    (remove-scope
+      (remove-scope
+        id
+        (internal-definition-context-inside-edge intdef))
+      (internal-definition-context-outside-edge intdef))
+    intdef))
+
 
 ;; For contract errors:
 (define (intdefs? x)
@@ -218,7 +274,7 @@
   (for/fold ([s s]) ([intdef (in-intdefs intdefs)]
                      #:when (or always?
                                 (internal-definition-context-add-scope? intdef)))
-    (action s (internal-definition-context-scope intdef))))
+    (action s (internal-definition-context-inside-edge intdef))))
 
 ;; ----------------------------------------
 
@@ -229,7 +285,8 @@
                                    #:stop-ids [stop-ids #f]
                                    #:to-parsed-ok? [to-parsed-ok? #f]
                                    #:track-to-be-defined? [track-to-be-defined? #f]
-                                   #:keep-#%expression? [keep-#%expression? #t])
+                                   #:keep-#%expression? [keep-#%expression? #t]
+                                   #:in-local-expand? [in-local-expand? #t])
   (define same-kind? (or (eq? context
                               (expand-context-context ctx))
                          (and (list? context)
@@ -247,19 +304,29 @@
                  (and (or (eq? context 'module)
                           (eq? context 'module-begin)
                           (list? context))
-                      (or (root-expand-context-use-site-scopes ctx)
-                          (box null)))]
+                      (if (internal-definition-context? intdefs)
+                          (internal-definition-context-use-site-scopes intdefs)
+                          (or (root-expand-context-use-site-scopes ctx)
+                              (box null))))]
                 [frame-id #:parent root-expand-context
-                          ;; If there are multiple definition contexts in `intdefs`
-                          ;; and if they have different frame IDs, then we conservatively
-                          ;; turn on use-site scopes for all frame IDs
-                          (for/fold ([frame-id (root-expand-context-frame-id ctx)]) ([intdef (in-intdefs intdefs)])
-                            (define i-frame-id (internal-definition-context-frame-id intdef))
-                            (cond
-                             [(and frame-id i-frame-id (not (eq? frame-id i-frame-id)))
-                              ;; Special ID 'all means "use-site scopes for all expansions"
-                              'all]
-                             [else (or frame-id i-frame-id)]))]
+                          (cond
+                            [(internal-definition-context? intdefs)
+                             (internal-definition-context-frame-id intdefs)]
+                            [(not intdefs) (root-expand-context-frame-id ctx)]
+                            ;; Backwards compatible behavior:
+                            ;; If there are multiple definition contexts in `intdefs`
+                            ;; and if they have different frame IDs, then we conservatively
+                            ;; turn on use-site scopes for all frame IDs
+                            [(list? intdefs)
+                             (for/fold ([frame-id (and (not (eq? 'expression (expand-context-context ctx)))
+                                                       (root-expand-context-frame-id ctx))])
+                                        ([intdef (in-intdefs intdefs)])
+                                (define i-frame-id (internal-definition-context-frame-id intdef))
+                                (cond
+                                  [(and frame-id i-frame-id (not (eq? frame-id i-frame-id)))
+                                   ;; Special ID 'all means "use-site scopes for all expansions"
+                                   'all]
+                                  [else (or frame-id i-frame-id)]))])]
                 [post-expansion #:parent root-expand-context
                                 (let ([pe (and same-kind?
                                                (or (pair? context)
@@ -278,7 +345,7 @@
                                 (expand-context-to-parsed? ctx)
                                 #f)]
                 [just-once? #f]
-                [in-local-expand? #t]
+                [in-local-expand? in-local-expand?]
                 [keep-#%expression? keep-#%expression?]
                 [stops (free-id-set phase (or all-stop-ids null))]
                 [current-introduction-scopes null]
@@ -302,3 +369,10 @@
 (define (flip-introduction-and-use-scopes s ctx)
   (flip-scopes (flip-introduction-scopes s ctx)
                (expand-context-current-use-scopes ctx)))
+
+(define (remove-intdef-use-site-scopes s intdef)
+  (define use-sites (internal-definition-context-use-site-scopes intdef))
+  (if (syntax? s)
+      (remove-scopes s (unbox use-sites))
+      (for/list ([id (in-list s)])
+        (remove-scopes id (unbox use-sites)))))

@@ -31,8 +31,7 @@ A string @tech{module path} is a relative path using Unix-style
 conventions: @litchar{/} is the path separator, @litchar{..} refers to
 the parent directory, and @litchar{.} refers to the same
 directory. The @racket[rel-string] must not start or end with a path
-separator. If the path has no suffix, @filepath{.rkt} is added
-automatically.
+separator.
 
 The path is relative to the enclosing file, if any, or it is relative
 to the current directory. (More precisely, the path is relative to the
@@ -68,7 +67,7 @@ used at the initial import. The path @racketmodname[racket] is shorthand for
 @racket[racket/main]; when an @racket[id] has no @litchar{/}, then
 @racket[/main] is automatically added to the end. Thus,
 @racketmodname[racket] or @racket[racket/main] refers to the module whose
-source is the @filepath{main.rkt} file in the @filepath{racket}
+source is the @as-index{@filepath{main.rkt}} file in the @filepath{racket}
 collection.
 
 @examples[

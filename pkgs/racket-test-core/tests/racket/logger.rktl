@@ -335,5 +335,59 @@
   (test '#(error "hi" #f #f) sync m))
 
 ; --------------------
+;; Regression test to make sure cache clearing is not broken:
+
+(let ([logger (make-logger)])
+  (test #f log-level? logger 'debug 'test-a)
+  (test #f log-level? logger 'debug 'test-b)
+  (test #f log-level? logger 'debug 'test-c)
+  (define r2 (make-log-receiver logger 'debug 'test-b))
+  (test #f log-level? logger 'debug 'test-a)
+  (test #t log-level? logger 'debug 'test-b)
+  (test #f log-level? logger 'debug 'test-c)
+  ;; Retain receiver
+  (test #f sync/timeout 0 r2))
+
+
+; --------------------
+;; Regression test for `log-message` mis-parsing arguments,
+;; based on Cameron Moy's example
+
+(let ()
+  (define-logger hello)
+  (define (f)
+    (log-hello-info "foo")
+    (define result (findf (λ (x) #f) null)) ; provokes a false in the right place...
+    (log-hello-info "bar")
+    result)
+  (set! f f)
+
+  (define recv (make-log-receiver hello-logger 'info))
+  (f)
+  (test "hello: foo" vector-ref (sync recv) 1)
+  (test "hello: bar" vector-ref (sync recv) 1))
+
+;; --------------------
+
+(unless (eq? 'cgc (system-type 'gc))
+  (struct gc-info (mode pre-amount pre-admin-amount code-amount
+                        post-amount post-admin-amount
+                        start-process-time end-process-time
+                        start-time end-time)
+    #:prefab)
+  (let ([start (current-inexact-milliseconds)]
+        [start-cpu (current-process-milliseconds)])
+    (define r (make-log-receiver (current-logger) 'debug 'GC))
+    (define msg
+      (let loop ([s #f])
+        (define msg (sync/timeout 0 r))
+        (or msg
+            (loop (make-bytes 4096)))))
+    (let ([end (current-inexact-milliseconds)]
+          [end-cpu (current-process-milliseconds)])
+      (test #t <= start (gc-info-start-time (vector-ref msg 2)) (gc-info-end-time (vector-ref msg 2)) end)
+      (test #t <= start-cpu (gc-info-start-process-time (vector-ref msg 2)) (gc-info-end-process-time (vector-ref msg 2)) end-cpu))))
+
+;; --------------------
 
 (report-errs)

@@ -6,7 +6,8 @@
                      racket/base
                      launcher/launcher
                      rackunit/log
-                     compiler/module-suffix))
+                     compiler/module-suffix
+                     compiler/cm))
 
 @title[#:tag "test"]{@exec{raco test}: Run tests}
 
@@ -43,16 +44,22 @@ The @exec{raco test} command accepts several flags:
 
  @item{@Flag{c} or @DFlag{collection}
        --- Interprets the arguments as collections whose content
-       should be tested (in the same way as directory content).}
+       should be tested (in the same way as directory content),
+       and makes @DFlag{process} the default testing mode.}
 
  @item{@Flag{p} or @DFlag{package}
        --- Interprets the arguments as packages whose contents should
        be tested (in the same way as directory content). All package
        scopes are searched for the first, most specific @tech[#:doc
-       '(lib "pkg/scribblings/pkg.scrbl")]{package scope}.}
+       '(lib "pkg/scribblings/pkg.scrbl")]{package scope}. This flag also
+       makes @DFlag{process} the default testing mode.}
  
  @item{@Flag{l} or @DFlag{lib}
-       --- Interprets the arguments as libraries that should be tested.}
+       --- Interprets the arguments as libraries that should be tested.
+       Each argument @nonterm{arg} is treated as a module path
+       @racket[(lib "@nonterm{arg}")].
+       The default testing mode is @DFlag{direct} if a single module is specified,
+       @DFlag{process} if multiple modules are specified.}
 
  @item{@Flag{m} or @DFlag{modules}
        --- Not only interprets the arguments as paths (which is the
@@ -62,24 +69,30 @@ The @exec{raco test} command accepts several flags:
        @racket[test-command-line-arguments] or @racket[test-include-paths]
        in an @filepath{info.rkt} file; meanwhile, paths that are otherwise
        enabled can be disabled via @racket[test-omit-paths] in an
-       @filepath{info.rkt} file.}
+       @filepath{info.rkt} file.
+       The default testing mode is @DFlag{direct} if a single path is specified,
+       @DFlag{process} if multiple paths are specified.}
 
  @item{@DFlag{drdr}
        --- Configures defaults to imitate the DrDr continuous testing
-       system: ignore non-modules, run tests in separate processes,
-       use as many jobs as available processors,
-       set the default timeout to 90 seconds, 
-       create a fresh @envvar{PLTUSERHOME} and @envvar{TMPDIR} for each test,
-       count stderr output as a test failure,
-       quiet program output, 
-       provide empty program input,
-       and print a table of results.}
+       system: ignore non-modules, run tests in separate processes
+       (unless @DFlag{thread} or @DFlag{direct} is specified) use as
+       many jobs as available processors (unless @DFlag{jobs} is
+       specified), set the default timeout to 90 seconds (unless
+       @DFlag{timeout} is specified), create a fresh
+       @envvar{PLTUSERHOME} and @envvar{TMPDIR} for each test, count
+       stderr output as a test failure, quiet program output, provide
+       empty program input, and print a table of results.}
 
  @item{@Flag{s} @nonterm{name} or @DFlag{submodule} @nonterm{name}
        --- Requires the submodule @nonterm{name} rather than @racket[test].
        Supply @Flag{s} or @DFlag{submodule} to run multiple submodules,
        or combine multiple submodules with @DFlag{first-avail} to
-       run the first available of the listed modules.}
+       run the first available of the listed modules.
+       Beware that if you use @Flag{s} multiple times but supply a
+       single module file as an argument, the default mode is still
+       @DFlag{direct} (which likely means fewer fresh module
+       instantiations than @DFlag{process} or @DFlag{place} mode).}
 
  @item{@Flag{r} or @DFlag{run-if-absent}
        --- Requires the top-level module of a file if a relevant submodule is not 
@@ -101,9 +114,10 @@ The @exec{raco test} command accepts several flags:
        via @Flag{s} or @DFlag{submodule}.}
 
  @item{@DFlag{direct}
-      --- Runs each test in a thread. This mode is the default if
+      --- Runs each test in a thread, using a single namespace's module
+      registry to load all tests. This mode is the default if
       a single file is specified. Multiple tests can interfere with
-      each other and the overall test run by exiting, unsafe operations
+      each other and the overall test run by exiting, using unsafe operations
       that block (and thus prevent timeout), and so on.}
 
  @item{@DFlag{process}
@@ -117,14 +131,16 @@ The @exec{raco test} command accepts several flags:
       operating-system process.}
 
  @item{@Flag{j} @nonterm{n} or @DFlag{jobs} @nonterm{n}
-      --- Runs up to @nonterm{n} tests in parallel.}
+      --- Runs up to @nonterm{n} test files in parallel.}
 
  @item{@DFlag{timeout} @nonterm{seconds}
       --- Sets the default timeout (after which a test counts as failed)
       to @nonterm{seconds}. Use @exec{+inf.0} to allow tests to run without
       limit but allow @racket[timeout] sub-submodule configuration.
       If any test fails due to a timeout, the exit status of @exec{raco test}
-      is 2 (as opposed to 1 for only non-timeout failures or 0 for success).}
+      is 2 (as opposed to 1 for only non-timeout failures or 0 for success).
+      The default timeout corresponds to @exec{+inf.0} if not specified
+      via @DFlag{timeout} or @DFlag{drdr}.}
 
  @item{@DFlag{fresh-user}
       --- When running tests in a separate process, creates a fresh
@@ -151,6 +167,19 @@ The @exec{raco test} command accepts several flags:
        @nonterm{pattern}.  This flag can be used multiple times, and
        stderr output is treated as success as long as it matches any
        one @nonterm{pattern}.}
+
+ @item{@DFlag{errortrace}
+       --- Dynamically loads @racketmodname[errortrace #:indirect]
+       before running the tests. Note that already-compiled files will not
+       include the tracing information.}
+ @item{@Flag{y} or @DFlag{make}
+       --- Enable automatic
+        generation and update of compiled @filepath{.zo} files.
+        Specifically, the
+        result of
+        @racket[(make-compilation-manager-load/use-compiled-handler)]
+        is installed as the value of @racket[current-load/use-compiled]
+        before module-loading actions.}
 
  @item{@Flag{q} or @DFlag{quiet}
        --- Suppresses output of progress information, responsible
@@ -179,7 +208,11 @@ The @exec{raco test} command accepts several flags:
         as a whitespace-delimited list of arguments to add. To specify
         multiple arguments using this flag within a typical shell,
         @nonterm{arguments} must be
-        enclosed in quotation marks.
+        enclosed in quotation marks.}
+
+ @item{@DFlag{output} or @Flag{o} @nonterm{file}
+       --- Save all stdout and stderr output into @nonterm{file}.
+       The target @nonterm{file} will be overwritten if it exists already.
  }
 ]
 
@@ -187,7 +220,10 @@ The @exec{raco test} command accepts several flags:
          #:changed "1.4" @elem{Changed recognition of module suffixes to use @racket[get-module-suffixes],
                                which implies recognizing @filepath{.ss} and @filepath{.rkt}.}
          #:changed "1.5" @elem{Added @DPFlag{ignore-stderr}.}
-         #:changed "1.6" @elem{Added @DPFlag{arg} and @DPFlag{args}.}]
+         #:changed "1.6" @elem{Added @DPFlag{arg} and @DPFlag{args}.}
+         #:changed "1.8" @elem{Added @DFlag{output} and @Flag{o}.}
+         #:changed "1.11" @elem{Added @DFlag{make}/@Flag{y}.}
+         #:changed "1.12" @elem{Added @DFlag{errortrace}.}]
 
 @section[#:tag "test-config"]{Test Configuration by Submodule}
 
@@ -199,7 +235,7 @@ identifiers:
 
 @itemlist[
 
- @item{@racket[timeout] --- a real number to override the default
+ @item{@racket[timeout] --- a real number in seconds to override the default
        timeout for the test, which applies only when timeouts are
        enabled.}
 
@@ -210,7 +246,7 @@ identifiers:
  @item{@racket[lock-name] --- a string that names a lock file that is
        used to serialize tests (i.e., tests that have the same lock
        name do not run concurrently). The lock file's location is
-       determined by the @envvar{PLTLOCKDIR} enviornment varible or
+       determined by the @envvar{PLTLOCKDIR} environment variable or
        defaults to @racket[(find-system-path 'temp-dir)]. The maximum
        time to wait on the lock file is determined by the
        @envvar{PLTLOCKTIME} environment variable or defaults to 4
@@ -287,7 +323,7 @@ The following @filepath{info.rkt} fields are recognized:
 
  @item{@racket[test-timeouts] --- a list of @racket[(list
        _module-path-string _real-number)] to override the default
-       timeout for @racket[_module-path-string].}
+       timeout in seconds for @racket[_module-path-string].}
 
  @item{@racket[test-responsibles] --- a list of @racket[(list
        _module-path-string _party)] or @racket[(list 'all _party)] to

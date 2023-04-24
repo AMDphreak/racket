@@ -1,5 +1,6 @@
 #lang scribble/doc
 @(require "mz.rkt"
+          scribble/core
           (for-label framework/preferences
                      racket/runtime-path
                      launcher/launcher
@@ -52,21 +53,33 @@ by @racket[kind], which must be one of the following:
  the current executable is used as the home directory.}
 
  @item{@indexed-racket['pref-dir] --- the standard directory for
- storing the current user's preferences. On Unix, the directory is
- @filepath{.racket} in the @tech{user's home directory}.  On Windows,
- it is @filepath{Racket} in the @tech{user's home directory} if
- determined by @envvar{PLTUSERHOME}, otherwise in the user's
- application-data folder as specified by the Windows registry; the
- application-data folder is usually @filepath{Application Data} in the
- user's profile directory. On Mac OS, the preferences directory
- is @filepath{Library/Preferences} in the
- @tech{user's home directory}. The preferences directory might not exist.}
+ storing the current user's preferences. The preferences directory
+ might not exist.
+
+ On Unix, the preferences directory is normally the @filepath{racket}
+ subdirectory of the path specified by
+ @indexed-envvar{XDG_CONFIG_HOME}, or @filepath{.config/racket} in the
+ @tech{user's home directory} if @envvar{XDG_CONFIG_HOME} is not set
+ to an absolute path or if @envvar{PLTUSERHOME} is set. Either way, if
+ that directory does not exist but a @filepath{.racket} directory
+ exists in the @tech{user's home directory}, then that directory is
+ the preference directory, instead.
+
+ On Windows, the preferences directory is @filepath{Racket} in the
+ @tech{user's home directory} if determined by @envvar{PLTUSERHOME},
+ otherwise in the user's application-data folder as specified by the
+ Windows registry; the application-data folder is usually
+ @filepath{Application Data} in the user's profile directory.
+
+ On Mac OS, the preferences directory is
+ @filepath{Library/Preferences} in the @tech{user's home directory}.}
 
  @item{@indexed-racket['pref-file] --- a file that contains a
  symbol-keyed association list of preference values. The file's
  directory path always matches the result returned for
  @racket['pref-dir]. The file name is @filepath{racket-prefs.rktd} on Unix
- and Windows, and it is @filepath{org.racket-lang.prefs.rktd} on Mac OS. The file's directory might not exist. See also
+ and Windows, and it is @filepath{org.racket-lang.prefs.rktd} on Mac OS.
+ The file's directory might not exist. See also
  @racket[get-preference].}
 
  @item{@indexed-racket['temp-dir] --- the standard directory for
@@ -80,20 +93,33 @@ by @racket[kind], which must be one of the following:
 
  @item{@indexed-racket['init-dir] --- the directory containing the
  initialization file used by the Racket executable.
- It is the same as the @tech{user's home directory}.}
+
+ On Unix, the initialization directory is the same as the result
+ returned for @racket['pref-dir]---unless that directory does not
+ exist and a @filepath{.racketrc} file exists in the @tech{user's home
+ directory}, in which case the home directory is the initialization
+ directory.
+
+ On Windows, the initialization directory is the same as the
+ @tech{user's home directory}.
+
+ On Mac OS, the initialization directory is @filepath{Library/Racket}
+ in the @tech{user's home directory}---unless no
+ @filepath{racketrc.rktl} exists there and a @filepath{.racketrc} file
+ does exist in the home directory, in which case the home directory is
+ the initialization directory.}
 
  @item{@indexed-racket['init-file] --- the file loaded at start-up by
  the Racket executable. The directory part of the
- path is the same path as returned for @racket['init-dir].  The file
- name is platform-specific:
+ path is the same path as returned for @racket['init-dir].
 
-  @itemize[
+ On Windows, the file part of the name is
+ @indexed-file{racketrc.rktl}.
 
-  @item{@|AllUnix|: @indexed-file{.racketrc}}
-
-  @item{Windows: @indexed-file{racketrc.rktl}}
-
-  ]}
+ On Unix and Mac OS, the file part of the name is
+ @indexed-file{racketrc.rktl}---unless the path returned for
+ @racket['init-dir] is the @tech{user's home directory}, in which case
+ the file part of the name is @indexed-file{.racketrc}.}
 
  @item{@indexed-racket['config-dir] --- a directory for
  the installation's configuration. This directory is specified by the
@@ -119,10 +145,39 @@ by @racket[kind], which must be one of the following:
  @indexed-envvar{PLTADDONDIR} environment variable, and it can be
  overridden by the @DFlag{addon} or @Flag{A} command-line flag.  If no
  environment variable or flag is specified, or if the value is not a
- legal path name, then this directory defaults to
- @filepath{Library/Racket} in the @tech{user's home directory} on Mac
- OS and @racket['pref-dir] otherwise.  The directory might not
- exist.}
+ legal path name, then this directory defaults to a platform-specific
+ locations. The directory might not exist.
+
+ On Unix, the default is normally the @filepath{racket} subdirectory
+ of the path specified by @indexed-envvar{XDG_DATA_HOME}, or
+ @filepath{.local/share/racket} in the @tech{user's home directory} if
+ @envvar{XDG_CONFIG_HOME} is not set to an absolute path or if
+ @envvar{PLTUSERHOME} is set. If that directory does not exists but a
+ @filepath{.racket} directory exists in the user's home directory,
+ that the @filepath{.racket} directory path is the default, instead.
+
+ On Windows, the default is the same as the @racket['pref-dir] directory.
+
+ On Mac OS, the default is @filepath{Library/Racket} within the
+ @tech{user's home directory}.}
+
+ @item{@indexed-racket['cache-dir] --- a directory for storing
+ user-specific caches. The directory might not exist.
+
+ On Unix, the cache directory is normally the @filepath{racket}
+ subdirectory of the path specified by
+ @indexed-envvar{XDG_CACHE_HOME}, or @filepath{.cache/racket} in the
+ @tech{user's home directory} if @envvar{XDG_CACHE_HOME} is not set to
+ an absolute path or if @envvar{PLTUSERHOME} is set. If that directory
+ does not exist but a @filepath{.racket} directory exists in the home
+ directory, then the @filepath{.racket} directory is the cache
+ directory, instead.
+
+ On Windows, the cache directory is the same as the result returned
+ for @racket['addon-dir].
+
+ On Mac OS, the cache directory is @filepath{Library/Caches/Racket}
+ within the @tech{user's home directory}.}
 
  @item{@indexed-racket['doc-dir] --- the standard directory for
  storing the current user's documents. On Unix, it's
@@ -191,20 +246,28 @@ by @racket[kind], which must be one of the following:
 
 @history[#:changed "6.0.0.3" @elem{Added @envvar{PLTUSERHOME}.}
          #:changed "6.9.0.1" @elem{Added @racket['host-config-dir]
-                                   and @racket['host-collects-dir].}]}
+                                   and @racket['host-collects-dir].}
+         #:changed "7.8.0.9" @elem{Added @racket['cache-dir], and changed
+                                   to use XDG directories as preferred on Unix
+                                   with the previous paths as a fallback, and
+                                   with similar adjustments for Mac OS.}]}
 
 @defproc[(path-list-string->path-list [str (or/c string? bytes?)]
-                                      [default-path-list (listof path?)])
-         (listof path?)]{
+                                      [default-path-list (listof (or/c path? 'same))])
+         (listof (or/c path? 'same))]{
 
 Parses a string or byte string containing a list of paths, and returns
-a list of path strings. On @|AllUnix|, paths in a path list are
+a list of paths. On @|AllUnix|, paths in a path-list string are
 separated by a @litchar{:}; on Windows, paths are separated by a
 @litchar{;}, and all @litchar{"}s in the string are discarded. Whenever the path 
 list contains an empty path, the list
 @racket[default-path-list] is spliced into the returned list of
 paths. Parts of @racket[str] that do not form a valid path are not
-included in the returned list.}
+included in the returned list. The given @racket[str] must not contain
+a nul character or nul byte.
+
+@history[#:changed "8.0.0.10" @elem{Changed to allow @racket['same] in
+                                    @racket[default-path-list].}]}
 
 
 @defproc[(find-executable-path [program path-string?]
@@ -214,6 +277,13 @@ included in the returned list.}
 
 Finds a path for the executable @racket[program], returning
 @racket[#f] if the path cannot be found.
+
+On Windows, if @racket[program] is not found and it has no file
+extension, then the search starts over with @filepath{.exe} added to
+@racket[program], and the result is @racket[#f] only if the path with
+@filepath{.exe} also cannot be found. The result includes the
+extension @filepath{.exe} if only @racket[program] with the extension
+is found.
 
 If @racket[related] is not @racket[#f], then it must be a relative
 path string, and the path found for @racket[program] must be such
@@ -251,7 +321,10 @@ not defined, @racket[program] is prefixed with the current
 directory and used in the search algorithm above. (On Windows, the
 current directory is always implicitly the first item in
 @envvar{PATH}, so @racket[find-executable-path] checks the current
-directory first on Windows.)}
+directory first on Windows.)
+
+@history[#:changed "8.1.0.7" @elem{Added search with @filepath{.exe}
+                                   on Windows.}]}
 
 @;------------------------------------------------------------------------
 @section[#:tag "fileutils"]{Files}
@@ -284,6 +357,21 @@ On Windows, @racket[link-exists?] reports @racket[#t] for both
 symbolic links and junctions.
 
 @history[#:changed "6.0.1.12" @elem{Added support for links on Windows.}]}
+
+
+@defproc[(file-or-directory-type [path path-string?] [must-exist? any/c #f])
+         (or/c 'file 'directory 'link 'directory-link #f)]{
+
+Reports whether @racket[path] refers to a file, directory, link, or
+directory link (in the case of Windows; see also
+@racket[make-file-or-directory-link]), assuming that @racket[path] can
+be accessed.
+
+If @racket[path] cannot be accessed, the result is @racket[#f] if
+@racket[must-exist?] is @racket[#f], otherwise the
+@exnraise[exn:fail:filesystem].
+
+@history[#:added "7.8.0.5"]}
 
 
 @defproc[(delete-file [path path-string?]) void?]{
@@ -367,7 +455,7 @@ duplicates files.}
 
 @index['("file modification date and time")]{Returns}
 the file or directory's last modification date in seconds
-since midnight UTC, January 1, 1970 (see also @secref["time"]) when
+since @tech{the epoch} (see also @secref["time"]) when
 @racket[secs-n] is not provided or is @racket[#f].
 
 For FAT filesystems on Windows, directories do not have modification
@@ -418,11 +506,82 @@ all three (owner, group, and others) are always the same, and read and
 execute permission are always available. On @|AllUnix|,
 higher bits have a platform-specific meaning.
 
-If an integer is supplied as the second argument, its is used as an
+If an integer is supplied as the second argument, it is used as an
 encoding of properties (mostly permissions) to install for the file.
 
 In all modes, the @exnraise[exn:fail:filesystem] on error (e.g., if no
 such file exists).}
+
+
+@defproc[(file-or-directory-stat [path path-string?]
+                                 [as-link? boolean? #f])
+         (and/c (hash/c symbol? any/c) hash-eq?)]{
+
+@index['("inode")]{Returns} a hash with the following keys and values,
+where each value currently is a nonnegative exact integer:
+
+@itemlist[
+ @item{@indexed-racket['device-id] : device ID}
+ @item{@indexed-racket['inode] : inode number}
+ @item{@indexed-racket['mode] : mode bits (see below)}
+ @;{
+ @item{@indexed-racket['type] : one of @racket['socket],
+   @racket['symbolic-link], @racket['file], @racket['directory],
+   @racket['block-device], @racket['character-device] or
+   @racket['fifo]}
+ }
+ @item{@indexed-racket['hardlink-count] : number of hard links}
+ @item{@indexed-racket['user-id] : numeric user ID of owner}
+ @item{@indexed-racket['group-id] : numeric group ID of owner}
+ @item{@indexed-racket['device-id-for-special-file] : device ID (if special file)}
+ @item{@indexed-racket['size] : size of file or symbolic link in bytes}
+ @item{@indexed-racket['block-size] : size of filesystem blocks}
+ @item{@indexed-racket['block-count] : number of used filesystem blocks}
+ @item{@indexed-racket['access-time-seconds] : last access time in seconds
+   since @tech{the epoch}}
+ @item{@indexed-racket['modify-time-seconds] : last modification time in
+   seconds since @tech{the epoch}}
+ @item{@indexed-racket['change-time-seconds] : last status change time in
+   seconds since @tech{the epoch}}
+ @item{@indexed-racket['creation-time-seconds] : creation time in seconds since
+   @tech{the epoch}}
+ @item{@indexed-racket['access-time-nanoseconds] : last access time in
+   nanoseconds since @tech{the epoch}}
+ @item{@indexed-racket['modify-time-nanoseconds] : last modification time in
+   nanoseconds since @tech{the epoch}}
+ @item{@indexed-racket['change-time-nanoseconds] : last status change time in
+   nanoseconds since @tech{the epoch}}
+ @item{@indexed-racket['creation-time-nanoseconds] : creation time in
+   nanoseconds since @tech{the epoch}}
+]
+
+If @racket[as-link?] is a true value, then if @racket[path] refers to a
+symbolic link, the stat information of the link is returned instead of the stat
+information of the referenced filesystem item.
+
+The mode bits are the bits for permissions and other data, as returned from the
+Posix @tt{stat}/@tt{lstat} functions or the Windows @tt{_wstat64} function,
+respectively. To select portions of the bit pattern, use the constants
+@indexed-racket[user-read-bit], etc.
+
+Depending on the operating system and filesystem, the ``nanoseconds''
+timestamps may have less than nanoseconds precision. For example, in one
+environment a timestamp may be @racket[1234567891234567891] (nanoseconds
+precision) and in another environment @racket[1234567891000000000] (seconds
+precision).
+
+Values that aren't available for a platform/filesystem combination may be set
+to @racket[0]. For example, this applies to the @racket['user-id] and
+@racket['group-id] keys on Windows. Also, Posix platforms provide the status
+change timestamp, but not the creation timestamp; for Windows it's the
+opposite.
+
+If @racket[as-link?] is @racket[#f] and @racket[path] isn't accessible,
+the @exnraise[exn:fail:filesystem]. This exception is also raised if
+@racket[as-link?] is a true value and @racket[path] can't be resolved, i.e., is
+a dangling link.
+
+@history[#:added "8.3.0.7"]}
 
 
 @defproc[(file-or-directory-identity [path path-string?]
@@ -447,18 +606,55 @@ OS, this size excludes the resource-fork size. On error (e.g., if no
 such file exists), the @exnraise[exn:fail:filesystem].}
 
 
-@defproc[(copy-file [src path-string?] [dest path-string?] [exists-ok? any/c #f]) void?]{
+@defproc[(copy-file [src path-string?] 
+                    [dest path-string?]
+                    [exists-ok?/pos any/c #f]
+                    [#:exists-ok? exists-ok? any/c exists-ok?/pos]
+                    [#:permissions permissions (or/c #f (integer-in 0 65535)) #f]
+                    [#:replace-permissions? replace-permissions? any/c #t])
+         void?]{
 
 Creates the file @racket[dest] as a copy of @racket[src], if
 @racket[dest] does not already exist. If @racket[dest] already exists
-and @racket[exists-ok?] is @racket[#f], the copy fails with
+and @racket[exists-ok?] is @racket[#f], the copy fails and the
 @exnraise[exn:fail:filesystem:exists?]; otherwise, if @racket[dest]
-exists, its content is replaced with the content of @racket[src]. File
-permissions are transferred from @racket[src] to @racket[dest]; on Windows,
-the modification time of @racket[src] is also transferred to @racket[dest]. If
-@racket[src] refers to a link, the target of the link is copied,
-rather than the link itself; if @racket[dest] refers to a link and
-@racket[exists-ok?] is true, the target of the link is updated.}
+exists, its content is replaced with the content of @racket[src]. 
+
+If @racket[src] refers to a link, the target of the link is copied,
+rather than the link itself. If @racket[dest] refers to a link and
+@racket[exists-ok?] is true, the target of the link is updated.
+
+File permissions are transferred from @racket[src] to @racket[dest],
+unless @racket[permissions] is supplied as non-@racket[#f] on Unix and
+Mac OS, in which case @racket[permissions] is used for @racket[dest].
+Beware that permissions are transferred without regard for the
+process's umask setting by default, but see
+@racket[replace-permissions?] below. On Windows, the modification time
+of @racket[src] is also transferred to @racket[dest]; if
+@racket[permissions] is supplied as non-@racket[#f], then after
+copying, @racket[dest] is set to read-only or not depending on whether
+the @racketvalfont{#o2} bit is present in @racket[permissions].
+
+The @racket[replace-permissions?] argument is used only on Unix and
+Mac OS. When @racket[dest]s is created, it is created with
+@racket[permissions] or the permissions of @racket[src]; however, the
+process's umask may unset bits in the requested permissions. When
+@racket[dest] already exists (and @racket[exists-ok?] is true), then
+the permissions of @racket[dest] are initially left as-is. Finally,
+when @racket[replace-permissions?] is a true value, then the
+permissions of @racket[dest] are set after the file content is copied
+to @racket[permissions] or the permissions of @racket[src], without
+modification by umask.
+
+The @racket[exists-ok?/pos] by-position argument is for backward
+compatibility. That by-position argument can be supplied, or the
+@racket[exists-ok?] keyword argument can be supplied, but the
+@exnraise[exn:fail:contract] if both are supplied.
+
+@history[#:changed "8.7.0.9" @elem{Added @racket[#:exists-ok?],
+                                   @racket[#:permissions], and
+                                   @racket[#:replace-permissions?]
+                                   arguments.}]}
 
 
 @defproc[(make-file-or-directory-link [to path-string?] [path path-string?]) 
@@ -472,15 +668,20 @@ successfully,the @exnraise[exn:fail:filesystem].
 
 On Windows XP and earlier, the @exnraise[exn:fail:unsupported]. On
 later versions of Windows, the creation of links tends to be
-disallowed by security policies. Furthermore, a relative-path link is
-parsed specially; see @secref["windowspaths"] for more information.
-When @racket[make-file-or-directory-link] succeeds, it creates a symbolic
-link as opposed to a junction.
+disallowed by security policies. Windows distinguishes between file
+and directory links, and a directory link is created only if
+@racket[to] parses syntactically as a directory (see
+@racket[path->directory-path]). Furthermore, a relative-path link is
+parsed specially by the operating system; see @secref["windowspaths"]
+for more information. When @racket[make-file-or-directory-link]
+succeeds, it creates a symbolic link as opposed to a junction or hard
+link. Beware that directory links must be deleted using
+@racket[delete-directory] instead of @racket[delete-file].
 
 @history[#:changed "6.0.1.12" @elem{Added support for links on Windows.}]}
 
 
-@defparam[current-force-delete-permissions any/c boolean?]{
+@defboolparam[current-force-delete-permissions force? #:value #t]{
 
 A @tech{parameter} that determines on Windows whether
 @racket[delete-file] and @racket[delete-directory] attempt to change a
@@ -517,7 +718,7 @@ directory.}
 
 @defparam*[current-directory-for-user path path-string? (and/c path? complete-path?)]{
 
-Like @racket[current-directory], but use only by
+Like @racket[current-directory], but for use only by
 @racket[srcloc->string] for reporting paths relative to a
 directory.
 
@@ -540,10 +741,20 @@ of the current directory.}
 Returns @racket[#t] if @racket[path] refers to a directory,
 @racket[#f] otherwise.}
 
-@defproc[(make-directory [path path-string?]) void?]{
+@defproc[(make-directory [path path-string?]
+                         [permissions (integer-in 0 65535) @#,racketvalfont{#o777}])
+         void?]{
 
 Creates a new directory with the path @racket[path].  If the directory
-is not created successfully, the @exnraise[exn:fail:filesystem].}
+is not created successfully, the @exnraise[exn:fail:filesystem].
+
+The @racket[permissions] argument specifies the permissions of the
+created directory, where an integer representation of permissions is
+treated the same as for @racket[file-or-directory-permissions]. On
+Unix and Mac OS, these permissions bits are combined with the
+process's umask. On Windows, @racket[permissions] is not used.
+
+@history[#:changed "8.3.0.5" @elem{Added the @racket[permissions] argument.}]}
 
 
 @defproc[(delete-directory [path path-string?]) void?]{
@@ -682,8 +893,8 @@ In addition to the bindings described below,
 compile-time expressions with @racket[define-runtime-path].
 
 @defform[(define-runtime-path id maybe-runtime?-id expr)
-         #:grammar ([maybe-runtime? code:blank
-                                    (code:line #:runtime?-id runtime?-id)])]{
+         #:grammar ([maybe-runtime?-id code:blank
+                                       (code:line #:runtime?-id runtime?-id)])]{
 
 Uses @racket[expr] as both a compile-time (i.e., @tech{phase} 1)
 expression and a run-time (i.e., @tech{phase} 0) expression. In either
@@ -752,13 +963,13 @@ compiled. Instead, @racket[expr] is preserved in the module as a
 compile-time expression (in the sense of
 @racket[begin-for-syntax]). Later, at the time that an executable is
 created, the compile-time portion of the module is executed (again),
-and the result of @racket[expr] is the file to be included with the
+and the result of @racket[expr] is the file or directory to be included with the
 executable. The reason for the extra compile-time execution is that
 the result of @racket[expr] might be platform-dependent, so the result
 should not be stored in the (platform-independent) bytecode form of
 the module; the platform at executable-creation time, however, is the
 same as at run time for the executable. Note that @racket[expr] is
-still evaluated at run-time; consequently, avoid procedures like
+still evaluated at run time; consequently, avoid procedures like
 @racket[collection-path], which depends on the source installation,
 and instead use relative paths and forms like @racket[(list 'lib _str
 ...+)].
@@ -767,7 +978,12 @@ If a path is needed only on some platforms and not on others, use
 @racket[define-runtime-path-list] with an @racket[expr] that produces an
 empty list on platforms where the path is not needed.
 
-Beware that @racket[define-runtime-path] in a @tech{phase level} other
+Beware that if @racket[expr] produces the path of a directory when
+creating an executable, the directory's full content (including any
+subdirectories) is included with the executable or eventual
+distribution.
+
+Also beware that @racket[define-runtime-path] in a @tech{phase level} other
 than 0 does not cooperate properly with an executable creator. To work
 around that limitation, put @racket[define-runtime-path] in a separate
 module---perhaps a @tech{submodule} created by @racket[module]---then
@@ -997,8 +1213,8 @@ Displays each element of @racket[lst] to @racket[path], adding
 @racket[open-output-file].}
 
 @defproc[(copy-directory/files [src path-string?] [dest path-string?]
-                               [#:keep-modify-seconds? keep-modify-seconds? #f]
-                               [#:preserve-links? preserve-links? #f])
+                               [#:keep-modify-seconds? keep-modify-seconds? any/c #f]
+                               [#:preserve-links? preserve-links? any/c #f])
          void?]{
 
 Copies the file or directory @racket[src] to @racket[dest], raising
@@ -1018,7 +1234,7 @@ the modification date of the original.
 
 
 @defproc[(delete-directory/files [path path-string?]
-                                 [#:must-exist? must-exist? #t])
+                                 [#:must-exist? must-exist? any/c #t])
          void?]{
 
 Deletes the file or directory specified by @racket[path], raising
@@ -1047,8 +1263,8 @@ than the file), then the file is deleted directly with
 
 @defproc[(find-files [predicate (path? . -> . any/c)]
                      [start-path (or/c path-string? #f) #f]
-                     [#:skip-filtered-directory? skip-filtered-directory? #f]
-                     [#:follow-links? follow-links? #f])
+                     [#:skip-filtered-directory? skip-filtered-directory? any/c #f]
+                     [#:follow-links? follow-links? any/c #f])
          (listof path?)]{
 
 Traverses the filesystem starting at @racket[start-path] and creates a
@@ -1212,48 +1428,130 @@ will not create it.
 
 
 @defproc[(make-temporary-file [template string? "rkttmp~a"]
-                              [copy-from-filename (or/c path-string? #f 'directory) #f]
-                              [directory (or/c path-string? #f) #f])
-         path?]{
+                              [#:copy-from copy-from (or/c path-string? #f 'directory) #f]
+                              [#:base-dir base-dir (or/c path-string? #f) #f]
+                              [compat-copy-from (or/c path-string? #f 'directory) copy-from]
+                              [compat-base-dir (or/c path-string? #f) base-dir])
+         (and/c path? complete-path?)]{
 
-Creates a new temporary file and returns a pathname string for the
-file.  Instead of merely generating a fresh file name, the file is
+Creates a new temporary file and returns its path.
+Instead of merely generating a fresh file name, the file is
 actually created; this prevents other threads or processes from
 picking the same temporary name.
 
-The @racket[template] argument must be a format string suitable
-for use with @racket[format] and one additional string argument (where
-the string contains only digits). If the resulting string is a
-relative path, it is combined with the result of
-@racket[(find-system-path 'temp-dir)], unless @racket[directory] is
-provided and non-@racket[#f], in which case the
-file name generated from @racket[template] is combined with
-@racket[directory] to obtain a full path.
+The @racket[template] argument must be a format string
+suitable for use with @racket[format] and one additional
+string argument (which will contain only digits). By
+default, if @racket[template] produces a relative path, it
+is combined with the result of
+@racket[(find-system-path 'temp-dir)] using
+@racket[build-path]; alternatively, @racket[template] may
+produce an absolute path, in which case
+@racket[(find-system-path 'temp-dir)] is not consulted. If
+@racket[base-dir] is provided and non-@racket[#false],
+@racket[template] must not produce a @tech{complete} path,
+and @racket[base-dir] will be used instead of
+@racket[(find-system-path 'temp-dir)]. Using
+@racket[base-dir] is generally more reliable than including
+directory components in @racket[template]: it avoids subtle
+bugs from manipulating paths as string and eleminates the
+need to sanitize @racket[format] escape sequences.
 
-The @racket[template] argument's default is only the string @racket["rkttmp~a"]
-when there is no source location information for the callsite of
-@racket[make-temporary-file] (or if @racket[make-temporary-file] is
-used in a higher-order position). If there is such information, then the template
-string is based on the source location.
+On Windows, @racket[template] may produce an absolute path
+which is not a complete path (see @secref["windowspaths"])
+when @racket[base-dir] is absent or @racket[#f] (in which
+case it will be resolved relative to
+@racket[(current-directory)]) or if @racket[base-dir] is a
+drive specification (in which case it will be used as with
+@racket[build-path]). If @racket[base-dir] is any other kind
+of path, it is an error for @racket[template] to produce an
+absolute path.
 
-If @racket[copy-from-filename] is provided as path, the temporary file
+When the @racket[template] argument is not provided, if
+there is source location information for the callsite of
+@racket[make-temporary-file], a template string is generated
+based on the source location: the default is
+@racket["rkttmp~a"] only when no source location information
+is available (e.g@._ if @racket[make-temporary-file] is used
+in a higher-order position).
+
+If @racket[copy-from] is provided as path, the temporary file
 is created as a copy of the named file (using @racket[copy-file]). If
-@racket[copy-from-filename] is @racket[#f], the temporary file is
-created as empty. If @racket[copy-from-filename] is
-@racket['directory], then the temporary ``file'' is created as a
-directory.
+@racket[copy-from] is @racket[#f], the temporary file is
+created as empty. As a special case, for backwards compatibility,
+if @racket[copy-from] is @racket['directory],
+then the temporary ``file'' is created as a directory:
+for clarity, prefer @racket[make-temporary-directory] for creating
+temporary directories.
 
 When a temporary file is created, it is not opened for reading or
-writing when the pathname is returned. The client program calling
+writing when the path is returned. The client program calling
 @racket[make-temporary-file] is expected to open the file with the
 desired access and flags (probably using the @racket['truncate] flag;
 see @racket[open-output-file]) and to delete it when it is no longer
-needed.}
+needed.
+
+The by-position arguments @racket[compat-copy-from] and
+@racket[compat-base-dir] are for backwards compatibility:
+if provided, they take precedence over the @racket[#:copy-from] and
+@racket[#:base-dir] keyword variants.
+Supplying by-position arguments prevents @racket[make-temporary-file]
+from generating a @racket[template] using the source location.
+
+@history[
+ #:changed "8.4.0.3"
+ @elem{Added the @racket[#:copy-from] and @racket[#:base-dir] arguments.}
+ ]}
+
+@defproc[(make-temporary-directory [template string? "rkttmp~a"]
+                                   [#:base-dir base-dir (or/c path-string? #f) #f])
+         (and/c path? complete-path?)]{
+
+ Like @racket[make-temporary-file], but
+ creates a directory, rather than a regular file.
+
+ As with @racket[make-temporary-file], if the
+ @racket[template] argument is not provided, a template
+ string is generated from the source location of the call to
+ @racket[make-temporary-directory] when possible: the default
+ is @racket["rkttmp~a"] only when no source location
+ information is available.
+
+@history[
+ #:added "8.4.0.3"
+ ]}
+
+@deftogether[
+ (@defproc[(make-temporary-file* [prefix bytes?]
+                                 [suffix bytes?]
+                                 [#:copy-from copy-from (or/c path-string? #f) #f]
+                                 [#:base-dir base-dir (or/c path-string? #f) #f])
+           (and/c path? complete-path?)]
+   @defproc[(make-temporary-directory* [prefix bytes?]
+                                       [suffix bytes?]
+                                       [#:base-dir base-dir (or/c path-string? #f) #f])
+            (and/c path? complete-path?)])]{
+
+ Like @racket[make-temporary-file] and
+ @racket[make-temporary-directory], respectively, but, rather
+ than using a template for @racket[format], the path is based
+ on @racket[(bytes-append prefix generated suffix)], where
+ @racket[generated] is a byte string chosen by the
+ implementation to produce a unique path. If there is source
+ location information for the callsite of
+ @racket[make-temporary-file*] or
+ @racket[make-temporary-directory*], @racket[generated] will
+ incorporate that information. The resulting path is combined
+ with @racket[base-dir] as with @racket[make-temorary-file].
+
+ @history[
+ #:added "8.4.0.3"
+ ]}
 
 @defproc[(call-with-atomic-output-file [file path-string?] 
-                                       [proc ([port output-port?] [tmp-path path?]  . -> . any)]
+                                       [proc (output-port? path? . -> . any)]
                                        [#:security-guard security-guard (or/c #f security-guard?) #f]
-                                       [#:rename-fail-handler rename-fail-handler (or/c #f (exn:fail:filesystem? path> . -> . any)) #f])
+                                       [#:rename-fail-handler rename-fail-handler (or/c #f (exn:fail:filesystem? path? . -> . any)) #f])
          any]{
 
 Opens a temporary file for writing in the same directory as
@@ -1297,15 +1595,15 @@ file path to be moved to @racket[path]. The
 @defproc[(get-preference [name symbol?]
                          [failure-thunk (-> any) (lambda () #f)]
                          [flush-mode any/c 'timestamp]
-                         [filename (or/c string-path? #f) #f]
+                         [filename (or/c path-string? #f) #f]
                          [#:use-lock? use-lock? any/c #t]
-                         [#:timeout-lock-there timeout-lock-there 
+                         [#:timeout-lock-there timeout-lock-there
                                                (or/c (path? . -> . any) #f)
                                                #f]
-                         [#:lock-there 
+                         [#:lock-there
                           lock-there
                           (or/c (path? . -> . any) #f)
-                          (make-handle-get-preference-locked 
+                          (make-handle-get-preference-locked
                            0.01 name failure-thunk flush-mode filename
                            #:lock-there timeout-lock-there)])
          any]{
@@ -1501,9 +1799,9 @@ in the sense of @racket[port-try-file-lock?].
     #:lock-file (make-lock-file-name filename))]
 
 
-@defproc*[([(make-lock-file-name [path (or path-string? path-for-some-system?)]) 
+@defproc*[([(make-lock-file-name [path (or/c path-string? path-for-some-system?)])
             path?]
-           [(make-lock-file-name [dir (or path-string? path-for-some-system?)] 
+           [(make-lock-file-name [dir (or/c path-string? path-for-some-system?)]
                                  [name path-element?]) 
             path?])]{
 
@@ -1516,20 +1814,35 @@ Creates a lock filename by prepending @racket["_LOCK"] on Windows
   (make-lock-file-name "/home/george/project/important-file")]}
 
 @deftogether[(
-@defthing[user-read-bit     @#,racketvalfont{#o400}]
-@defthing[user-write-bit    @#,racketvalfont{#o200}]
-@defthing[user-execute-bit  @#,racketvalfont{#o100}]
-@defthing[group-read-bit    @#,racketvalfont{#o040}]
-@defthing[group-write-bit   @#,racketvalfont{#o020}]
-@defthing[group-execute-bit @#,racketvalfont{#o010}]
-@defthing[other-read-bit    @#,racketvalfont{#o004}]
-@defthing[other-write-bit   @#,racketvalfont{#o002}]
-@defthing[other-execute-bit @#,racketvalfont{#o001}]
+; See https://en.wikibooks.org/wiki/C_Programming/POSIX_Reference/sys/stat.h
+@defthing[file-type-bits             @#,racketvalfont{#o170000}]
+@defthing[socket-type-bits           @#,racketvalfont{#o140000}]
+@defthing[symbolic-link-type-bits    @#,racketvalfont{#o120000}]
+@defthing[regular-file-type-bits     @#,racketvalfont{#o100000}]
+@defthing[block-device-type-bits     @#,racketvalfont{#o060000}]
+@defthing[directory-type-bits        @#,racketvalfont{#o040000}]
+@defthing[character-device-type-bits @#,racketvalfont{#o020000}]
+@defthing[fifo-type-bits             @#,racketvalfont{#o010000}]
+@defthing[set-user-id-bit            @#,racketvalfont{#o004000}]
+@defthing[set-group-id-bit           @#,racketvalfont{#o002000}]
+@defthing[sticky-bit                 @#,racketvalfont{#o001000}]
+@defthing[user-permission-bits       @#,racketvalfont{#o000700}]
+@defthing[user-read-bit              @#,racketvalfont{#o000400}]
+@defthing[user-write-bit             @#,racketvalfont{#o000200}]
+@defthing[user-execute-bit           @#,racketvalfont{#o000100}]
+@defthing[group-permission-bits      @#,racketvalfont{#o000070}]
+@defthing[group-read-bit             @#,racketvalfont{#o000040}]
+@defthing[group-write-bit            @#,racketvalfont{#o000020}]
+@defthing[group-execute-bit          @#,racketvalfont{#o000010}]
+@defthing[other-permission-bits      @#,racketvalfont{#o000007}]
+@defthing[other-read-bit             @#,racketvalfont{#o000004}]
+@defthing[other-write-bit            @#,racketvalfont{#o000002}]
+@defthing[other-execute-bit          @#,racketvalfont{#o000001}]
 )]{
 
-Constants that are useful with @racket[file-or-directory-permissions]
-and bitwise operations such as @racket[bitwise-ior], and
-@racket[bitwise-and].}
+Constants that are useful with @racket[file-or-directory-permissions],
+@racket[file-or-directory-stat] and bitwise operations such as
+@racket[bitwise-ior], and @racket[bitwise-and].}
 
 
 @examples[#:hidden #:eval file-eval

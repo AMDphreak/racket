@@ -176,14 +176,14 @@
        f
        checker
        impersonator-prop:contracted ctc
-       impersonator-prop:blame (blame-add-missing-party blame neg-party)
+       impersonator-prop:blame blame+neg-party
        impersonator-prop:application-mark
        (cons tail-contract-key (list* neg-party blame-party-info same-rngs)))
       (wrapper
        f
        checker
        impersonator-prop:contracted ctc
-       impersonator-prop:blame (blame-add-missing-party blame neg-party))))
+       impersonator-prop:blame blame+neg-party)))
 
 (define (raise-no-keywords-error f blame neg-party)
   (λ (kwds kwd-args . args)
@@ -191,8 +191,8 @@
                        "expected no keywords, got keyword ~a" (car kwds))))
 
 ;; dom-ctcs : (listof (listof contract))
-;; rst-ctcs : (listof contract)
-;; rng-ctcs : (listof (listof contract))
+;; rst-ctcs : (listof (or/c #f contract))
+;; rng-ctcs : (listof (or/c #f (listof contract)))
 ;; specs : (listof (list boolean exact-positive-integer)) 
 ;;     indicates the required arities of the input functions
 ;; mctc? : was created with case->m or object-contract
@@ -213,12 +213,14 @@
       (define rng-blame (blame-add-context blame "the range of"))
       (define blame-party-info (get-blame-party-info blame))
       (define projs (append rng-lol-ctcs
-                            (map (λ (f) ((cdr f)
+                            (map (λ (f) ((cddr f)
                                          (blame-add-context 
                                           (blame-add-context 
                                            blame 
                                            (nth-case-of (+ (car f) 1)))
-                                          "the domain of"
+                                          (if (cadr f)
+                                              (nth-argument-of (+ (cadr f) 1))
+                                              "the rest argument of")
                                           #:swap? #t)))
                                  dom-ctcs+case-nums)
                             (map (let ([memo '()])
@@ -283,7 +285,39 @@
 
 (define (case->-first-order ctc) (λ (val) (procedure? val)))
 
-(define (case->-stronger? this that) #f)
+(define (make-case->-stronger/equiv? this that stronger?)
+  (define recur (if stronger? contract-struct-stronger? contract-struct-equivalent?))
+  (cond
+    [(base-case->? that)
+     (define this-dom-ctcs (base-case->-dom-ctcs this))
+     (define that-dom-ctcs (base-case->-dom-ctcs that))
+     (define this-mctc? (base-case->-mctc? this))
+     (define that-mctc? (base-case->-mctc? that))
+     (and (= (length this-dom-ctcs)
+             (length that-dom-ctcs))
+          (for/and ([maybe-needs-any/c-this-doms (in-list this-dom-ctcs)]
+                    [maybe-needs-any/c-that-doms (in-list that-dom-ctcs)]
+                    [this-rst (in-list (base-case->-rst-ctcs this))]
+                    [that-rst (in-list (base-case->-rst-ctcs that))]
+                    [this-rngs (in-list (base-case->-rng-ctcs this))]
+                    [that-rngs (in-list (base-case->-rng-ctcs that))])
+            (define this-doms
+              (if this-mctc? (cons any/c maybe-needs-any/c-this-doms) maybe-needs-any/c-this-doms))
+            (define that-doms
+              (if that-mctc? (cons any/c maybe-needs-any/c-that-doms) maybe-needs-any/c-that-doms))
+            (and (= (length this-doms) (length that-doms))
+                 (andmap recur that-doms this-doms)
+                 (or (and (not this-rst) (not that-rst))
+                     (and this-rst that-rst
+                          (recur that-rst this-rst)))
+                 (or (if stronger? (not that-rngs) (and (not this-rngs) (not that-rngs)))
+                     (and this-rngs that-rngs
+                          (= (length this-rngs) (length that-rngs))
+                          (andmap recur this-rngs that-rngs))))))]
+    [else #f]))
+
+(define (case->-equivalent? this that) (make-case->-stronger/equiv? this that #f))
+(define (case->-stronger? this that)   (make-case->-stronger/equiv? this that #t))
 
 (define-struct (chaperone-case-> base-case->) ()
   #:property prop:custom-write custom-write-property-proc
@@ -293,7 +327,8 @@
    #:late-neg-projection (case->-proj chaperone-procedure)
    #:name (case->-name #|print-as-method-if-method?|# #t)
    #:first-order case->-first-order
-   #:stronger case->-stronger?))
+   #:stronger case->-stronger?
+   #:equivalent case->-equivalent?))
 
 (define-struct (impersonator-case-> base-case->) ()
   #:property prop:custom-write custom-write-property-proc
@@ -303,7 +338,8 @@
    #:late-neg-projection (case->-proj impersonate-procedure)
    #:name (case->-name #|print-as-method-if-method?|# #t)
    #:first-order case->-first-order
-   #:stronger case->-stronger?))
+   #:stronger case->-stronger?
+   #:equivalent case->-equivalent?))
 
 (define (build-case-> dom-ctcs rst-ctcs rng-ctcs specs mctc? wrapper)
   (let ([dom-ctcs (map (λ (l) (map (λ (x) (coerce-contract 'case-> x)) l)) dom-ctcs)]
@@ -320,12 +356,14 @@
       ([doms (in-list (base-case->-dom-ctcs ctc))]
        [rst  (in-list (base-case->-rst-ctcs ctc))]
        [i (in-naturals)])
-    (define dom+case-nums 
-      (map (λ (dom) (cons i (get/build-late-neg-projection dom))) doms))
+    (define dom+case-nums
+      (for/list ([dom (in-list doms)]
+                 [j (in-naturals)])
+        (cons i (cons j (get/build-late-neg-projection dom)))))
     (append acc
             (if rst
                 (append dom+case-nums
-                        (list (cons i (get/build-late-neg-projection rst))))
+                        (list (cons i (cons #f (get/build-late-neg-projection rst)))))
                 dom+case-nums))))
 
 (define (get-case->-rng-ctcs ctc)
@@ -334,7 +372,7 @@
              #:when x)
     (append acc x)))
 
-;; Takes a list of (listof projection), and returns one of the
+;; Takes a list of (or/c #f (listof projection)), and returns one of the
 ;; lists if all the lists contain the same projections. If the list is
 ;; null, it returns #f.
 (define (same-range-contracts rng-ctcss)
@@ -342,11 +380,11 @@
     [(null? rng-ctcss) #f]
     [else
      (define fst (car rng-ctcss))
-     (and (for/and ([ps (in-list (cdr rng-ctcss))])
+     (and fst
+          (for/and ([ps (in-list (cdr rng-ctcss))])
             (and ps
                  (= (length fst) (length ps))
                  (for/and ([c (in-list ps)]
                            [fst-c (in-list fst)])
-                   (and (contract-struct-stronger? c fst-c)
-                        (contract-struct-stronger? fst-c c)))))
+                   (contract-struct-equivalent? c fst-c))))
           fst)]))

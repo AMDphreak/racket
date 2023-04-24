@@ -143,6 +143,14 @@
   (test (void) namespace-undefine-variable! 'bar)
   (test 28 namespace-variable-value 'bar #t (lambda () 28)))
 
+(test 'cwv-ok
+      (namespace-variable-value 'call-with-values (make-base-namespace))
+      (lambda () 'cwv-ok)
+      (let ()
+        (struct p (proc)
+          #:property prop:procedure 0)
+        (p (lambda (v) v))))
+
 ;; ----------------------------------------
 
 (test #f
@@ -205,6 +213,26 @@
 (err/rt-test (variable-reference->module-declaration-inspector (#%variable-reference)))
 (err/rt-test (variable-reference->module-declaration-inspector (#%variable-reference car)))
 (test (void) eval `(module m racket/base (variable-reference->module-declaration-inspector (#%variable-reference))))
+
+;; ----------------------------------------
+
+(test 'ok namespace-call-with-registry-lock (current-namespace) (lambda () 'ok))
+(test-values '(1 2 3) (lambda () (namespace-call-with-registry-lock (current-namespace)
+                                                                    (lambda () (values 1 2 3)))))
+
+(test 'rentrant namespace-call-with-registry-lock (current-namespace)
+      (lambda ()
+        (namespace-call-with-registry-lock (current-namespace)
+                                           (lambda () 'rentrant))))
+
+(test 'fine namespace-call-with-registry-lock (current-namespace)
+      (lambda ()
+        (let ([result 'fine])
+          (thread (lambda ()
+                    (namespace-call-with-registry-lock (current-namespace)
+                                                       (lambda () (set! result 'lock-oops)))))
+          (sync (system-idle-evt))
+          result)))
 
 ;; ----------------------------------------
 

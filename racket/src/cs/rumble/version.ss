@@ -1,7 +1,11 @@
 
 (define-syntax (extract-version-string stx)
   (#%call-with-input-file
-   "../racket/src/schvers.h"
+   (ormap (lambda (dir)
+            (let ([p (path-build dir "../version/racket_version.h")])
+              (and (#%file-exists? p)
+                   p)))
+          (source-directories))
    (lambda (i)
      (let ([to-find "#define MZSCHEME_VERSION_"])
        (let numbers-loop ([numbers '()])

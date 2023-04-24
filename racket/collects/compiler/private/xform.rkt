@@ -234,7 +234,7 @@
 
         (define symbol-complex (trans (seqs L (arbno (alt L D)))))
 
-        ;; Accomodate things like 10_1 and 10.12.1 in `availability` attributes:
+        ;; Accommodate things like 10_1 and 10.12.1 in `availability` attributes:
         (define pseudo-symbol-complex (trans (alt*
                                               (seqs (arbno D) "_" (arbno D))
                                               (seqs (one+ D) "[.]" (one+ D) "[.]" (one+ D)))))
@@ -253,6 +253,7 @@
 
         (define char-complex (trans "'([^\\']|\\\\.)+'"))
         (define string-complex (trans "\"([^\\\"]|\\\\.)*\""))
+        (define line-continue (trans "[\\]\r?\n"))
 
         (define simple-table (make-vector 256 #f))
 
@@ -401,6 +402,8 @@
                                     (loop (cdar m)
                                           (cons (mk-string (subbytes s (caar m) (cdar m)))
                                                 result)))]
+                              [(regexp-match? line-continue s p)
+                               (loop (add1 p) result)]
                               [else
                                (error 'c-tokenize "strange: ~e ~e" p (subbytes s p (min len (+ p 100))))])]
                            [(not (car simple))
@@ -439,27 +442,72 @@
         ;; To run cpp:
         (define process2
           (if (eq? (system-type) 'windows)
-              (lambda (s)
-                (let ([split (let loop ([s s])
-                               (let ([m (regexp-match #rx"([^ ]*) +(.*)" s)])
-                                 (if m
-                                     (cons (cadr m) (loop (caddr m)))
-                                     (list s))))])
+              (lambda (s dest)
+                (let ([split (let loop ([i 0] [start 0] [quoted? #f])
+                               (cond
+                                 [(= i (string-length s))
+                                  (if (= i start)
+                                      '()
+                                      (list (substring s start i)))]
+                                 [(and (not quoted?)
+                                       (char=? #\space (string-ref s i)))
+                                  (if (= i start)
+                                      (loop (+ i 1) (+ i 1) #f)
+                                      (cons (substring s start i)
+                                            (loop (+ i 1) (+ i 1) #f)))]
+                                 [(and (char=? #\\ (string-ref s i))
+                                       (regexp-match-positions #rx"^\\\\*\"" s i))
+                                  => (lambda (m)
+                                       (define count (- (cdar m) (caar m) 1))
+                                       (define bs (make-string (quotient count 2) #\\))
+                                       (define prefix (string-append (substring s start i)
+                                                                     bs
+                                                                     (if (even? count)
+                                                                         ""
+                                                                         "\"")))
+                                       (define r (if (even? count)
+                                                     (loop (+ i count) (+ i count) quoted?)
+                                                     (loop (+ i count 1) (+ i count 1) quoted?)))
+                                       (if (or (null? r)
+                                               (and (not quoted?)
+                                                    (odd? count)
+                                                    (char=? (string-ref s (+ i count 1)) #\space)))
+                                           (cons prefix r)
+                                           (cons (string-append prefix (car r))
+                                                 (cdr r))))]
+                                 [(char=? #\" (string-ref s i))
+                                  (cond
+                                    [quoted?
+                                     (define e (substring s start i))
+                                     (define r (loop (+ i 1) (+ i 1) #f))
+                                     (if (or (null? r)
+                                             (char=? (string-ref s (+ i 1)) #\space))
+                                         (cons e r)
+                                         (cons (string-append e (car r)) (cdr r)))]
+                                    [else
+                                     (define r (loop (+ i 1) (+ i 1) #t))
+                                     (if (= i start)
+                                         r
+                                         (cons (string-append (substring s start i) (car r))
+                                               (cdr r)))])]
+                                 [else
+                                  (loop (+ i 1) start quoted?)]))])
                   (apply (verbose process*) (find-executable-path (maybe-add-exe (car split)) #f)
-                         (cdr split))))
-              (verbose process)))
+                         (append (cdr split) (list dest)))))
+              (lambda (s dest)
+                ((verbose process) (format "~a ~s" s dest)))))
 
         (define cpp-process
 	  (if (string? cpp)
-	      (process2 (format "~a~a~a ~a"
+	      (process2 (format "~a~a~a"
 				cpp
 				(if pgc?
 				    (if pgc-really?
 					" -DMZ_XFORM -DMZ_PRECISE_GC"
 					" -DMZ_XFORM")
 				    "")
-				(if callee-restore? " -DGC_STACK_CALLEE_RESTORE" "")
-				file-in))
+				(if callee-restore? " -DGC_STACK_CALLEE_RESTORE" ""))
+                        file-in)
 	      (apply (verbose process*)
 		     (append
 		      cpp
@@ -908,13 +956,14 @@
                __getreent ; Cygwin
 
                strlen cos cosl sin sinl tan tanl exp expl pow powl log logl sqrt sqrtl frexp
-               asin acos asinl acosl atan atanl atan2 atan2l
+               asin acos sinh cosh tanh asinl acosl atan atanl atan2 atan2l
                isnan isinf fpclass signbit _signbit _fpclass __fpclassify __fpclassifyf __fpclassifyl
 	       _isnan __isfinited __isnanl __isnan __signbit __signbitf __signbitd __signbitl __signbitf128
                __isinff __isinfl isnanf isinff __isinfd __isnanf __isnand __isinf __isinff128
                __inline_isnanl __inline_isnan __inline_signbit __inline_signbitf __inline_signbitd __inline_signbitl
                __builtin_popcount __builtin_clz __builtin_isnan __builtin_isinf __builtin_signbit
                __builtin_signbitf __builtin_signbitd __builtin_signbitl __builtin_isinf_sign __builtin_trap
+               __FLOAT_BITS __DOUBLE_BITS
                _Generic
                __inline_isinff __inline_isinfl __inline_isinfd __inline_isnanf __inline_isnand __inline_isinf
                floor floorl ceil ceill round roundl fmod fmodl modf modfl fabs fabsl __maskrune _errno __errno
@@ -1483,7 +1532,7 @@
         ;; top-level converts the top-level tok list e into
         ;; a new top-level tok list, often collecting info
         ;; (such as function prototypes and typedefs).
-        ;; It expects that the tok list e reprsents one "thing",
+        ;; It expects that the tok list e represents one "thing",
         ;; which often means that it's terminated with a semicolon.
         (define (top-level e where can-drop-vars?)
           (cond
@@ -1571,13 +1620,14 @@
             [(typedef? e)
              (when show-info?
                (printf "/* TYPEDEF */\n"))
-             (if (or (simple-unused-def? e)
-                     (unused-struc-typedef? e))
-                 null
-                 (begin
-                   (when pgc?
-                     (check-pointer-type e))
-                   e))]
+	     (let ([e2 (skip-declspec-align e)])
+               (if (or (simple-unused-def? e2)
+                       (unused-struc-typedef? e2))
+                   null
+                   (begin
+                     (when pgc?
+                       (check-pointer-type e2))
+                     e)))]
             [(proc-prototype? e)
              (let ([name (register-proto-information e)])
                (when (eq? (tok-n (car e)) '__xform_nongcing__)
@@ -1595,12 +1645,13 @@
 		       (clean-proto e))
                    null))]
             [(struct-decl? e)
-             (if (braces? (caddr e))
-                 (begin
-                   (when pgc?
-                     (register-struct e))
-                   (when show-info? (printf "/* STRUCT ~a */\n" (tok-n (cadr e)))))
-                 (when show-info? (printf "/* STRUCT DECL */\n")))
+	     (let ([e (skip-declspec-align e)])
+               (if (braces? (caddr e))
+                   (begin
+                     (when pgc?
+                       (register-struct e))
+                     (when show-info? (printf "/* STRUCT ~a */\n" (tok-n (cadr e)))))
+                   (when show-info? (printf "/* STRUCT DECL */\n"))))
              e]
             [(class-decl? e)
              (if (or (braces? (caddr e))
@@ -1761,10 +1812,11 @@
 
         ;; recognize a typedef:
         (define (typedef? e)
-          (or (eq? 'typedef (tok-n (car e)))
-              (and (eq? '__extension__ (tok-n (car e)))
-                   (pair? (cdr e))
-                   (eq? 'typedef (tok-n (cadr e))))))
+	  (let ([e (skip-declspec-align e)])
+            (or (eq? 'typedef (tok-n (car e)))
+		(and (eq? '__extension__ (tok-n (car e)))
+                     (pair? (cdr e))
+                     (eq? 'typedef (tok-n (cadr e)))))))
 
         ;; Sometimes, we know that a declaration is unused because
         ;; the tokenizer saw the defined symbol only once. (This
@@ -1790,12 +1842,13 @@
           (let ([once (lambda (s)
                         (and (not precompiling-header?)
                              (= 1 (hash-ref used-symbols
-                                                  (tok-n s)))))]
+                                            (tok-n s)))))]
                 [seps (list '|,| '* semi)])
             (let ([e (if (eq? '__extension__ (car e))
                          (cdr e)
                          e)])
               (and (eq? (tok-n (cadr e)) 'struct)
+		   (symbol? (tok-n (caddr e)))
                    (brackets? (cadddr e))
                    (once (caddr e))
                    (let loop ([e (cddddr e)])
@@ -1807,10 +1860,31 @@
                         (loop (cdr e))]
                        [else #f]))))))
 
+	;; also skips MsVC compiler pragmas
+	(define (skip-declspec-align e)
+	  (let ([e (skip-compiler-pragmas e)])
+	    (if (and (pair? e)
+		     (eq? '__declspec (tok-n (car e)))
+		     (parens? (cadr e))
+		     (let ([l (seq->list (seq-in (cadr e)))])
+		       (and (= 2 (length l))
+			    (memq (tok-n (car l)) '(align no_init_all))
+			    (parens? (cadr l)))))
+		;; Drop __declspec
+		(skip-compiler-pragmas (cddr e))
+		;; Nothing [else] to drop
+		e)))
+
+	(define (skip-compiler-pragmas e)
+	  (if (compiler-pragma? e)
+	      (skip-compiler-pragmas (cddr e))
+	      e))
+
         (define (struct-decl? e)
-          (and (memq (tok-n (car e)) '(struct enum))
-               (ormap braces? (cdr e))
-               (not (function? e))))
+	  (let ([e (skip-declspec-align e)])
+            (and (memq (tok-n (car e)) '(struct enum))
+		 (ormap braces? (cdr e))
+		 (not (function? e)))))
 
         (define (class-decl? e)
           (memq (tok-n (car e)) '(class)))
@@ -2880,7 +2954,7 @@
 
                                     local-vars)
                              (append extra-vars local-vars))])
-                ;; Convert calls and body (recusively)
+                ;; Convert calls and body (recursively)
                 (let-values ([(orig-maxlive) (live-var-info-maxlive live-vars)]
                              [(orig-maxpush) (live-var-info-maxpush live-vars)]
                              [(orig-tag) (live-var-info-tag live-vars)]
@@ -3526,7 +3600,7 @@
                                    (tok-n (car func))))
                       ;; Lift out function calls as arguments. (Can re-order code.
                       ;; Racket source code must live with this change to C's semantics.)
-                      ;; Calls are replaced by varaibles, and setup code generated that
+                      ;; Calls are replaced by variables, and setup code generated that
                       ;; assigns to the variables.
                       (let*-values ([(live-vars)
                                      ;; Check for special form (XXX -> ivar) = call, which will
@@ -3876,6 +3950,14 @@
                                                                 "array access"))
                                                        memcpy?)])
                      (loop (cdr e-) (cons v result) live-vars #t)))]
+                [(eq? '|XFORM_CURRENT_COUNT| (tok-n (car e-)))
+                 (loop (cdr e-)
+                       (cons (make-tok (string->symbol (format "~a_COUNT" (live-var-info-tag live-vars)))
+                                       (tok-line (car e-))
+                                       (tok-file (car e-)))
+                             result)
+                       live-vars
+                       #t)]
                 [(and (assq (tok-n (car e-)) vars)
                       (not (assq (tok-n (car e-)) (live-var-info-vars live-vars))))
                  ;; Add a live variable:
@@ -4053,7 +4135,7 @@
                         (eq? semi (tok-n (list-ref e (sub1 (length e)))))
                         ;; Doesn't start with a star, decrement, increment, or global call
                         (not (memq (tok-n (car e)) '(* -- ++ |::|)))
-                        ;; Not an assignemnt
+                        ;; Not an assignment
                         (not (memq (tok-n (cadr e)) '(= += -=)))
                         ;; Not a return, case, new, or delete
                         (not (memq (tok-n (car e)) '(return case new delete delete_wxobject)))
@@ -4069,6 +4151,13 @@
                       (values (reverse decls) el))))))
 
         (define (get-one e comma-sep?)
+	  (define (get-third result)
+	    (cond
+	     [(null? result) #f]
+	     [(null? (cdr result)) #f]
+	     [(null? (cddr result)) #f]
+	     [(null? (cdddr result)) (tok-n (car result))]
+	     [else (get-third (cdr result))]))
           (let loop ([e e][result null][first #f][second #f])
             (cond
               [(null? e) (values (reverse result) null)]
@@ -4086,15 +4175,21 @@
                          (pragma-s (car e))
                          (pragma-file (car e)) (pragma-line (car e)))])]
               [(compiler-pragma? e)
-               (unless (null? result)
-                 (error 'pragma "unexpected MSVC compiler pragma"))
-               (values (list (car e) (cadr e)) (cddr e))]
+               (cond
+		[(null? result)
+		 (values (list (car e) (cadr e)) (cddr e))]
+		[(memq first '(typedef struct))
+		 (loop (cddr e) (list* (cadr e) (car e) result) first second)]
+		[else
+		 (error 'pragma "unexpected MSVC compiler pragma: ~e" e)])]
               [(eq? semi (tok-n (car e)))
                (values (reverse (cons (car e) result)) (cdr e))]
               [(and (eq? '|,| (tok-n (car e))) comma-sep?)
                (values (reverse (cons (car e) result)) (cdr e))]
               [(and (braces? (car e))
                     (not (memq first '(typedef enum)))
+		    (not (and (eq? first '__declspec)
+			      (memq (get-third result) '(typedef enum))))
                     (or (not (memq first '(static extern const struct union)))
                         (equal? second "C") ; => extern "C" ...
                         (equal? second "C++") ; => extern "C++" ...

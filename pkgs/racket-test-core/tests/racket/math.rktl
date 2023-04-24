@@ -279,10 +279,10 @@
 (test -inf.0 sinh -inf.0)
 (test -inf.0 sinh -max.0)
 (test #t double=? sinh-1 (sinh -1.0))
-(test -0.0 sinh -min.0)
+(test -min.0 sinh -min.0)
 (test -0.0 sinh -0.0)
 (test 0.0 sinh 0.0)
-(test 0.0 sinh +min.0)
+(test +min.0 sinh +min.0)
 (test #t double=? sinh+1 (sinh 1.0))
 (test +inf.0 sinh +max.0)
 (test +inf.0 sinh +inf.0)
@@ -329,6 +329,7 @@
 (test 0 tanh 0)
 (test #t double=? tanh+1 (tanh 1))
 (test 1.0 tanh 20)
+(test #t flonum? (tanh (inexact->exact 1/100000000000)))
 
 #reader "maybe-single.rkt"
 (begin

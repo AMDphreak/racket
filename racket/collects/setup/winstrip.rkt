@@ -16,7 +16,7 @@
    #:once-each
    [("--keep-cgc") "Keep CGC executables and libraries"
     (set! keep-cgc? #t)]
-   [("--keep-3m") "Keep 3m executables and libraries"
+   [("--keep-3m") "Keep 3m/BC executables and libraries"
     (set! keep-3m? #t)]
    [("--keep-cs") "Keep CS executables and libraries"
     (set! keep-cs? #t)]
@@ -47,7 +47,7 @@
                    (and (not keep-cgc?)
                         (regexp-match? #rx#"(?i:CGC[.]exe)$" b))
                    (and (not keep-3m?)
-                        (regexp-match? #rx#"(?i:3m[.]exe)$" b))
+                        (regexp-match? #rx#"(?i:(?:3m|BC)[.]exe)$" b))
                    (and (not keep-cs?)
                         (regexp-match? #rx#"(?i:CS[.]exe)$" b))))
       (delete-file* f)))
@@ -57,8 +57,13 @@
                (let ([b (path-element->bytes
                          (let-values ([(base name dir?) (split-path f)])
                            name))])
-                 (or (regexp-match? #rx#"[.](?i:pdb|ilk|manifest)$" b)
-                     (regexp-match? #rx#"(?i:CGC[.](?:dll|exe))$" b)
+                 (or (regexp-match? #rx#"[.](?i:pdb|ilk|manifest|ipdb|iobj)$" b)
+                     (and (not keep-cgc?)
+                          (regexp-match? #rx#"(?i:CGC[.](?:dll|exe))$" b))
+                     (and (not keep-3m?)
+                          (regexp-match? #rx#"(?i:(?:3m|BC)[.]exe)$" b))
+                     (and (not keep-cs?)
+                          (regexp-match? #rx#"(?i:CS[.]exe)$" b))
                      (and (regexp-match? #rx#"(?i:[.](?:dll|exp|obj|lib|def))$" b)
                           (regexp-match? #rx#"(?i:racket|mzgc)" b)
                           (let ([dll-type

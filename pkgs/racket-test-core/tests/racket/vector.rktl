@@ -5,7 +5,6 @@
 
 (require racket/vector)
 
-
 (test #t vector? '#(0 (2 2 2 2) "Anna"))
 (test #t vector? '#())
 (arity-test vector? 1 1)
@@ -19,11 +18,12 @@
 (arity-test vector-ref 2 2)
 (err/rt-test (vector-ref "apple" 3))
 (err/rt-test (vector-ref #(4 5 6) 3) exn:application:mismatch?)
-(err/rt-test (vector-ref #() 0) exn:application:mismatch?)
+(err/rt-test (vector-ref #() 0) exn:application:mismatch? #rx"empty vector")
 (err/rt-test (vector-ref #() (expt 2 100)) exn:application:mismatch?)
 (err/rt-test (vector-ref #(4 5 6) -1))
 (err/rt-test (vector-ref #(4 5 6) 2.0))
 (err/rt-test (vector-ref #(4 5 6) "2"))
+(err/rt-test (vector-ref #(4 5 6) 4) exn:fail:contract? #rx"[[]0, 2[]]")
 (test '#(0 ("Sue" "Sue") "Anna") 'vector-set!
 	(let ((vec (vector 0 '(2 2 2 2) "Anna")))
 	  (vector-set! vec 1 '("Sue" "Sue"))
@@ -54,6 +54,7 @@
 (err/rt-test (vector-set! #(1 2 3) (expt 2 100) 'x) exn:application:mismatch?)
 (err/rt-test (vector-set! '(1 2 3) 2 'x))
 (err/rt-test (vector-set! #(1 2 3) "2" 'x))
+(err/rt-test (vector-set! (vector 4 5 6) 4 0) exn:fail:contract? #rx"[[]0, 2[]]")
 (define v (vector 1 2 3))
 (vector-fill! v 0)
 (test (quote #(0 0 0)) 'vector-fill! v)
@@ -146,7 +147,8 @@
   (let ([v (vector 1 2 3)])
     (test #f eq? v (vector-copy v))))
 
-
+(err/rt-test (vector-copy #(4 5 6) 4) exn:fail:contract? #rx"[[]0, 3[]]")
+(err/rt-test (vector-copy #(4 5 6) 1 4) exn:fail:contract? #rx"[[]0, 3[]]")
 
 ;; ---------- vector-arg{min,max} ----------
 
@@ -427,5 +429,81 @@
     (test #(1 2 3 4) vector-sort #(4 2 3 1) < #:key getkey #:cache-keys? #t)
     (test #t = c 10)))
 
+;; ----------------------------------------
+;; stencil vectors
+
+(test #t exact-nonnegative-integer? (stencil-vector-mask-width))
+
+(test #t stencil-vector? (stencil-vector 0))
+(test #t stencil-vector? (stencil-vector 1 'a))
+(test #f stencil-vector? 5)
+(test #f stencil-vector? 'oops)
+
+(test 'a stencil-vector-ref (stencil-vector 1 'a) 0)
+(test 'a stencil-vector-ref (stencil-vector 128 'a) 0)
+(err/rt-test (stencil-vector-ref 0 0))
+(err/rt-test (stencil-vector-ref (stencil-vector 1 'a) 1))
+(err/rt-test (stencil-vector-ref (stencil-vector 128 'a) 1))
+
+(test 1 stencil-vector-mask (stencil-vector 1 'a))
+(test 3 stencil-vector-mask (stencil-vector 3 'a 'b))
+(err/rt-test (stencil-vector-mask 0))
+
+(test 0 stencil-vector-length (stencil-vector 0))
+(test 2 stencil-vector-length (stencil-vector 3 'a 'b))
+(err/rt-test (stencil-vector-length 0))
+
+(define (test-sv-equal eql? a b)
+  (test eql? equal? a b)
+  (when eql?
+    (test (equal-hash-code a) equal-hash-code b)
+    (test (equal-secondary-hash-code a) equal-secondary-hash-code b)))
+
+(test-sv-equal #t (stencil-vector 0) (stencil-vector 0))
+(test-sv-equal #f (stencil-vector 0) (stencil-vector 1 'a))
+(test-sv-equal #t (stencil-vector 1 'a) (stencil-vector 1 'a))
+(test-sv-equal #f (stencil-vector 1 'a) (stencil-vector 2 'a))
+(test-sv-equal #t (stencil-vector 17 'a 'b) (stencil-vector 17 'a 'b))
+(test-sv-equal #f (stencil-vector 17 'a 'b) (stencil-vector 17 'b 'a))
+(test-sv-equal #f (stencil-vector 17 'a 'b) (stencil-vector 5 'a 'b))
+
+(test (stencil-vector 0) stencil-vector-update (stencil-vector 1 'a) 1 0)
+(test (stencil-vector 1 'a) stencil-vector-update (stencil-vector 0) 0 1 'a)
+(test (stencil-vector 3 'a 'b) stencil-vector-update (stencil-vector 1 'a) 0 2 'b)
+(test (stencil-vector 3 'b 'a) stencil-vector-update (stencil-vector 2 'a) 0 1 'b)
+(test (stencil-vector 2 'b) stencil-vector-update (stencil-vector 1 'a) 1 2 'b)
+(test (stencil-vector 0) stencil-vector-update (stencil-vector 15 'a 'b 'c 'd) 15 0)
+(test (stencil-vector 2 'x) stencil-vector-update (stencil-vector 15 'a 'b 'c 'd) 15 2 'x)
+(test (stencil-vector 21 'a 'c 'e)
+      stencil-vector-update
+      (stencil-vector 15 'a 'b 'c 'd) 10 16 'e)
+
+(err/rt-test (stencil-vector-update (stencil-vector 1 'a) 0 1 'b))
+(err/rt-test (stencil-vector-update (stencil-vector 1 'a) 2 0 'b))
+(err/rt-test (stencil-vector-update (stencil-vector 3 'a 'b) 0 2 'c))
+(err/rt-test (stencil-vector-update (stencil-vector 3 'a 'b) 1 2 'c))
+(err/rt-test (stencil-vector-update (stencil-vector 3 'a 'b) 2 1 'c))
+
+(let ([sv (stencil-vector 17 'a 'b)])
+  (test (stencil-vector 17 'a 'b) values sv)
+  (test (void) stencil-vector-set! sv 1 'B)
+  (test (stencil-vector 17 'a 'B) values sv)
+  (test (void) stencil-vector-set! sv 0 'A)
+  (test (stencil-vector 17 'A 'B) values sv))
+(err/rt-test (stencil-vector-ref (stencil-vector-set! 1 'a #f) 1))
+(err/rt-test (stencil-vector-ref (stencil-vector-set! 128 'a #f) 1))
+
+(err/rt-test (let ()
+               (define sv (stencil-vector #b0))
+               (stencil-vector-update sv #b1 #b1 1))
+             exn:fail:contract?
+             #rx"stencil vector: #<stencil 0>")
+(err/rt-test (let ()
+               (define sv (stencil-vector #b1 'a))
+               (stencil-vector-update sv #b0 #b1 1))
+             exn:fail:contract?
+             #rx"stencil vector: #<stencil 1: a>")
+
+;; ----------------------------------------
 
 (report-errs)

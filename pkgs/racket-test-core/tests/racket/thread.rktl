@@ -16,13 +16,18 @@
 (err/rt-test (thread (lambda (x) 8)) type?)
 (arity-test thread? 1 1)
 
+(test #f struct-predicate-procedure? thread?)
+(test #f struct-predicate-procedure? evt?)
+(test #f struct-type-property-predicate-procedure? evt?)
+
 ;; ----------------------------------------
 ;; Thread sets
 
 (define (test-set-balance as bs cs ds
 			  sa sb sc sd
 			  a% b% c% d%)
-  (when (equal? "" Section-prefix)
+  (when (and (run-unreliable-tests? 'timing)
+             (equal? "" Section-prefix))
     (let ([a (box 0)]
           [b (box 0)]
           [c (box 0)]
@@ -52,7 +57,7 @@
             [vc (unbox c)]
             [vd (unbox d)])
         (define (roughly= x y)
-          (<= (* (- x 1) 0.9) y (* (+ x 1) 1.1)))
+          (<= (- (* (- x 1) 0.9) 10) y (+ (* (+ x 1) 1.1) 10)))
 
         (test #t roughly= vb (* b% va))
         (test #t roughly= vc (* c% va))
@@ -174,6 +179,24 @@
 
 (err/rt-test (parameterize ([current-custodian cm]) (kill-thread (current-thread)))
 	     exn:application:mismatch?)
+
+;; Make sure a custodian is not retained just because there's
+;; a limit when it has no managed objects that can contribute
+;; to that limit
+(unless (eq? 'cgc (system-type 'gc))
+  (define c (make-custodian))
+  (define b (make-weak-box c))
+  (define c2 (make-custodian c))
+  (define cb (make-custodian-box c 'ok))
+  (define bb (make-weak-box cb))
+  (custodian-limit-memory c 10000000 c)
+  (set! c #f)
+  (set! c2 #f)
+  (set! cb #f)
+  (for ([i 3])
+    (collect-garbage))
+  (test #f weak-box-value b)
+  (test #f weak-box-value bb))
 
 (test #t custodian? cm)
 (test #f custodian? 1)
@@ -670,7 +693,7 @@
 
 (let ([s (make-semaphore)]
       [s-t (make-semaphore)]
-	    [l (tcp-listen 0 5 #t)])
+      [l (tcp-listen 0 5 #t)])
   (let ([t (thread
 	    (lambda ()
 	      (sync s-t)))]
@@ -686,8 +709,7 @@
 			 (set! v (wait #f s t l r)))))])
 	    (sync (system-idle-evt))
 	    (break-thread bt)
-            (sync (system-idle-evt))
-	    )
+            (sync (system-idle-evt)))
 	  (test 'break 'broken-wait v)))
 
       (define (try-all-blocked)
@@ -718,7 +740,6 @@
       (test t sync s t l r)
 
       (set! t (thread (lambda () (semaphore-wait (make-semaphore)))))
-
       (let-values ([(cr cw) (tcp-connect "localhost" portnum)])
 	(test l sync s t l r)
 	(test l sync s t l r)
@@ -782,7 +803,10 @@
 	  (test cr sync s t l sr cr)
 
 	  (close-output-port cw)
-	  (test sr sync s t l sr))))
+	  (test sr sync s t l sr)
+
+          (close-input-port sr)
+          (close-input-port cr))))
     (tcp-close l))))
 
 ;; Test limited pipe output waiting:
@@ -993,6 +1017,17 @@
      (goes (lambda () (sync (system-idle-evt))) (lambda () (sync (system-idle-evt))) break-thread)
      (goes (lambda () (sync (system-idle-evt))) (lambda () (sync (system-idle-evt))) kill-thread)))
  (list sleep void))
+
+;; Suspend and sleep
+(when (run-unreliable-tests? 'timing)
+  (let ([done? #f])
+    (define t (thread (lambda ()
+                        (sleep 0.1)
+                        (set! done? #t))))
+    (sync (system-idle-evt))
+    (thread-suspend t)
+    (sleep 0.1)
+    (test #f 'suspended-while-sleeping done?)))
 
 ;; ----------------------------------------
 ;;  Simple multi-custodian threads
@@ -1241,6 +1276,22 @@
   (test #f thread-running? t1)
   (test #f thread-running? t2))
 
+;; Attempting to shut down a thread without the managing custodian
+(let ([t (thread (lambda () (sync (make-semaphore))))])
+  (parameterize ([current-custodian (make-custodian)])
+    (err/rt-test (thread-suspend t) exn:fail:contract? #rx"does not solely manage")))
+
+(let ([c1 (make-custodian)]
+      [c2 (make-custodian)])
+  (define t (parameterize ([current-custodian c1])
+              (thread (lambda () (sync (make-semaphore))))))
+  (thread-resume t c2)
+  (parameterize ([current-custodian c1])
+    (err/rt-test (thread-suspend t) exn:fail:contract? #rx"does not solely manage"))
+  (parameterize ([current-custodian c2])
+    (err/rt-test (thread-suspend t) exn:fail:contract? #rx"does not solely manage"))
+  (test (void) thread-suspend t))
+
 ;; ----------------------------------------
 ;; plumbers
 
@@ -1305,6 +1356,19 @@
       (collect-garbage)
       (plumber-flush-all c)
       (test 6 values done))))
+
+;; Make sure plumbers don't suffer a key-in-value leak:
+(unless (eq? 'cgc (system-type 'gc))
+  (define p (make-plumber))
+  (define fh
+    (plumber-add-flush! (current-plumber)
+                        (lambda (fh) p)
+                        ;; weak:
+                        #t))
+  (plumber-add-flush! p (lambda (fh2) fh))
+  (define wb (make-weak-box p))
+  (collect-garbage)
+  (test #f weak-box-value wb))
 
 ;; ----------------------------------------
 
@@ -1601,6 +1665,18 @@
 (test #t integer? (current-process-milliseconds (thread void)))
 (test #t integer? (current-process-milliseconds 'subprocesses))
 (err/rt-test (current-process-milliseconds 'other))
+
+;; --------------------
+;; Check `thread-break` on a thread kiled while it tried to sync:
+
+(let ()
+  (define t (thread (lambda () (sync never-evt))))
+  (sync (system-idle-evt))
+  (kill-thread t)
+  (test #t thread-dead? t)
+  (sync (system-idle-evt))
+  (test (void) break-thread t)
+  (test #t thread-dead? t))
 
 ; --------------------
 

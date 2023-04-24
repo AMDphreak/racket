@@ -58,7 +58,11 @@ usual GitHub-based workflow:
  @item{Make your changes and rebuild with @exec{make} or @exec{make
        as-is} or @exec{raco setup}, where @exec{raco setup} is the
        best choice when modifying Racket libraries that are in
-       @filepath{collects} or a package.}
+       @filepath{collects} or a package. If your changes involve
+       modifying things that are part of the @exec{racket} executable,
+       then a simple @exec{make} may not suffice; see ``Modifying
+       Racket'' in @filepath{racket/src/README.txt} for more
+       information.}
 
  @item{Commit changes to your fork and
        @hyperlink["https://help.github.com/en/articles/creating-a-pull-request"]{submit
@@ -68,23 +72,35 @@ usual GitHub-based workflow:
 
 See the @secref["contribute-guidelines"].
 
-The variant of Chez Scheme that is needed to build Racket on Chez
-Scheme has its own repository (to preserve the shape of the original
-Chez Scheme reporitory): @url{https://github.com/racket/ChezScheme}.
-
 @; ------------------------------------------------------------
 @section[#:tag "pkg-contribute"]{Distribution-Package Contributions}
 
 If you find yourself changing a file that is in a
-@filepath{share/pkgs} subdirectory, then that file is not part of the
-main Racket Git repository. It almost certainly has its own Git
-repository somewhere else, possibly within
+@filepath{share/pkgs} subdirectory (either installed as part of a
+Racket release or as a product of an in-place build), then that file
+is not part of the main Racket Git repository. It almost certainly has
+its own Git repository somewhere else, possibly within
 @url{https://github.com/racket}, but possibly in another user's space.
 The name of the directory in @filepath{share/pkgs} is almost certainly
 the package name.
 
-To start working on a package @nonterm{pkg-name}, it's usually best to
-go to the root directory of your Racket repository checkout and run
+To start working on a package @nonterm{pkg-name} from a Racket release
+or snapshot, you first need to adjust the package installation to use
+the source specified by the main package catalog
+
+@commandline{raco pkg update @DFlag{no-setup} @DFlag{catalog} https://pkgs.racket-lang.org @nonterm{pkg-name}}
+
+and then in the directory you'd like to hold the package's source
+
+@commandline{raco pkg update @DFlag{clone} @nonterm{pkg-name}}
+
+will clone the package's source Git repository into
+@filepath{@nonterm{pkg-name}} within the current directory.
+
+Alternatively, if you already have an in-place build of the main
+Racket repository, you can start working on a package
+@nonterm{pkg-name}, by going to the root directory of your Racket
+repository checkout and running
 
 @commandline{raco pkg update @DFlag{clone} extra-pkgs/@nonterm{pkg-name}}
 
@@ -124,7 +140,7 @@ Some information that might improve your experience:
  @item{If you're done and want to go back to the normal installation
        for @nonterm{pkg-name}, use
 
-        @commandline{raco pkg update @DFlag{catalog} @nonterm{pkg-name}}}
+        @commandline{raco pkg update @DFlag{lookup} @nonterm{pkg-name}}}
 
  @item{See @secref["git-workflow" #:doc '(lib
        "pkg/scribblings/pkg.scrbl")] for more information about how
@@ -157,10 +173,14 @@ make that process faster by keeping a few guidelines in mind:
 
  @item{Include new or updated documentation as appropriate.
 
-       Note that the Racket reference is in
-       @filepath{pkgs/racket-doc/scribblings/reference}, and
-       documentation for other libraries are also sometimes in a
-       separate @filepath{-doc} package.
+       To locate a documentation (Scribble) source file,
+       visit the current documentation in a browser, and click at the page heading.
+       A box will appear with a URL to a documentation source.
+       Note that while it is likely that the documentation source will not be the file
+       that you want to edit exactly, it should give you a rough idea for where it is.
+       Particularly, the Racket reference is in
+       @filepath{pkgs/racket-doc/scribblings/reference}, and the Racket guide is in
+       @filepath{pkgs/racket-doc/scribblings/guide}.
 
        When adding to a library or extending an existing binding's
        behavior, be sure to include a @racket[history] note in the
@@ -177,6 +197,13 @@ make that process faster by keeping a few guidelines in mind:
        tests, but where a change creates a new package dependency that
        will only be detected by a full @exec{raco setup}.
        @italic{Really:} run @exec{raco setup}.}
+
+ @item{For changes to the C code, ensure your code follows the C99 standard.
+
+       On Unix systems, extensions that are part of the @exec{_DEFAULT_SOURCE}
+       pre-processor flag are also allowed. See the
+       @hyperlink["https://www.gnu.org/software/libc/manual/html_node/Feature-Test-Macros.html#index-_005fDEFAULT_005fSOURCE"]{glibc}
+       manual for more details.}
 
 ]
 

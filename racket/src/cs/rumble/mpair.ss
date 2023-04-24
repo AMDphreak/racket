@@ -1,4 +1,7 @@
-(define-record mpair (car cdr))
+(define-record-type mpair
+  (fields (mutable car mpair-car set-mpair-car!)
+          (mutable cdr mpair-cdr set-mpair-cdr!))
+  (sealed #t))
 
 (define (mcons a b)
   (make-mpair a b))
@@ -32,11 +35,10 @@
   (set-mpair-cdr! m v))
 
 (define (set-mpair-hash!)
-  (record-type-equal-procedure (record-type-descriptor mpair)
-                               (lambda (a b eql?)
-                                 (and (eql? (mcar a) (mcar b))
-                                      (eql? (mcdr a) (mcdr b)))))
-  (record-type-hash-procedure (record-type-descriptor mpair)
-                              (lambda (a hc)
-                                (hash-code-combine (hc (mcar a))
-                                                   (hc (mcar a))))))
+  (struct-set-equal+hash! (record-type-descriptor mpair)
+                          (lambda (a b eql?)
+                            (and (eql? (mcar a) (mcar b))
+                                 (eql? (mcdr a) (mcdr b))))
+                          (lambda (a hc)
+                            (hash-code-combine (hc (mcar a))
+                                               (hc (mcar a))))))

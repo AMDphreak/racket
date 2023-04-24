@@ -359,21 +359,30 @@
 
 (define blue-fish (instantiate color-fish% () (color 'blue) (size 10)))
 (define red-fish (instantiate color-fish% () (size 1)))
+(define dynamic-blue-fish (dynamic-instantiate color-fish% '() '([color . blue] [size . 10])))
+(define dynamic-red-fish (dynamic-instantiate color-fish% '() '([size . 1])))
 
 (define color-fish-color (class-field-accessor color-fish% color))
 
-(test 'red color-fish-color red-fish)
-(test 'blue color-fish-color blue-fish)
+(let ()
+  (define (go red-fish blue-fish)
+    (test 'red color-fish-color red-fish)
+    (test 'blue color-fish-color blue-fish)
+    (test 'red color-fish-color red-fish)
+    (test 'blue color-fish-color blue-fish)
 
-(test 1 'fr (send red-fish get-size))
-(test 10 'fb (send blue-fish get-size))
+    (test 1 'fr (send red-fish get-size))
+    (test 10 'fb (send blue-fish get-size))
 
-(send red-fish grow 30)
+    (send red-fish grow 30)
 
-(test 31 'fr (send red-fish get-size))
+    (test 31 'fr (send red-fish get-size))
 
-(test (void) 'fv (send blue-fish die))
-(test 'black color-fish-color blue-fish)
+    (test (void) 'fv (send blue-fish die))
+    (test 'black color-fish-color blue-fish))
+
+  (go red-fish blue-fish)
+  (go dynamic-red-fish dynamic-blue-fish))
 
 (let ([exn (with-handlers ([exn:fail? (lambda (exn) exn)])
 	     (send red-fish get-size 10))])
@@ -443,9 +452,13 @@
 (test #f is-a? 11 eater<%>)
 
 (err/rt-test (instantiate fish% () (bad-size 10)) exn:fail:object?)
+(err/rt-test (dynamic-instantiate fish% '() '([bad-size . 10])) exn:fail:object?)
 (err/rt-test (instantiate fish% () (size 10) (size 12)) exn:fail:object?)
+(err/rt-test (dynamic-instantiate fish% '() '([size . 10] [size . 12])) exn:fail:object?)
 (err/rt-test (instantiate fish% (10) (size 12)) exn:fail:object?)
+(err/rt-test (dynamic-instantiate fish% '(10) '([size . 12])) exn:fail:object?)
 (err/rt-test (instantiate picky-fish% () (size 17)) exn:fail:object?)
+(err/rt-test (dynamic-instantiate picky-fish% '() '([size . 17])) exn:fail:object?)
 
 (err/rt-test (color-fish-color picky))
 (err/rt-test (color-fish-color 6))
@@ -617,9 +630,13 @@
 
 (define rest-fish-0 (instantiate rest-arg-fish% () (-first-name "Gil") (last-name "Finn")))
 (test "Gil Finn, a.k.a.: ()" 'osf (send rest-fish-0 greeting))
+(define rest-fish-0 (dynamic-instantiate rest-arg-fish% '() '([-first-name . "Gil"] [last-name . "Finn"])))
+(test "Gil Finn, a.k.a.: ()" 'osf (send rest-fish-0 greeting))
 
 ;; Keyword order doesn't matter:
 (define rest-fish-0.5 (instantiate rest-arg-fish% () (last-name "Finn") (-first-name "Gil")))
+(test "Gil Finn, a.k.a.: ()" 'osf (send rest-fish-0.5 greeting))
+(define rest-fish-0.5 (dynamic-instantiate rest-arg-fish% '() '([last-name . "Finn"] [-first-name . "Gil"])))
 (test "Gil Finn, a.k.a.: ()" 'osf (send rest-fish-0.5 greeting))
 
 (err/rt-test (instantiate rest-arg-fish% () 
@@ -629,6 +646,16 @@
 (err/rt-test (instantiate rest-arg-fish% () 
 			  (-first-name "Gil") (last-name "Finn") 
 			  (anything "Slick"))
+	     exn:fail:object?)
+(err/rt-test (dynamic-instantiate rest-arg-fish% '() 
+                                  '([-first-name . "Gil"]
+                                    [last-name . "Finn"] 
+                                    [-nicknames . "Slick"]))
+	     exn:fail:object?)
+(err/rt-test (dynamic-instantiate rest-arg-fish% '()
+                                  '([-first-name . "Gil"]
+                                    [last-name . "Finn"] 
+                                    [anything . "Slick"]))
 	     exn:fail:object?)
 
 ;; Redundant by-pos:
@@ -654,6 +681,8 @@
 
 (define no-rest-0 (instantiate no-rest-fish% ("Gil" "Finn")))
 (test 12 'norest (send no-rest-0 get-size))
+(define no-rest-0 (dynamic-instantiate no-rest-fish% '("Gil" "Finn") '()))
+(test 12 'norest (send no-rest-0 get-size))
 
 (define allow-rest-fish%
   (class fish%
@@ -672,6 +701,8 @@
 	     exn:fail:object?)
 
 (define no-rest-0 (instantiate allow-rest-fish% ("Gil" "Finn" 18)))
+(test 18 'allowrest (send no-rest-0 get-size))
+(define no-rest-0 (dynamic-instantiate allow-rest-fish% '("Gil" "Finn" 18) '()))
 (test 18 'allowrest (send no-rest-0 get-size))
 
 
@@ -1234,6 +1265,40 @@
 	      (define/public (pub y) (send this priv (* 2 y)))
 	      (super-new)))])
   (test 16 'send-using-local (send (new c%) pub 3)))
+
+;; Make sure local names are checked correctly for deciding
+;; conflicting method names:
+(let ()
+  (define-syntax-rule (defclss name% x y)
+    (begin
+      (define-local-member-name f)
+      (define name%
+        (class object%
+          (super-new)
+          (define/public (f) 5)
+          (define/public (x) 6)
+          (define/public (y) 7)))
+      (test 5 'local-f (send (new name%) f))))
+
+  (defclss one% f y)
+  (test 6 'normal-f (send (new one%) f))
+  (test 7 'normal-y (send (new one%) y))
+  
+  (define-syntax-rule (defclss2 name% x)
+    (begin
+      (define-local-member-name f)
+      (defclss name% f x)
+      (test 6 'middle-f (send (new name%) f))))
+
+  (defclss2 two% f)
+  (test 7 'normal-f (send (new two%) f)))
+
+(syntax-test #'(let ()
+                 (define-local-member-name f)
+                 (class object%
+                   (super-new)
+                   (define/public (f) 5)
+                   (define/public (f) 6))))
 
 ;; ------------------------------------------------------------
 ;; `send+' tests
@@ -1999,7 +2064,11 @@
       (define/public (n) 2)
       (super-new)))
   (test 3 'mixin-with-local-member-names (send (new (mix c%)) x)))
-  
+
+(err/rt-test (mixin (object%) () (super-new))
+             exn:fail:object?
+             #rx"not an interface")
+
 ;; ----------------------------------------
 ;; Class contracts & generics
 
@@ -2322,6 +2391,68 @@
                                (define/public (x) 5))
                               (super-new)))
                        x)))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check that `class` applies an outside-edge scope
+
+(let ()
+  (define x 'good)
+  (define-syntax-rule (m a) (define/public (a) x))
+  (define c% (class object%
+               (super-new)
+               (define x 'bad)
+               (m f)))
+  (test 'good values (send (new c%) f)))
+
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check that `class` only removes use-site scopes for
+;; its definition context from internal definitions, and
+;; not those of the surrounding definition context.
+
+(let ()
+  (define x 'outer)
+  
+  (define c1%
+    (class object%
+      (super-new)
+      (define-syntax-rule (m1 a)
+        (define a 'inner-good))
+      (m1 x)
+      (define/public (f) x)))
+  (test 'inner-good values (send (new c1%) f))
+  
+  (define-syntax-rule (m2 a)
+    (class object%
+      (super-new)
+      (define a 'inner-bad)
+      (define/public (f) x)))
+  (define c2% (m2 x))
+  (test 'outer values (send (new c2%) f)))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Check that interface contracts on a subclass work correctly.
+
+(let ()
+  (define sup%
+    (class* object% ()
+      (super-new)
+      (define/public (f x) x)))
+
+  (define f-returns-int<%>
+    (interface () [f (->m any/c integer?)]))
+
+  (define sub%
+    (class* sup% (f-returns-int<%>)
+      (super-new)))
+
+  (define sup-obj (new sup%))
+  (test #t equal? (send sup-obj f 10) 10)
+  (test #t equal? (send sup-obj f "hi") "hi")
+
+  (define sub-obj (new sub%))
+  (test #t equal? (send sub-obj f 10) 10)
+  (err/rt-test (send sub-obj f "hi") exn:fail:contract?))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 

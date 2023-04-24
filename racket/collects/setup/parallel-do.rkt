@@ -76,6 +76,7 @@
       (define worker-cmdline-list (list (current-executable-path)
                                         "-X" (path->string (current-collects-path))
                                         "-G" (path->string (find-config-dir))
+                                        "-A" (path->string (find-system-path 'addon-dir))
                                         "-e" "(eval(read))"))
       (define dynamic-require-cmd `((dynamic-require (string->path ,module-path) (quote ,funcname)) #f))
       (let-values ([(_process-handle _out _in _err) (apply subprocess #f #f (current-error-port) worker-cmdline-list)])
@@ -293,7 +294,7 @@
                           (begin
                             (queue/work-done work-queue node wrkr (string-append msg (wrkr/read-all wrkr)))
                             (kill/remove-dead-worker node-worker wrkr))))))]
-               [else 
+               [_
                 (log-error (format "parallel-do-event-loop match node-worker failed trying to match: ~e" 
                                    node-worker))]))
            (DEBUG_COMM (printf "WAITING ON WORKERS TO RESPOND\n"))
@@ -350,8 +351,8 @@
     (define/public (jobs-cnt) (length queue))
     (super-new)))
 
-(define (list-queue list-of-work create-job-thunk job-success-thunk job-failure-thunk)
-  (make-object list-queue% list-of-work create-job-thunk job-success-thunk job-failure-thunk))
+(define (list-queue list-of-work create-job-thunk job-success-thunk job-failure-thunk [report-proc display])
+  (make-object list-queue% list-of-work create-job-thunk job-success-thunk job-failure-thunk report-proc))
 
 (define-syntax-rule (define-parallel-keyword-error d x)
   (d x (lambda (stx) (raise-syntax-error 'x "only allowed inside parallel worker definition" stx))))

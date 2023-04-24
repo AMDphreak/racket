@@ -3,6 +3,7 @@
          "../common/struct-star.rkt"
          "../syntax/syntax.rkt"
          "../common/phase.rkt"
+         "../common/phase+space.rkt"
          "../syntax/scope.rkt"
          "../syntax/binding.rkt"
          "../syntax/taint.rkt"
@@ -57,6 +58,9 @@
          syntax-local-module-required-identifiers
          syntax-local-module-exports
          syntax-local-submodules
+         syntax-local-module-interned-scope-symbols
+
+         syntax-local-expand-observer
          
          syntax-local-get-shadower)
 
@@ -92,12 +96,21 @@
 (define/who (syntax-local-introduce s)
   (check who syntax? s)
   (define ctx (get-current-expand-context 'syntax-local-introduce))
-  (flip-introduction-and-use-scopes s ctx))
+  (define new-s (flip-introduction-and-use-scopes s ctx))
+  (log-expand ctx 'track-syntax 'syntax-local-introduce new-s s)
+  new-s)
 
-(define/who (syntax-local-identifier-as-binding id)
+(define/who (syntax-local-identifier-as-binding id [intdef #f])
   (check who identifier? id)
+  (when intdef
+    (check who internal-definition-context? intdef))
   (define ctx (get-current-expand-context 'syntax-local-identifier-as-binding))
-  (remove-use-site-scopes id ctx))
+  (define new-id
+    (if intdef
+        (remove-intdef-use-site-scopes id intdef)
+        (remove-use-site-scopes id ctx)))
+  (log-expand ctx 'track-syntax 'syntax-local-identifier-as-binding new-id id)
+  new-id)
 
 (define (syntax-local-phase-level)
   (define ctx (get-current-expand-context #:fail-ok? #t))
@@ -118,17 +131,23 @@
   (do-make-syntax-introducer (new-scope (if as-use-site? 'use-site 'macro))))
 
 (define/who (make-interned-syntax-introducer sym-key)
-  (check who symbol? sym-key)
+  (check who (lambda (v) (and (symbol? v) (symbol-interned? v)))
+         #:contract "(and/c symbol? symbol-interned?)"
+         sym-key)
   (do-make-syntax-introducer (make-interned-scope sym-key)))
 
 (define (do-make-syntax-introducer sc)
   (lambda (s [mode 'flip])
     (check 'syntax-introducer syntax? s)
-    (case mode
-      [(add) (add-scope s sc)]
-      [(remove) (remove-scope s sc)]
-      [(flip) (flip-scope s sc)]
-      [else (raise-argument-error 'syntax-introducer "(or/c 'add 'remove 'flip)" mode)])))
+    (define new-s
+      (case mode
+        [(add) (add-scope s sc)]
+        [(remove) (remove-scope s sc)]
+        [(flip) (flip-scope s sc)]
+        [else (raise-argument-error 'syntax-introducer "(or/c 'add 'remove 'flip)" mode)]))
+    (define ctx (get-current-expand-context #:fail-ok? #t))
+    (when ctx (log-expand ctx 'track-syntax mode new-s s))
+    new-s))
 
 (define/who (make-syntax-delta-introducer ext-s base-s [phase (syntax-local-phase-level)])
   (check who syntax? ext-s)
@@ -145,12 +164,17 @@
   (define maybe-taint (if (syntax-clean? ext-s) values syntax-taint))
   (define shifts (syntax-mpi-shifts ext-s))
   (lambda (s [mode 'add])
-    (maybe-taint
-     (case mode
-       [(add) (syntax-add-shifts (add-scopes s delta-scs) shifts #:non-source? #t)]
-       [(remove) (remove-scopes s delta-scs)]
-       [(flip) (syntax-add-shifts (flip-scopes s delta-scs) shifts #:non-source? #t)]
-       [else (raise-argument-error 'syntax-introducer "(or/c 'add 'remove 'flip)" mode)]))))
+    (check 'syntax-introducer syntax? s)
+    (define new-s
+      (maybe-taint
+       (case mode
+         [(add) (syntax-add-shifts (add-scopes s delta-scs) shifts #:non-source? #t)]
+         [(remove) (remove-scopes s delta-scs)]
+         [(flip) (syntax-add-shifts (flip-scopes s delta-scs) shifts #:non-source? #t)]
+         [else (raise-argument-error 'syntax-introducer "(or/c 'add 'remove 'flip)" mode)])))
+    (define ctx (get-current-expand-context #:fail-ok? #t))
+    (when ctx (log-expand ctx 'track-syntax mode new-s s))
+    new-s))
 
 (define/who (syntax-local-make-delta-introducer id-stx)
   (check who identifier? id-stx)
@@ -204,11 +228,11 @@
          [immediate? (values v #f)]
          [else v])])])))
 
-(define (syntax-local-value id [failure-thunk #f] [intdef #f])
-  (do-syntax-local-value 'syntax-local-value #:immediate? #f id intdef failure-thunk))
+(define/who (syntax-local-value id [failure-thunk #f] [intdef #f])
+  (do-syntax-local-value who #:immediate? #f id intdef failure-thunk))
 
-(define (syntax-local-value/immediate id [failure-thunk #f] [intdef #f])
-  (do-syntax-local-value 'syntax-local-value/immediate #:immediate? #t id intdef failure-thunk))
+(define/who (syntax-local-value/immediate id [failure-thunk #f] [intdef #f])
+  (do-syntax-local-value who #:immediate? #t id intdef failure-thunk))
 
 ;; ----------------------------------------
 
@@ -223,12 +247,13 @@
                 (set-box! counter (add1 (unbox counter)))
                 (define name (string->unreadable-symbol (format "lifted/~a" (unbox counter))))
                 (add-scope (datum->syntax #f name) (new-scope 'macro))))
-  (log-expand ctx 'lift-expr ids s)
+  (define added-s (flip-introduction-scopes s ctx))
+  (log-expand ctx 'lift-expr ids s added-s)
   (map (lambda (id) (flip-introduction-scopes id ctx))
        ;; returns converted ids:
        (add-lifted! lifts
                     ids
-                    (flip-introduction-scopes s ctx)
+                    added-s
                     (expand-context-phase ctx))))
 
 (define/who (syntax-local-lift-expression s)
@@ -254,15 +279,17 @@
        (raise-arguments-error who
                               "not currently transforming within a module declaration or top level"
                               "form to lift" s))
-     (add-lifted-module! lifts (flip-introduction-scopes s ctx) phase)]
+     (define added-s (flip-introduction-scopes s ctx))
+     (add-lifted-module! lifts added-s phase)
+     (log-expand ctx 'lift-module s added-s)]
     [else
      (raise-arguments-error who "not a module form"
-                            "given form" s)])
-  (log-expand ctx 'lift-statement s))
+                            "given form" s)]))
 
 ;; ----------------------------------------
 
 (define (do-local-lift-to-module who s
+                                 #:log-tag [log-tag #f]
                                  #:no-target-msg no-target-msg
                                  #:intro? [intro? #t]
                                  #:more-checks [more-checks void]
@@ -285,11 +312,15 @@
   (define shift-s (for/fold ([s pre-s]) ([phase (in-range phase wrt-phase -1)]) ; shift from lift-context phase
                     (shift-wrap s (sub1 phase) lift-ctx)))
   (define post-s (post-wrap shift-s wrt-phase lift-ctx)) ; post-wrap at lift-context phase
+  (when log-tag
+    ;; Separate changes in scopes (s -> added-s) from wrapping (added-s -> post-s).
+    (log-expand ctx log-tag s added-s post-s))
   (add-lifted! lift-ctx post-s wrt-phase) ; record lift for the target phase
   (values ctx post-s))
 
-(define/who (syntax-local-lift-require s use-s)
-  (define sc (new-scope 'lifted-require))
+(define/who (syntax-local-lift-require s use-s [new-scope? #t])
+  (define sc (and new-scope?
+                  (new-scope 'lifted-require)))
   (define-values (ctx added-s)
     (do-local-lift-to-module who
                              (datum->syntax #f s)
@@ -306,10 +337,11 @@
                                (require-spec-shift-for-syntax s))
                              #:post-wrap
                              (lambda (s phase require-lift-ctx)
-                               (wrap-form '#%require (add-scope s sc) phase))))
-  (namespace-visit-available-modules! (expand-context-namespace ctx)
-                                      (expand-context-phase ctx))
-  (define result-s (add-scope use-s sc))
+                               (wrap-form '#%require (if sc (add-scope s sc) s) phase))))
+  (without-expand-context
+   (namespace-visit-available-modules! (expand-context-namespace ctx)
+                                       (expand-context-phase ctx)))
+  (define result-s (if sc (add-scope use-s sc) use-s))
   (log-expand ctx 'lift-require added-s use-s result-s)
   result-s)
 
@@ -333,6 +365,7 @@
   (define-values (ctx also-s)
     (do-local-lift-to-module who
                              s
+                             #:log-tag 'lift-end-decl
                              #:no-target-msg "not currently transforming an expression within a module declaration"
                              #:get-lift-ctx expand-context-to-module-lifts
                              #:get-wrt-phase (lambda (lift-ctx) 0) ; always relative to 0
@@ -345,7 +378,7 @@
                              #:shift-wrap
                              (lambda (s phase to-module-lift-ctx)
                                (wrap-form 'begin-for-syntax s phase))))
-  (log-expand ctx 'lift-statement s))
+  (void))
 
 (define (wrap-form sym s phase)
   (datum->syntax
@@ -366,11 +399,11 @@
   (requireds->phase-ht (extract-module-definitions (expand-context-requires+provides ctx))))
   
   
-(define/who (syntax-local-module-required-identifiers mod-path phase-level)
+(define/who (syntax-local-module-required-identifiers mod-path phase+space-shift)
   (unless (or (not mod-path) (module-path? mod-path))
     (raise-argument-error who "(or/c module-path? #f)" mod-path))
-  (unless (or (eq? phase-level #t) (phase? phase-level))
-    (raise-argument-error who (format "(or/c ~a #t)" phase?-string) phase-level))
+  (unless (or (eq? phase+space-shift #t) (phase+space-shift? phase+space-shift))
+    (raise-argument-error who (format "(or/c ~a #t)" phase+space-shift?-string) phase+space-shift))
   (unless (syntax-local-transforming-module-provides?)
     (raise-arguments-error who "not currently transforming module provides"))
   (define ctx (get-current-expand-context 'syntax-local-module-required-identifiers))
@@ -380,15 +413,15 @@
   (define requireds
     (extract-all-module-requires requires+provides
                                  mpi
-                                 (if (eq? phase-level #t) 'all phase-level)))
+                                 (if (eq? phase+space-shift #t) 'all (intern-phase+space-shift phase+space-shift))))
   (and requireds
-       (for/list ([(phase ids) (in-hash (requireds->phase-ht requireds))])
-         (cons phase ids))))
+       (for/list ([(phase+space-shift ids) (in-hash (requireds->phase-ht requireds))])
+         (cons phase+space-shift ids))))
 
 (define (requireds->phase-ht requireds)
   (for/fold ([ht (hasheqv)]) ([r (in-list requireds)])
     (hash-update ht
-                 (required-phase r)
+                 (required-phase+space r)
                  (lambda (l) (cons (required-id r) l))
                  null)))
 
@@ -426,6 +459,20 @@
   (for/list ([(name kind) (in-hash submods)]
              #:when (eq? kind 'module))
     name))
+
+(define/who (syntax-local-module-interned-scope-symbols)
+  ;; just returns all interned-scope symbols, but defined
+  ;; relative to a module expansion in case it's necessary to
+  ;; do better in the future
+  (void (get-current-expand-context who))
+  (interned-scope-symbols))
+
+;; ----------------------------------------
+
+;; Exported via #%expobs, not #%kernel
+(define/who (syntax-local-expand-observer)
+  (define ctx (get-current-expand-context 'syntax-local-expand-observer))
+  (expand-context-observer ctx))
 
 ;; ----------------------------------------
 

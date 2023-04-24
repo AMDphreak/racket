@@ -297,6 +297,24 @@ The optional @racket[in-name] and @racket[out-name] arguments
 determine the names of the result ports.}
 
 
+@defproc[(combine-output [a-out output-port?]
+                         [b-out output-port?])
+         output-port?]{
+
+Accepts two output ports and returns a new output port
+combining the original ports. When written to, the combined port
+first writes as many bytes as possible to @racket[a-out], and then
+tries to write the same number of bytes to @racket[b-out]. If that
+doesn't succeed, what is left over is buffered and no further writes
+can go through until the ports are evened out. The port is ready (for
+the purposes of synchronization) when each port reports being ready.
+However, the first port may stop being ready while waiting on
+the second port to sync, so it cannot be guaranteed that both
+ports are ready at once. Closing the combined port is done
+after writing all remaining bytes to @racket[b-out].
+
+@history[#:added "7.7.0.10"]}
+
 @defproc[(merge-input [a-in input-port?]
                       [b-in input-port?]
                       [buffer-limit (or/c exact-nonnegative-integer? #f) 4096])
@@ -339,7 +357,7 @@ resulting port supports @racket[write-special], otherwise it does not.}
                              [name any/c (object-name in)]
                              [skip exact-nonnegative-integer? 0]
                              [#:init-position init-position exact-positive-integer? 1])
-         input-port]{
+         input-port?]{
 
 Returns an input port whose content is determined by peeking into
 @racket[in]. In other words, the resulting port contains an internal
@@ -506,7 +524,7 @@ the result port does not affect writing directly to @racket[out].}
                               [column (or/c exact-nonnegative-integer? #f)]
                               [position exact-positive-integer?]
                               [close? any/c #t]
-                              [#:name name (object-name out)])
+                              [#:name name (object-name in)])
          input-port?]{
 
 Produces an input port that is equivalent to @racket[in] except in how
@@ -558,7 +576,7 @@ Like @racket[relocate-input-port], but for output ports.}
                                 [init-pos exact-positive-integer?]
                                 [close? any/c #t]
                                 [count-lines! (-> any) void]
-                                [#:name name (object-name out)])
+                                [#:name name (object-name in)])
           input-port?]{
 
 Like @racket[relocate-input-port], except that arbitrary position

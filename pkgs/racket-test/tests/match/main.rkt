@@ -2,8 +2,11 @@
 
 (require (for-syntax scheme/base)
          "match-tests.rkt" "match-exn-tests.rkt" "other-plt-tests.rkt" "other-tests.rkt"
+         "legacy-match-tests.rkt"
          "examples.rkt"
-         rackunit rackunit/text-ui)
+         "case-tests.rkt"
+         rackunit rackunit/text-ui
+         (only-in racket/base local-require))
 
 (require mzlib/plt-match)
 
@@ -15,11 +18,11 @@
                          (check eq? #t (match '(tile a b c)
                                          [`(tile ,@'(a b c))
                                           #t]
-                                         [else #f]))
+                                         [_ #f]))
                          (check eq? #t (match '(tile a b c)
                                          [`(tile ,@`(a b c))
                                           #t]
-                                         [else #f])))))
+                                         [_ #f])))))
 (define cons-tests
   (test-suite "Tests for cons pattern"
               (test-case "simple"
@@ -158,6 +161,25 @@
                 (check = 7 (match (list (make-point 2 3))
                              [(list (Point (app add1 x) (app add1 y))) (+ x y)]))
                 ))
+
+   (test-case "Expander which accepts a dotted list syntax"
+              (let ()
+                (define-match-expander bar
+                  (lambda (stx)
+                    (syntax-case stx ()
+                      [(_ a b . c)
+                       #'(and (app sub1 c) (app a b))]))
+                  +)
+                ;; check that it works as a pattern
+                (check = 3 (match 4 [(bar add1 5 . x) x]))
+                ;; check that sub-patterns still work on the dotted argument
+                (check = 3 (match 4 [(bar add1 5 . (? number? y)) y]))
+                (check = 3 (match 4 [(bar add1 5 ? number? y) y]))
+                ;; check that it works inside other patterns, e.g. a list
+                (check-equal? '(4 6 8) (match '(5 7 9)
+                                         [(list (bar add1 number? . x) ...) x]))
+                ;; check that it works as an expression
+                (check = 12 (apply bar '(3 4 5))))) ; bar works like +
    ))
 
 (define simple-tests 
@@ -177,7 +199,7 @@
                 (define (origin? pt)
                   (match pt
                     ((struct point (0 0)) #t)
-                    (else #f)))
+                    (_ #f)))
                 (check-true (origin? (make-point 0 0)))
                 (check-false (origin? (make-point 1 1)))))
    ; These tests ensures that the unsafe struct optimization is correct
@@ -189,7 +211,7 @@
                   (define (origin? pt)
                     (match pt
                       ((struct point (0 0)) #t)
-                      (else #f)))
+                      (_ #f)))
                   (check-true (origin? (make-point 'a 0 0)))
                   (check-false (origin? (make-point 'a 1 1))))))
    (test-case "struct patterns (with fake struct info)"
@@ -201,7 +223,7 @@
                 (define (origin? pt)
                   (match pt
                     ((struct point (0 1)) #t)
-                    (else #f)))
+                    (_ #f)))
                 (check-true (origin? (list 0 1)))
                 (check-false (origin? (list 1 1)))
                 (check-false (origin? (list 1 1 1)))
@@ -220,7 +242,18 @@
               (parameterize ([match-equality-test eq?])
                 (check = 5 (match '((3) (3)) [(list a a) a] [_ 5]))))
    (test-case "Nonlinear patterns use equal?"
-              (check equal? '(3) (match '((3) (3)) [(list a a) a] [_ 5])))))
+              (check equal? '(3) (match '((3) (3)) [(list a a) a] [_ 5])))
+   (test-case "Nonlinear patterns under ellipses"
+     (check-equal? (match '((1 1) (2 2) (3 3))
+                     [(list (list a a) ...) a]
+                     [_ #f])
+                   '(1 2 3))
+     (check-false (match '((1 1) (2 3) (3 3))
+                    [(list (list a a) ...) a]
+                    [_ #f]))
+     (check-equal? (match '((1 1 2 3) (2 1 2 3) (3 1 2 3))
+                     [(list (cons a (list pre ... a post ...)) ...) (list a pre post)])
+                   '((1 2 3) (() (1) (1 2)) ((2 3) (3) ()))))))
 
 
 (define doc-tests
@@ -280,6 +313,29 @@
                 (check =  0 (value))))
    
    ))
+
+(module test-struct*-struct-info racket/base
+  (struct foo (a))
+  (provide (rename-out [foo bar])))
+
+(module test-struct*-no-struct-field-info racket/base
+  (provide bar)
+  (require (for-syntax racket/struct-info
+                       racket/base))
+  (define (bar-car x) (car x))
+  (define (bar-cdr x) (cdr x))
+  (define (bar? x) (pair? x))
+
+  (struct foo ())
+
+  (define-syntax bar
+    (make-struct-info
+     (λ () (list #f
+                 #'cons
+                 #'bar?
+                 (list #'bar-cdr #'bar-car)
+                 (list #f #f)
+                 #'foo)))))
 
 (define struct*-tests
   (test-suite 
@@ -362,7 +418,30 @@
                       [val b]))]))
                  (make-tree 0 (make-tree 1 #f #f) #f))
                 (check = 0 a)
-                (check = 1 b)))))
+                (check = 1 b)))
+   (test-case "also from documentation"
+              (let ()
+                (define-struct tree (val left right))
+                (define-struct (tree* tree) (val))
+                (match-define
+                  (and (struct* tree* ([val a]))
+                       (struct* tree ([val b])))
+                  (tree* 0 #f #f 42))
+                (check = 42 a)
+                (check = 0 b)))
+   (test-case "hygiene"
+              (let ()
+                (local-require 'test-struct*-struct-info)
+                (match-define
+                  (struct* bar ([a x]))
+                  (bar 1))
+                (check = x 1)))
+
+   (test-case "without struct-field-info"
+     (let ()
+       (local-require 'test-struct*-no-struct-field-info)
+       (match-define (struct* bar ([car x])) (list 1 2 3))
+       (check = x 1)))))
 
 (define plt-match-tests
   (test-suite "Tests for plt-match.rkt"
@@ -379,11 +458,16 @@
                             plt-match-tests
                             match-tests
                             match-exn-tests
+                            legacy-match-tests
                             new-tests
                             ;; from bruce
                             other-tests 
-                            other-plt-tests)
+                            other-plt-tests
+                            case-tests)
              'verbose))
 
-(unless (= 0 (run-all-tests))
-  (error "Match Tests did not pass."))
+(module+ main
+  (unless (= 0 (run-all-tests))
+    (error "Match Tests did not pass.")))
+(module+ test
+  (run-all-tests))

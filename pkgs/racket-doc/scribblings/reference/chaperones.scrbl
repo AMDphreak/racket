@@ -141,8 +141,10 @@ chaperones to @racket[v2].
 
 For values that include no chaperones or other impersonators,
 @racket[v1] and @racket[v2] can be considered chaperones of each other
-if they are @racket[equal?], except that corresponding mutable
-vectors, boxes, strings, byte strings, and mutable structures within
+if they are @racket[equal-always?], which requires that they are
+@racket[equal?] except that corresponding mutable
+vectors, boxes, hash tables, strings, byte strings, @tech{mutable pairs}, and
+mutable structures within
 @racket[v1] and @racket[v2] must be @racket[eq?].
 
 Otherwise, chaperones and other impersonators within @racket[v2] must
@@ -370,7 +372,8 @@ act as a ``witness'' of @racket[v]'s representation and enable the
 addition of @racket[prop]s.
 
 Pairs of @racket[prop] and @racket[prop-val] (the number of arguments
-to @racket[impersonate-struct] must be odd) add impersonator properties
+to @racket[impersonate-struct] must be even if @racket[struct-type]
+is provided, odd otherwise) add impersonator properties
 or override impersonator-property values of @racket[v].
 
 Each @racket[orig-proc] must indicate a distinct operation. If no
@@ -550,8 +553,7 @@ The @racket[hash-iterate-value], @racket[hash-map], or
 produced by @racket[key-proc] does not yield a value through
 @racket[hash-ref], then the @exnraise[exn:fail:contract].
 
-Pairs of @racket[prop] and @racket[prop-val] (the number of arguments
-to @racket[impersonate-hash] must be odd) add impersonator properties
+Pairs of @racket[prop] and @racket[prop-val] add impersonator properties
 or override impersonator-property values of @racket[hash].
 
 In the case of an immutable hash table, two impersonated hash tables count as
@@ -678,7 +680,7 @@ The @racket[set-proc] must accept a value passed to
 value, which is attached to the continuation frame.
 
 Pairs of @racket[prop] and @racket[prop-val] (the number of arguments
-to @racket[impersonate-prompt-tag] must be odd) add impersonator properties
+to @racket[impersonate-continuation-mark-key] must be odd) add impersonator properties
 or override impersonator-property values of @racket[key].
 
 @examples[
@@ -973,7 +975,14 @@ and it must return a chaperone of that value.
 
 Pairs of @racket[prop] and @racket[prop-val] (the number of arguments
 to @racket[chaperone-evt] must be even) add impersonator properties
-or override impersonator-property values of @racket[evt].}
+or override impersonator-property values of @racket[evt].
+
+The result is @racket[chaperone-of?] the argument @racket[evt].
+However, if @racket[evt] is a @tech{thread}, @tech{semaphore},
+@tech{input port}, @tech{output port}, or @tech{will executor}, the
+result is not recognized as such. For example, @racket[thread?]
+applied to the result of @racket[chaperone-evt] will always produce
+@racket[#f].}
 
 
 @defproc[(chaperone-channel [channel channel?]

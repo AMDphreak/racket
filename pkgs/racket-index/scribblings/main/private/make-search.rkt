@@ -71,7 +71,7 @@
   ;;   span-classes table holding a class name.
   ;; In addition, a "file:/main-doc.../path..." url is saved as ">path..."
   ;; This function does the url compacting.
-  (define main-url ; (make sure that it teminates with a slash)
+  (define main-url ; (make sure that it terminates with a slash)
     (if user-dir?
       (regexp-replace #rx"/*$" (url->string (path->url (find-doc-dir))) "/")
       "../"))
@@ -153,16 +153,16 @@
                               ;; if this happens, this code should be updated
                               (error 'make-script
                                      "internal error: unexpected tooltip"))]
-                           [else body])])
+                           [_ body])])
                (values (compact-url href) (compact-body body)))]
-            [else
+            [_
              (log-error "search script: unrecognized index-entry shape: ~e" e)
              (values #f #f)])))
       (define (lib->name lib)
         (quote-string (let loop ([lib lib])
                         (match lib
                           [`',lib (string-append "'" (loop lib))]
-                          [else (format "~s" lib)]))))
+                          [_ (format "~s" lib)]))))
       (define from-libs
         (cond
           [(exported-index-desc? desc)

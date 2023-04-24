@@ -6,7 +6,8 @@
                 (make-basic-contract-namespace
                  'racket/class
                  'racket/contract/combinator
-                 'racket/math)])
+                 'racket/math
+                 'racket/list)])
 
   (define-syntax (test-flat-contract stx)
     (syntax-case stx ()
@@ -168,6 +169,7 @@
 
   (test-flat-contract '(listof boolean?) (list #t #f) (list #f 3 #t))
   (test-flat-contract '(listof any/c) (list #t #f) 3)
+  (test-flat-contract '(*list/c boolean? integer?) (list #t #f 1) (list #t #f))
 
   (test-flat-contract '(vectorof boolean? #:flat? #t) (vector #t #f) (vector #f 3 #t))
   (test-flat-contract '(vectorof any/c #:flat? #t) (vector #t #f) 3)
@@ -323,5 +325,26 @@
                   '(contract (listof (λ (x) (even? x))) '(1) 'pos 'neg))
   (test-anon-name 'anon-name-and
                   '(contract (and/c real? (λ (x) (even? x))) 1 'pos 'neg))
+
+
+  (define (test-chaperone-not-lost proc quotable-val)
+    (contract-eval
+     `(,test "updated" ',proc
+             (let ()
+               (define c "not updated")
+               (contract (chaperone-procedure ,proc (λ (x) (set! c "updated") x))
+                         ',quotable-val
+                         'pos 'neg)
+               c))))
+
+  (test-chaperone-not-lost 'boolean? #t)
+  (test-chaperone-not-lost 'integer? 1)
+  (test-chaperone-not-lost 'char? #\a)
+  (test-chaperone-not-lost 'byte? 127)
+  (test-chaperone-not-lost 'string? "abc")
+  (test-chaperone-not-lost 'real? 1.0)
+  (test-chaperone-not-lost 'null? '())
+  (test-chaperone-not-lost 'empty? '())
+  (test-chaperone-not-lost 'list? '(1 2 3))
 
   )

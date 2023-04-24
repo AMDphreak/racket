@@ -5,7 +5,8 @@
          compiler/decompile
          compiler/compilation-path
          racket/pretty
-         racket/format)
+         racket/format
+         "../private/chez.rkt")
 
 (define (get-name)
   (string->symbol (short-program+command-name)))
@@ -27,6 +28,10 @@
       (pretty-print-columns num))]
    [("--linklet") "Decompile to linklets"
     (set! to-linklets? #t)]
+   [("--no-disassemble") "Show machine code as-is"
+    (current-can-disassemble #f)]
+   [("--partial-fasl") "Show more detail on fasl structure"
+    (current-partial-fasl #t)]
    #:args source-or-bytecode-file
    source-or-bytecode-file))
 

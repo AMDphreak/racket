@@ -6,7 +6,7 @@
          "../sandman/main.rkt"
          "../string/convert.rkt"
          "../string/integer.rkt"
-         "../format/main.rkt"
+         "../error/message.rkt"
          "port-number.rkt"
          "check.rkt"
          "address.rkt"
@@ -149,7 +149,7 @@
              (sandman-poll-ctx-add-poll-set-adder!
               poll-ctx
               (lambda (ps)
-                (rktio_poll_add rktio (udp-s (udp-receiving-evt-u self)) ps RKTIO_POLL_WRITE)))
+                (rktio_poll_add rktio (udp-s (udp-receiving-evt-u self)) ps RKTIO_POLL_READ)))
              (values #f self)])]))))
   #:reflection-name 'udp-receive-evt
   #:authentic)
@@ -178,8 +178,8 @@
 
 (define (raise-non-fixnum who size)
   (raise (exn:fail:network
-          (format (string-append "~a: given size is too large\n"
-                                 "  given size: ~e")
-                  who
-                  size)
+          (error-message->string
+           who
+           (string-append "given size is too large\n"
+                          "  given size: " (number->string size)))
           (current-continuation-marks))))

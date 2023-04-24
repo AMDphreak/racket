@@ -21,7 +21,7 @@
 (define-boolean-parameter print-pair-curly-braces #f)
 (define-boolean-parameter print-mpair-curly-braces #t)
 (define-boolean-parameter print-boolean-long-form #f)
-(define-boolean-parameter print-reader-abbreviations #t)
+(define-boolean-parameter print-reader-abbreviations #f)
 
 (define-boolean-parameter read-accept-bar-quote #t)
 (define-boolean-parameter read-case-sensitive #t)
@@ -50,14 +50,13 @@
                   'current-write-relative-directory))
 
 (define print-syntax-width
-  (make-parameter 32 (lambda (v)
-                       (unless (or (eqv? v +inf.0)
-                                   (and (exact-integer? v)
-                                        (v . >= . 3)))
-                         (raise-argument-error 'print-syntax-width
-                                               "(or/c +inf.0 0 (and/c exact-integer? (>/c 3)))"
-                                               v))
-                       v)
+  (make-parameter 256 (lambda (v)
+                        (unless (or (eqv? v +inf.0)
+                                    (eqv? v 0)
+                                    (and (exact-integer? v)
+                                         (v . >= . 3)))
+                          (raise-argument-error 'print-syntax-width
+                                                "(or/c +inf.0 0 (and/c exact-integer? (>=/c 3)))"
+                                                v))
+                        v)
                   'print-syntax-width))
-
-

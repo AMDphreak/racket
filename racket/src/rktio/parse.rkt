@@ -7,7 +7,7 @@
          (prefix-in : parser-tools/lex-sre)
          parser-tools/yacc)
 
-;; Parse "rktio.h" to produce a seqeuence
+;; Parse "rktio.h" to produce a sequence
 ;;  (define-constant <id> <const>) ...
 ;;  <type-def> ...
 ;;  <func-def> ...
@@ -52,7 +52,7 @@
        OPEN CLOSE BOPEN BCLOSE COPEN CCLOSE SEMI COMMA STAR LSHIFT EQUAL
        __RKTIO_H__ EXTERN EXTERN/NOERR EXTERN/STEP EXTERN/ERR
        DEFINE TYPEDEF ENUM STRUCT VOID UNSIGNED SHORT INT CHAR
-       CONST NULLABLE BLOCKING))
+       CONST NULLABLE BLOCKING MSG_QUEUE))
 
 (define lex
   (lexer-src-pos
@@ -85,9 +85,12 @@
    ["RKTIO_EXTERN_ERR" 'EXTERN/ERR]
    ["RKTIO_NULLABLE" 'NULLABLE]
    ["RKTIO_BLOCKING" 'BLOCKING]
+   ["RKTIO_MSG_QUEUE" 'MSG_QUEUE]
    [(:seq (:or #\_ (:/ #\A #\Z #\a #\z))
           (:* (:or #\_ (:/ #\A #\Z #\a #\z #\0 #\9))))
     (token-ID (string->symbol lexeme))]
+   [(:seq (:? "-") "0" (:+ (:/ "0" "7")))
+    (token-NUM (string->number lexeme 8))]
    [(:seq (:? "-") (:+ (:/ "0" "9")))
     (token-NUM (string->number lexeme))]
    [(:seq "0x" (:+ (:/ "0" "9") (:/ "A" "F") (:/ "a" "f")))
@@ -120,6 +123,7 @@
             [(DEFINE EXTERN/ERR OPEN ID CLOSE EXTERN) #f]
             [(DEFINE NULLABLE) #f]
             [(DEFINE BLOCKING) #f]
+            [(DEFINE MSG_QUEUE) #f]
             [(STRUCT ID SEMI) #f]
             [(TYPEDEF <type> <id> SEMI)
              (if (eq? $2 $3)
@@ -133,7 +137,7 @@
              `(define-type ,$6 function-pointer)]
             [(TYPEDEF <type> OPEN STAR <id> CLOSE OPEN <params> SEMI)
              `(define-type ,$5 function-pointer)]
-            [(<extern> <blocking> <return-type> <id> OPEN <params> SEMI)
+            [(<extern> <flags> <return-type> <id> OPEN <params> SEMI)
              (let ([r-type (shift-stars $4 $3)]
                    [id (unstar $4)])
                `(,@(adjust-errno $1 r-type id) ,$2 ,r-type ,id ,$6))]
@@ -142,8 +146,9 @@
               [(EXTERN/STEP) 'define-function/errno+step]
               [(EXTERN/NOERR) 'define-function]
               [(EXTERN/ERR OPEN ID CLOSE) `(define-function/errno ,$3)])
-    (<blocking> [(BLOCKING) '(blocking)]
-                [() '()])
+    (<flags> [(BLOCKING) '(blocking)]
+             [(MSG_QUEUE) '(msg-queue)]
+             [() '()])
     (<params> [(VOID CLOSE) null]
               [(<paramlist>) $1])
     (<paramlist> [(<type> <id> CLOSE) `((,(shift-stars $2 $1) ,(unstar $2)))]
@@ -298,13 +303,13 @@
     [`(,def ,err-val ,flags ,ret ,name ,args)
      `(,def ,err-val ,flags ,(update-type ret) ,name
         ,(map (lambda (a) (update-bind a #:as-argument? #t)) args))]
-    [else e]))
+    [_ e]))
 
 (define (update-type-types e)
   (match e
     [`(define-struct-type ,name ,fields)
      `(define-struct-type ,name ,(map update-bind fields))]
-    [else e]))
+    [_ e]))
 
 (define content
   (append

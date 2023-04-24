@@ -30,6 +30,9 @@
    [(and (format-condition? v)
          (string-prefix? "~?.  Some debugging context lost" (condition-message v)))
     exn:fail]
+   [(and (who-condition? v)
+         (eq? 'time-utc->date (condition-who v)))
+    exn:fail]
    [else
     exn:fail:contract]))
 
@@ -48,18 +51,26 @@
         (rename bytevector-u8-ref bytes-ref
                 bytevector-u8-set! bytes-set!
                 bytevector-length bytes-length
+                bytevector-copy bytes-copy
                 bitwise-arithmetic-shift arithmetic-shift
                 fixnum->flonum fx->fl 
                 flonum->fixnum fl->fx
                 fxarithmetic-shift-right fxrshift
                 fxarithmetic-shift-left fxlshift
-                real->flonum ->fl)
+                fxsll/wraparound fxlshift/wraparound
+                fxsrl fxrshift/logical
+                real->flonum ->fl
+                time-utc->date seconds->date
+                make-record-type-descriptor* make-struct-type)
         (set! rewrites-added? #t)))
     (getprop n 'error-rename n)))
 
-(define is-not-a-str "~s is not a")
-
 (define (rewrite-format who str irritants)
+  (define is-not-a-str "~s is not a")
+  (define result-arity-msg-head "returned ")
+  (define result-arity-msg-tail " values to single value return context")
+  (define invalid-removal-mask "invalid removal mask ~s")
+  (define invalid-addition-mask "invalid addition mask ~s")
   (cond
    [(equal? str "attempt to reference undefined variable ~s")
     (values (string-append
@@ -69,14 +80,45 @@
    [(and (equal? str "undefined for ~s")
          (equal? irritants '(0)))
     (values "division by zero" null)]
+   [(and (string-prefix? result-arity-msg-head str)
+         (string-suffix? result-arity-msg-tail str))
+    (values (string-append "result arity mismatch;\n"
+                           " expected number of values not received\n"
+                           "  expected: 1\n"
+                           "  received: " (let ([s (substring str
+                                                              (string-length result-arity-msg-head)
+                                                              (- (string-length str) (string-length result-arity-msg-tail)))])
+                                            (if (equal? s "~a")
+                                                (number->string (car irritants))
+                                                s)))
+            null)]
    [(equal? str "~s is not a pair")
-    (format-error-values "contract violation\n  expected: pair?\n  given: ~s"
+    (format-error-values (string-append
+                          "contract violation\n  expected: "
+                          (error-contract->adjusted-string "pair?" primitive-realm)
+                          "\n  given: ~s")
                          irritants)]
    [(and (equal? str "incorrect list structure ~s")
          (cxr->contract who))
     => (lambda (ctc)
-         (format-error-values (string-append "contract violation\n  expected: " ctc "\n  given: ~s")
+         (format-error-values (string-append "contract violation\n  expected: "
+                                             (error-contract->adjusted-string ctc primitive-realm)
+                                             "\n  given: ~s")
                               irritants))]
+   [(and (or (eq? who 'list-ref) (eq? who 'list-tail))
+         (equal? str "index ~s is out of range for list ~s"))
+    (format-error-values (string-append "index too large for list\n"
+                                        "  index: ~s\n"
+                                        "  in: ~s")
+                         irritants)]
+   [(and (or (eq? who 'list-ref) (eq? who 'list-tail))
+         (equal? str "index ~s reaches a non-pair in ~s"))
+    (format-error-values (string-append "index reaches a non-pair\n"
+                                        "  index: ~s\n"
+                                        "  in: ~s")
+                         irritants)]
+   [(or (eq? who 'memq) (eq? who 'memv))
+    (format-error-values "not a proper list\n  in: ~s" irritants)]
    [(equal? str  "~s is not a valid index for ~s")
     (cond
      [(exact-nonnegative-integer? (car irritants))
@@ -87,12 +129,19 @@
                        [(bytes? v) (values "byte string" (bytes-length v))]
                        [(string? v) (values "string" (string-length v))]
                        [(fxvector? v) (values "fxvector" (fxvector-length v))]
+                       [(flvector? v) (values "flvector" (flvector-length v))]
+                       [(stencil-vector? v) (values "stencil vector" (stencil-vector-length v))]
                        [else (values "value" #f)]))])
-        (format-error-values (string-append "index is out of range\n"
-                                            "  index: ~s\n"
-                                            "  valid range: [0, " (if len (number->string len) "...") "]\n"
-                                            "  " what ": ~s")
-                             irritants))]
+        (if (eqv? len 0)
+            (format-error-values (string-append "index is out of range for empty " what "\n"
+                                                "  index: ~s\n"
+                                                "  " what ": ~s")
+                                 irritants)
+            (format-error-values (string-append "index is out of range\n"
+                                                "  index: ~s\n"
+                                                "  valid range: [0, " (if len (number->string (sub1 len)) "...") "]\n"
+                                                "  " what ": ~s")
+                                 irritants)))]
      [else
       (format-error-values (string-append "contract violation\n"
                                           "  expected: exact-nonnegative-integer?\n"
@@ -105,8 +154,48 @@
          (equal? (substring str 0 (string-length is-not-a-str)) is-not-a-str)
          (= 1 (length irritants)))
     (let ([ctc (desc->contract (substring str (string-length is-not-a-str) (string-length str)))])
-      (format-error-values (string-append "contract violation\n  expected: " ctc "\n  given: ~s")
+      (format-error-values (string-append "contract violation\n  expected: "
+                                          (error-contract->adjusted-string ctc primitive-realm)
+                                          "\n  given: ~s")
                            irritants))]
+   [(equal? str "cannot extend sealed record type ~s as ~s")
+    (format-error-values (string-append "cannot make a subtype of a sealed type\n"
+                                        "  type name: ~s\n"
+                                        "  sealed type: ~s")
+                         (reverse irritants))]
+   [(eq? who 'time-utc->date)
+    (values "integer is out-of-range" null)]
+   [(or (and (eq? who 'stencil-vector)
+             (equal? str "invalid mask ~s"))
+        (and (eq? who 'stencil-vector-update)
+             (or (equal? str invalid-removal-mask)
+                 (equal? str invalid-addition-mask))))
+    (format-error-values (string-append "contract violation\n"
+                                        "  expected: (integer-in 0 (sub1 (expt 2 (stencil-vector-mask-width))))\n"
+                                        (cond
+                                          [(equal? str invalid-removal-mask) "  argument position: 2nd\n"]
+                                          [(equal? str invalid-addition-mask) "  argument position: 3rd\n"]
+                                          [else ""])
+                                        "  given: ~s\n")
+                         irritants)]
+   [(or (equal? str "mask ~s does not match given number of items ~s")
+        (equal? str "addition mask ~s does not match given number of items ~s"))
+    (values (format (string-append "mask does not match given number of items\n"
+                                   "  mask: ~s\n"
+                                   "  given items: ~s")
+                    (car irritants)
+                    (cadr irritants))
+            null)]
+   [(equal? str "mask of stencil vector ~s does not have all bits in ~s")
+    (format-error-values (string-append "mask of stencil vector does not have all bits in removal mask\n"
+                                        "  stencil vector: ~s\n"
+                                        "  removal mask: ~s")
+                         irritants)]
+   [(equal? str "mask of stencil vector ~s already has bits in ~s")
+    (format-error-values (string-append "mask of stencil vector already has bits in addition mask\n"
+                                        "  stencil vector: ~s\n"
+                                        "  addition mask: ~s")
+                         irritants)]
    [else
     (format-error-values str irritants)]))
 

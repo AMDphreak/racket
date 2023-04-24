@@ -9,12 +9,23 @@
 
 ;; ----------------------------------------
 
-(define (vector-immutable . args)
-  (if (null? args)
-      (vector->immutable-vector '#())
-      (let ([vec (apply vector args)])
-        (#%$vector-set-immutable! vec)
-        vec)))
+(define vector-immutable
+  (case-lambda
+   [() (vector->immutable-vector '#())]
+   [args (let ([vec (apply vector args)])
+           (#%$vector-set-immutable! vec)
+           vec)]))
+
+(define-syntax (inline:vector-immutable stx)
+  (syntax-case stx ()
+    [(_) #'(vector->immutable-vector '#())]
+    [(_ arg ...)
+     #'(let ([vec (vector arg ...)])
+         (#%$vector-set-immutable! vec)
+         vec)]
+    [(_ . args)
+     #'(vector-immutable . args)]
+    [_ #'vector-immutable]))
 
 ;; ----------------------------------------
 
@@ -27,6 +38,11 @@
   (or (#%mutable-vector? v)
       (and (impersonator? v)
            (#%mutable-vector? (impersonator-val v)))))
+
+(define (immutable-vector? v)
+  (or (#%immutable-vector? v)
+      (and (impersonator? v)
+           (#%immutable-vector? (impersonator-val v)))))
 
 ;; ----------------------------------------
 
@@ -61,12 +77,14 @@
         (make-props-impersonator val vec props))))
 
 (define (set-vector-impersonator-hash!)
-  (record-type-hash-procedure (record-type-descriptor vector-chaperone)
-                              (lambda (c hash-code)
-                                (hash-code (vector-copy c))))
-  (record-type-hash-procedure (record-type-descriptor vector-impersonator)
-                              (lambda (i hash-code)
-                                (hash-code (vector-copy i)))))
+  (struct-set-equal+hash! (record-type-descriptor vector-chaperone)
+                          #f
+                          (lambda (c hash-code)
+                            (hash-code (vector-copy c))))
+  (struct-set-equal+hash! (record-type-descriptor vector-impersonator)
+                          #f
+                          (lambda (i hash-code)
+                            (hash-code (vector-copy i)))))
 
 (define (check-vector-wrapper-consistent who ref set)
   (unless (eq? (not ref) (not set))
@@ -142,7 +160,7 @@
 (define (vector-length vec)
   (if (#%vector? vec)
       (#3%vector-length vec)
-      (impersonate-vector-length vec)))
+      (#%$app/no-inline impersonate-vector-length vec)))
 
 (define (unsafe-vector-length vec)
   (vector-length vec))
@@ -150,41 +168,43 @@
 (define (vector*-length vec)
   (if (#%vector? vec)
       (#3%vector-length vec)
-      (bad-vector*-for-length vec)))
+      (#%$app/no-inline bad-vector*-for-length vec)))
 
 (define (bad-vector*-for-length vec)
   (raise-argument-error 'vector*-length "(and/c vector? (not impersonator?))" vec))
 
 (define (impersonate-vector-length vec)
-  (pariah
-   (if (and (impersonator? vec)
-            (#%vector? (impersonator-val vec)))
-       (cond
-        [(vector-unsafe-chaperone? vec)
-         (#%vector-length (vector-unsafe-chaperone-vec vec))]
-        [(vector-unsafe-impersonator? vec)
-         (#%vector-length (vector-unsafe-impersonator-vec vec))]
-        [else
-         (#%vector-length (impersonator-val vec))])
-       ;; Let primitive report the error:
-       (#2%vector-length vec))))
+  (if (and (impersonator? vec)
+           (#%vector? (impersonator-val vec)))
+      (cond
+       [(vector-unsafe-chaperone? vec)
+        (#%vector-length (vector-unsafe-chaperone-vec vec))]
+       [(vector-unsafe-impersonator? vec)
+        (#%vector-length (vector-unsafe-impersonator-vec vec))]
+       [else
+        (#%vector-length (impersonator-val vec))])
+      ;; Let primitive report the error:
+      (#2%vector-length vec)))
 
 ;; ----------------------------------------
 
 (define (vector-ref vec idx)
   (if (#%$vector-ref-check? vec idx)
       (#3%vector-ref vec idx)
-      (impersonate-vector-ref vec idx)))
+      (#%$app/no-inline impersonate-vector-ref vec idx)))
 
 (define (unsafe-vector-ref vec idx)
   (if (#%vector? vec)
       (#3%vector-ref vec idx)
-      (impersonate-vector-ref vec idx)))
+      (#%$app/no-inline impersonate-vector-ref vec idx)))
 
 (define/who (vector*-ref vec idx)
   (if (#%$vector-ref-check? vec idx)
       (#3%vector-ref vec idx)
-      (bad-vector*-op who #f vec idx)))
+      (#%$app/no-inline bad-vector*-ref vec idx)))
+
+(define (bad-vector*-ref vec idx)
+  (bad-vector*-op 'vector*-ref #f vec idx))
 
 (define (bad-vector*-op who set? vec idx)
   (cond
@@ -195,96 +215,97 @@
     (unless (#%vector? vec)
       (raise-argument-error who "(and/c vector? (not impersonator?))" vec))])
   (check who exact-nonnegative-integer? idx)
-  (check-range who "vector" vec idx #f (fx- (#%vector-length vec) 1)))
+  (check-range who "vector" vec idx 'none (fx- (#%vector-length vec) 1)))
 
 (define (impersonate-vector-ref orig idx)
-  (pariah
-   (if (and (impersonator? orig)
-            (#%vector? (impersonator-val orig)))
-       (let loop ([o orig])
-         (cond
-          [(#%vector? o) (#2%vector-ref o idx)]
-          [(vector-chaperone? o)
-           (let* ([o-next (impersonator-next o)]
-                  [val (loop o-next)]
-                  [new-val (if (vector*-chaperone? o)
-                               (|#%app| (vector-chaperone-ref o) orig o-next idx val)
-                               (|#%app| (vector-chaperone-ref o) o-next idx val))])
-             (unless (chaperone-of? new-val val)
-               (raise-arguments-error 'vector-ref
-                                      "chaperone produced a result that is not a chaperone of the original result"
-                                      "chaperone result" new-val
-                                      "original result" val))
-             new-val)]
-          [(vector-impersonator? o)
-           (let* ([o-next (impersonator-next o)]
-                  [val (loop o-next)])
-             (if (vector*-impersonator? o)
-                 (|#%app| (vector-impersonator-ref o) orig o-next idx val)
-                 (|#%app| (vector-impersonator-ref o) o-next idx val)))]
-          [(vector-unsafe-impersonator? o)
-           (vector-ref (vector-unsafe-impersonator-vec o)  idx)]
-          [(vector-unsafe-chaperone? o)
-           (vector-ref (vector-unsafe-chaperone-vec o)  idx)]
-          [else (loop (impersonator-next o))]))
-       ;; Let primitive report the error:
-       (#2%vector-ref orig idx))))
+  (if (and (impersonator? orig)
+           (#%vector? (impersonator-val orig)))
+      (let loop ([o orig])
+        (cond
+         [(#%vector? o) (#2%vector-ref o idx)]
+         [(vector-chaperone? o)
+          (let* ([o-next (impersonator-next o)]
+                 [val (loop o-next)]
+                 [new-val (if (vector*-chaperone? o)
+                              (|#%app| (vector-chaperone-ref o) orig o-next idx val)
+                              (|#%app| (vector-chaperone-ref o) o-next idx val))])
+            (unless (chaperone-of? new-val val)
+              (raise-arguments-error 'vector-ref
+                                     "chaperone produced a result that is not a chaperone of the original result"
+                                     "chaperone result" new-val
+                                     "original result" val))
+            new-val)]
+         [(vector-impersonator? o)
+          (let* ([o-next (impersonator-next o)]
+                 [val (loop o-next)])
+            (if (vector*-impersonator? o)
+                (|#%app| (vector-impersonator-ref o) orig o-next idx val)
+                (|#%app| (vector-impersonator-ref o) o-next idx val)))]
+         [(vector-unsafe-impersonator? o)
+          (vector-ref (vector-unsafe-impersonator-vec o)  idx)]
+         [(vector-unsafe-chaperone? o)
+          (vector-ref (vector-unsafe-chaperone-vec o)  idx)]
+         [else (loop (impersonator-next o))]))
+      ;; Let primitive report the error:
+      (#2%vector-ref orig idx)))
 
 ;; ----------------------------------------
 
 (define (vector-set! vec idx val)
   (if (#%$vector-set!-check? vec idx)
       (#3%vector-set! vec idx val)
-      (impersonate-vector-set! vec idx val)))
+      (#%$app/no-inline impersonate-vector-set! vec idx val)))
 
 (define (unsafe-vector-set! vec idx val)
   (if (#%vector? vec)
       (#3%vector-set! vec idx val)
-      (impersonate-vector-set! vec idx val)))
+      (#%$app/no-inline impersonate-vector-set! vec idx val)))
 
 (define/who (vector*-set! vec idx val)
   (if (#%$vector-set!-check? vec idx)
       (#3%vector-set! vec idx val)
-      (bad-vector*-op who #t vec idx)))
+      (#%$app/no-inline bad-vector*-set! vec idx val)))
+
+(define (bad-vector*-set! vec idx val)
+  (bad-vector*-op 'vector*-set! #t vec idx))
 
 (define (impersonate-vector-set! orig idx val)
-  (pariah
-   (cond
-    [(not (and (impersonator? orig)
-               (mutable-vector? (impersonator-val orig))))
-     ;; Let primitive report the error:
-     (#2%vector-set! orig idx val)]
-    [(or (not (exact-nonnegative-integer? idx))
-         (>= idx (vector-length (impersonator-val orig))))
-     ;; Let primitive report the index error:
-     (#2%vector-set! (impersonator-val orig) idx val)]
-    [else
-     (let loop ([o orig] [val val])
-       (cond
-        [(#%vector? o) (#2%vector-set! o idx val)]
-        [else
-         (let ([next (impersonator-next o)])
-           (cond
-            [(vector-chaperone? o)
-             (let ([new-val (if (vector*-chaperone? o)
-                                (|#%app| (vector-chaperone-set o) orig next idx val)
-                                (|#%app| (vector-chaperone-set o) next idx val))])
-               (unless (chaperone-of? new-val val)
-                 (raise-arguments-error 'vector-set!
-                                        "chaperone produced a result that is not a chaperone of the original result"
-                                        "chaperone result" new-val
-                                        "original result" val))
-               (loop next new-val))]
-            [(vector-impersonator? o)
-             (loop next
-                   (if (vector*-impersonator? o)
-                       (|#%app| (vector-impersonator-set o) orig next idx val)
-                       (|#%app| (vector-impersonator-set o) next idx val)))]
-            [(vector-unsafe-impersonator? o)
-             (#2%vector-set! (vector-unsafe-impersonator-vec o) idx val)]
-            [(vector-unsafe-chaperone? o)
-             (#2%vector-set! (vector-unsafe-chaperone-vec o) idx val)]
-            [else (loop next val)]))]))])))
+  (cond
+   [(not (and (impersonator? orig)
+              (mutable-vector? (impersonator-val orig))))
+    ;; Let primitive report the error:
+    (#2%vector-set! orig idx val)]
+   [(or (not (exact-nonnegative-integer? idx))
+        (>= idx (vector-length (impersonator-val orig))))
+    ;; Let primitive report the index error:
+    (#2%vector-set! (impersonator-val orig) idx val)]
+   [else
+    (let loop ([o orig] [val val])
+      (cond
+       [(#%vector? o) (#2%vector-set! o idx val)]
+       [else
+        (let ([next (impersonator-next o)])
+          (cond
+           [(vector-chaperone? o)
+            (let ([new-val (if (vector*-chaperone? o)
+                               (|#%app| (vector-chaperone-set o) orig next idx val)
+                               (|#%app| (vector-chaperone-set o) next idx val))])
+              (unless (chaperone-of? new-val val)
+                (raise-arguments-error 'vector-set!
+                                       "chaperone produced a result that is not a chaperone of the original result"
+                                       "chaperone result" new-val
+                                       "original result" val))
+              (loop next new-val))]
+           [(vector-impersonator? o)
+            (loop next
+                  (if (vector*-impersonator? o)
+                      (|#%app| (vector-impersonator-set o) orig next idx val)
+                      (|#%app| (vector-impersonator-set o) next idx val)))]
+           [(vector-unsafe-impersonator? o)
+            (#2%vector-set! (vector-unsafe-impersonator-vec o) idx val)]
+           [(vector-unsafe-chaperone? o)
+            (#2%vector-set! (vector-unsafe-chaperone-vec o) idx val)]
+           [else (loop next val)]))]))]))
 
 ;; ----------------------------------------
 

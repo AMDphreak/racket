@@ -81,15 +81,15 @@ rktio_int64_t get_hectonanoseconds_as_longlong()
 }
 #endif
 
-intptr_t rktio_get_milliseconds(void)
+uintptr_t rktio_get_milliseconds(void)
 /* this function can be called from any OS thread */
 {
 #ifdef RKTIO_SYSTEM_WINDOWS
-  return (intptr_t)(get_hectonanoseconds_as_longlong() / (rktio_int64_t)10000);
+  return (uintptr_t)(get_hectonanoseconds_as_longlong() / (rktio_int64_t)10000);
 #else
   struct timeval now;
   gettimeofday(&now, NULL);
-  return now.tv_sec * 1000 + now.tv_usec / 1000;
+  return ((uintptr_t) now.tv_sec) * 1000 + ((uintptr_t) now.tv_usec) / 1000;
 #endif
 }
 
@@ -107,22 +107,58 @@ double rktio_get_inexact_milliseconds(void)
 #endif
 }
 
-intptr_t rktio_get_process_milliseconds(rktio_t *rktio)
+double rktio_get_inexact_monotonic_milliseconds(rktio_t *rktio)
+{
+#ifdef RKTIO_SYSTEM_WINDOWS
+  if (!rktio->got_hires_freq) {
+    if (!QueryPerformanceFrequency(&rktio->hires_freq))
+      rktio->hires_freq.QuadPart = 0;
+    rktio->got_hires_freq = 1;
+  }
+
+  if (rktio->hires_freq.QuadPart != 0) {
+    LARGE_INTEGER count;
+    if (QueryPerformanceCounter(&count))
+      return ((double)count.QuadPart * 1000.0) / (double)rktio->hires_freq.QuadPart;
+  }
+#else
+# ifdef CLOCK_MONOTONIC_HR
+#  define RKTIO_CLOCK_MONOTONIC CLOCK_MONOTONIC_HR
+# endif
+# ifdef CLOCK_MONOTONIC
+#  define RKTIO_CLOCK_MONOTONIC CLOCK_MONOTONIC
+# endif
+# ifdef CLOCK_HIGHRES
+#  define RKTIO_CLOCK_MONOTONIC CLOCK_HIGHRES
+# endif
+# ifdef RKTIO_CLOCK_MONOTONIC
+  {
+    struct timespec tp;
+    if (clock_gettime(RKTIO_CLOCK_MONOTONIC, &tp) == 0)
+      return (double)tp.tv_sec * 1000.0 + (double)tp.tv_nsec / 1000000.0;
+  }
+# endif
+#endif
+  /* fallback: */
+  return rktio_get_inexact_milliseconds();
+}
+
+uintptr_t rktio_get_process_milliseconds(rktio_t *rktio)
 {
 #ifdef USER_TIME_IS_CLOCK
   return scheme_get_milliseconds();
 #else
 # ifdef USE_GETRUSAGE
   struct rusage use;
-  intptr_t s, u;
+  uintptr_t s, u;
 
   do {
     if (!getrusage(RUSAGE_SELF, &use))
       break;
   } while (errno == EINTR);
 
-  s = use.ru_utime.tv_sec + use.ru_stime.tv_sec;
-  u = use.ru_utime.tv_usec + use.ru_stime.tv_usec;
+  s = (uintptr_t)use.ru_utime.tv_sec + (uintptr_t)use.ru_stime.tv_sec;
+  u = (uintptr_t)use.ru_utime.tv_usec + (uintptr_t)use.ru_stime.tv_usec;
 
   return s * 1000 + u / 1000;
 # else
@@ -138,29 +174,30 @@ intptr_t rktio_get_process_milliseconds(rktio_t *rktio)
       return 0; /* anything better to do? */
   }
 #  else
-  return clock()  * 1000 / CLOCKS_PER_SEC;
-
+  /* Hoping that `clock_t` cannot overflow or is unsigned to avoid
+     undefined behavior on overflow... */
+  return clock() * 1000 / CLOCKS_PER_SEC;
 #  endif
 # endif
 #endif
 }
 
-intptr_t rktio_get_process_children_milliseconds(rktio_t *rktio)
+uintptr_t rktio_get_process_children_milliseconds(rktio_t *rktio)
 {
 #ifdef USER_TIME_IS_CLOCK
   return 0;
 #else
 # ifdef USE_GETRUSAGE
   struct rusage use;
-  intptr_t s, u;
+  uintptr_t s, u;
   
   do {
     if (!getrusage(RUSAGE_CHILDREN, &use))
       break;
   } while (errno == EINTR);
 
-  s = use.ru_utime.tv_sec + use.ru_stime.tv_sec;
-  u = use.ru_utime.tv_usec + use.ru_stime.tv_usec;
+  s = (uintptr_t)use.ru_utime.tv_sec + (uintptr_t)use.ru_stime.tv_sec;
+  u = (uintptr_t)use.ru_utime.tv_usec + (uintptr_t)use.ru_stime.tv_usec;
 
   return (s * 1000 + u / 1000);
 # else
@@ -169,6 +206,8 @@ intptr_t rktio_get_process_children_milliseconds(rktio_t *rktio)
 #  else
   clock_t t;
   times(&t);
+  /* Hoping that `clock_t` cannot overflow or is unsigned to avoid
+     undefined behavior on overflow... */
   return (t.tms_cutime + t.tms_cstime) * 1000 / CLK_TCK;
 #  endif
 # endif
@@ -330,7 +369,7 @@ rktio_date_t *rktio_seconds_to_date(rktio_t *rktio, rktio_timestamp_t seconds, i
   SYSTEMTIME localTime;
 #else
 # define CHECK_TIME_T time_t
-  struct tm *localTime;
+  struct tm localTime;
 #endif
   CHECK_TIME_T now;
   char *tzn;
@@ -370,10 +409,12 @@ rktio_date_t *rktio_seconds_to_date(rktio_t *rktio, rktio_timestamp_t seconds, i
     }
 #else
     if (get_gmt)
-      localTime = gmtime(&now);
-    else
-      localTime = localtime(&now);
-    success = !!localTime;
+      success = (gmtime_r(&now, &localTime) != NULL);
+    else {
+      rktio_getenv_lock();
+      success = (localtime_r(&now, &localTime) != NULL);
+      rktio_getenv_unlock();
+    }
 #endif
 
     if (success) {
@@ -411,21 +452,21 @@ rktio_date_t *rktio_seconds_to_date(rktio_t *rktio, rktio_timestamp_t seconds, i
       }
 # define TZN_STRDUP(s) s
 #else
-      hour = localTime->tm_hour;
-      min = localTime->tm_min;
-      sec = localTime->tm_sec;
+      hour = localTime.tm_hour;
+      min = localTime.tm_min;
+      sec = localTime.tm_sec;
 
-      month = localTime->tm_mon + 1;
-      day = localTime->tm_mday;
-      year = (uintptr_t)localTime->tm_year + 1900;
+      month = localTime.tm_mon + 1;
+      day = localTime.tm_mday;
+      year = (uintptr_t)localTime.tm_year + 1900;
 
-      wday = localTime->tm_wday;
-      yday = localTime->tm_yday;
+      wday = localTime.tm_wday;
+      yday = localTime.tm_yday;
 
       if (get_gmt)
         dst = 0;
       else
-        dst = localTime->tm_isdst;
+        dst = localTime.tm_isdst;
 
       tzoffset = 0;
       if (!get_gmt) {
@@ -450,12 +491,12 @@ rktio_date_t *rktio_seconds_to_date(rktio_t *rktio, rktio_timestamp_t seconds, i
           tzoffset = -timezone;
 # endif
 # ifdef USE_TM_GMTOFF_FIELD
-        tzoffset = localTime->tm_gmtoff;
+        tzoffset = localTime.tm_gmtoff;
 # endif
 # ifdef USE_TZNAME_VAR
-        tzn = MSC_IZE(tzname)[localTime->tm_isdst];
+        tzn = MSC_IZE(tzname)[localTime.tm_isdst];
 # elif defined(USE_TM_ZONE_FIELD)
-        tzn = localTime->tm_zone;
+        tzn = localTime.tm_zone;
 # else
         tzn = NULL;
 # endif

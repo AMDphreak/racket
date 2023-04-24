@@ -229,7 +229,8 @@ the value produced by @racket[(proc _i)].
 @defproc[(length [lst list?])
          exact-nonnegative-integer?]{
 
-Returns the number of elements in @racket[lst].
+Returns the number of elements in @racket[lst]. This function takes
+time proportional to that length.
 
 @mz-examples[
   (length (list 1 2 3 4))
@@ -245,6 +246,8 @@ list's first element is position @racket[0].  If the list has
 
 The @racket[lst] argument need not actually be a list; @racket[lst] must
 merely start with a chain of at least @racket[(add1 pos)] pairs.
+
+This function takes time proportional to @racket[pos].
 
 @mz-examples[
   (list-ref (list 'a 'b 'c) 0)
@@ -264,6 +267,8 @@ If the list has fewer than @racket[pos] elements, then the
 The @racket[lst] argument need not actually be a list; @racket[lst]
 must merely start with a chain of at least @racket[pos] pairs.
 
+This function takes time proportional to @racket[pos].
+
 @mz-examples[
   (list-tail (list 1 2 3 4 5) 2)
   (list-tail (cons 1 2) 1)
@@ -281,6 +286,9 @@ directly in the tail of the result.
 The last argument need not be a list, in which case the result is an
 ``improper list.''
 
+This function takes time proportional to the length of all arguments
+(added together) except the last argument.
+
 @mz-examples[
   (append (list 1 2) (list 3 4))
   (append (list 1 2) (list 3 4) (list 5 6) (list 7 8))]}
@@ -290,6 +298,8 @@ The last argument need not be a list, in which case the result is an
 
 Returns a list that has the same elements as @racket[lst], but in
 reverse order.
+
+This function takes time proportional to the length of @racket[lst].
 
 @mz-examples[
   (reverse (list 1 2 3 4))]}
@@ -457,14 +467,22 @@ element from first to last.
 
 Returns a list that is like @racket[lst], omitting the first element of
 @racket[lst] that is equal to @racket[v] using the comparison procedure
-@racket[proc] (which must accept two arguments).
+@racket[proc] (which must accept two arguments),
+with @racket[v] as the first argument and an element in @racket[lst] as the second argument.
+If no element in @racket[lst] is equal to @racket[v] (according to @racket[proc]),
+@racket[lst] is returned unchanged.
 
 @mz-examples[
   (remove 2 (list 1 2 3 2 4))
-  (remove 2 (list 1 2 3 2 4) =)
   (remove '(2) (list '(1) '(2) '(3)))
   (remove "2" (list "1" "2" "3"))
-  (remove #\c (list #\a #\b #\c))]}
+  (remove #\c (list #\a #\b #\c))
+  (remove "B" (list "a" "A" "b" "B") string-ci=?)
+  (remove 5 (list 1 2 3 2 4))]
+
+@history[#:changed "8.2.0.2"
+         @elem{Guaranteed that the output is @racket[eq?] to @racket[lst]
+               if no removal occurs.}]}
 
 
 @defproc[(remq [v any/c] [lst list?])
@@ -491,6 +509,23 @@ Returns @racket[(remove v lst eqv?)].
   (remv #\c (list #\a #\b #\c))]}
 
 
+@defproc[(remw [v any/c] [lst list?])
+         list?]{
+
+Returns @racket[(remove v lst equal-always?)].
+
+@mz-examples[
+  (remw 2 (list 1 2 3 4 5))
+  (remw '(2) (list '(1) '(2) '(3)))
+  (remw "2" (list "1" "2" "3"))
+  (remw #\c (list #\a #\b #\c))
+  (define b1 (box 5))
+  (define b2 (box 5))
+  (remw b2 (list 0 b1 1 b2 2))]
+
+@history[#:added "8.5.0.3"]}
+
+
 @defproc[(remove* [v-lst list?] [lst list?] [proc procedure? equal?])
          list?]{
 
@@ -498,7 +533,11 @@ Like @racket[remove], but removes from @racket[lst] every instance of
 every element of @racket[v-lst].
 
 @mz-examples[
-  (remove* (list 1 2) (list 1 2 3 2 4 5 2))]}
+  (remove* (list 1 2) (list 1 2 3 2 4 5 2))]
+
+@history[#:changed "8.2.0.2"
+         @elem{Guaranteed that the output is @racket[eq?] to @racket[lst]
+               if no removal occurs.}]}
 
 
 @defproc[(remq* [v-lst list?] [lst list?])
@@ -517,6 +556,20 @@ Returns @racket[(remove* v-lst lst eqv?)].
 
 @mz-examples[
   (remv* (list 1 2) (list 1 2 3 2 4 5 2))]}
+
+
+@defproc[(remw* [v-lst list?] [lst list?])
+         list?]{
+
+Returns @racket[(remove* v-lst lst equal-always?)].
+
+@mz-examples[
+  (remw* (list 1 2) (list 1 2 3 2 4 5 2))
+  (define b1 (box 5))
+  (define b2 (box 5))
+  (remw* (list b2) (list 0 b1 1 b2 2 b2 3))]
+
+@history[#:added "8.5.0.3"]}
 
 
 @defproc[(sort [lst list?] [less-than? (any/c any/c . -> . any/c)]
@@ -570,24 +623,47 @@ effectively shuffles the list.}
 @; ----------------------------------------
 @section{List Searching}
 
-@defproc[(member [v any/c] [lst list?]
+@defproc[(member [v any/c] [lst (or/c list? any/c)]
                  [is-equal? (any/c any/c -> any/c) equal?])
-         (or/c list? #f)]{
+         (or/c #f list? any/c)]{
 
 Locates the first element of @racket[lst] that is @racket[equal?] to
 @racket[v].  If such an element exists, the tail of @racket[lst]
 starting with that element is returned.  Otherwise, the result is
 @racket[#f].
 
+The @racket[lst] argument need not actually be a list; @racket[lst]
+must merely start with a chain of pairs until a matching element is
+found. If no matching element is found, then @racket[lst] must be a
+list (and not a cyclic list). The result can be a non-list in the case
+that an element is found and the returned tail of @racket[lst] is a
+non-list.
+
 @mz-examples[
   (member 2 (list 1 2 3 4))
   (member 9 (list 1 2 3 4))
   (member #'x (list #'x #'y) free-identifier=?)
-  (member #'a (list #'x #'y) free-identifier=?)]}
+  (member #'a (list #'x #'y) free-identifier=?)
+  (member 'b '(a b . etc))]}
 
 
-@defproc[(memv [v any/c] [lst list?])
-         (or/c list? #f)]{
+@defproc[(memw [v any/c] [lst (or/c list? any/c)])
+         (or/c #f list? any/c)]{
+
+Like @racket[member], but finds an element using @racket[equal-always?].
+
+@mz-examples[
+  (memw 2 (list 1 2 3 4))
+  (memw 9 (list 1 2 3 4))
+  (define b1 (box 5))
+  (define b2 (box 5))
+  (memw b2 (list 0 b1 1 b2 2))]
+
+@history[#:added "8.5.0.3"]}
+
+
+@defproc[(memv [v any/c] [lst (or/c list? any/c)])
+         (or/c #f list? any/c)]{
 
 Like @racket[member], but finds an element using @racket[eqv?].
 
@@ -596,8 +672,8 @@ Like @racket[member], but finds an element using @racket[eqv?].
   (memv 9 (list 1 2 3 4))]}
 
 
-@defproc[(memq [v any/c] [lst list?])
-         (or/c list? #f)]{
+@defproc[(memq [v any/c] [lst (or/c list? any/c)])
+         (or/c #f list? any/c)]{
 
 Like @racket[member], but finds an element using @racket[eq?].
 
@@ -606,8 +682,8 @@ Like @racket[member], but finds an element using @racket[eq?].
   (memq 9 (list 1 2 3 4))]}
 
 
-@defproc[(memf [proc procedure?] [lst list?])
-         (or/c list? #f)]{
+@defproc[(memf [proc procedure?] [lst (or/c list? any/c)])
+         (or/c #f list? any/c)]{
 
 Like @racket[member], but finds an element using the predicate
 @racket[proc]; an element is found when @racket[proc] applied to the
@@ -632,7 +708,7 @@ tail of @racket[lst] or @racket[#f].
 
 
 @defproc[(assoc [v any/c]
-                [lst (listof pair?)]
+                [lst (or/c (listof pair?) any/c)]
                 [is-equal? (any/c any/c -> any/c) equal?])
          (or/c pair? #f)]{
 
@@ -640,6 +716,11 @@ Locates the first element of @racket[lst] whose @racket[car] is equal to
 @racket[v] according to @racket[is-equal?].  If such an element exists,
 the pair (i.e., an element of @racket[lst]) is returned.  Otherwise, the
 result is @racket[#f].
+
+The @racket[lst] argument need not actually be a list of pairs;
+@racket[lst] must merely start with a chain of pairs contains pairs
+until a matching element is found. If no matching element is found,
+then @racket[lst] must be a list of pairs (and not a cyclic list).
 
 @mz-examples[
   (assoc 3 (list (list 1 2) (list 3 4) (list 5 6)))
@@ -649,7 +730,21 @@ result is @racket[#f].
          (lambda (a b) (< (abs (- a b)) 1)))]}
 
 
-@defproc[(assv [v any/c] [lst (listof pair?)])
+@defproc[(assw [v any/c] [lst (or/c (listof pair?) any/c)])
+         (or/c pair? #f)]{
+
+Like @racket[assoc], but finds an element using @racket[equal-always?].
+
+@mz-examples[
+  (assw 3 (list (list 1 2) (list 3 4) (list 5 6)))
+  (define b1 (box 0))
+  (define b2 (box 0))
+  (assw b2 (list (cons b1 1) (cons b2 2)))]
+
+@history[#:added "8.5.0.3"]}
+
+
+@defproc[(assv [v any/c] [lst (or/c (listof pair?) any/c)])
          (or/c pair? #f)]{
 
 Like @racket[assoc], but finds an element using @racket[eqv?].
@@ -658,7 +753,7 @@ Like @racket[assoc], but finds an element using @racket[eqv?].
   (assv 3 (list (list 1 2) (list 3 4) (list 5 6)))]}
 
 
-@defproc[(assq [v any/c] [lst (listof pair?)])
+@defproc[(assq [v any/c] [lst (or/c (listof pair?) any/c)])
          (or/c pair? #f)]{
 
 Like @racket[assoc], but finds an element using @racket[eq?].
@@ -667,7 +762,7 @@ Like @racket[assoc], but finds an element using @racket[eq?].
   (assq 'c (list (list 'a 'b) (list 'c 'd) (list 'e 'f)))]}
 
 
-@defproc[(assf [proc procedure?] [lst (listof pair?)])
+@defproc[(assf [proc procedure?] [lst (or/c (listof pair?) any/c)])
          (or/c pair? #f)]{
 
 Like @racket[assoc], but finds an element using the predicate
@@ -851,6 +946,8 @@ Returns the tenth element of the list.
 
 Returns the last element of the list.
 
+This function takes time proportional to the length of @racket[lst].
+
 @mz-examples[#:eval list-eval
   (last '(1 2 3 4 5 6 7 8 9 10))]}
 
@@ -859,6 +956,8 @@ Returns the last element of the list.
          pair?]{
 
 Returns the last pair of a (possibly improper) list.
+
+This function takes time proportional to the ``length'' of @racket[p].
 
 @mz-examples[#:eval list-eval
   (last-pair '(1 2 3 4))]}
@@ -881,6 +980,8 @@ Returns a newly constructed list of length @racket[k], holding
 Returns a list that is the same as @racket[lst] except at the specified index.
 The element at the specified index is @racket[(updater (list-ref lst pos))].
 
+This function takes time proportional to @racket[pos].
+
 @examples[#:eval list-eval
 (list-update '(zero one two) 1 symbol->string)]
 @history[#:added "6.3"]{}
@@ -893,6 +994,8 @@ The element at the specified index is @racket[(updater (list-ref lst pos))].
 
 Returns a list that is the same as @racket[lst] except at the specified index.
 The element at the specified index is @racket[value].
+
+This function takes time proportional to @racket[pos].
 
 @examples[#:eval list-eval
 (list-set '(zero one two) 2 "two")]
@@ -951,6 +1054,8 @@ the @exnraise[exn:fail:contract].
 The @racket[lst] argument need not actually be a list; @racket[lst]
 must merely start with a chain of at least @racket[pos] pairs.
 
+This function takes time proportional to @racket[pos].
+
 @mz-examples[#:eval list-eval
   (take '(1 2 3 4 5) 2)
   (take 'non-list 0)]}
@@ -969,7 +1074,8 @@ Returns the same result as
 
 @racketblock[(values (take lst pos) (drop lst pos))]
 
-except that it can be faster.}
+except that it can be faster, but it will still take time
+proportional to @racket[pos].}
 
 
 @defproc[(takef [lst any/c] [pred procedure?])
@@ -1020,6 +1126,8 @@ has fewer than @racket[pos] elements, then the
 The @racket[lst] argument need not actually be a list; @racket[lst]
 must merely end with a chain of at least @racket[pos] pairs.
 
+This function takes time proportional to the length of @racket[lst].
+
 @mz-examples[#:eval list-eval
   (take-right '(1 2 3 4 5) 2)
   (take-right 'non-list 0)]}
@@ -1035,6 +1143,8 @@ dropping its @racket[pos]-length tail.  If @racket[lst] has fewer than
 The @racket[lst] argument need not actually be a list; @racket[lst] must
 merely end with a chain of at least @racket[pos] pairs.
 
+This function takes time proportional to the length of @racket[lst].
+
 @mz-examples[#:eval list-eval
   (drop-right '(1 2 3 4 5) 2)
   (drop-right 'non-list 0)]}
@@ -1047,7 +1157,8 @@ Returns the same result as
 
 @racketblock[(values (drop-right lst pos) (take-right lst pos))]
 
-except that it can be faster.
+except that it can be faster, but it will still take time proportional
+to the length of @racket[lst].
 
 @mz-examples[#:eval list-eval
   (split-at-right '(1 2 3 4 5 6) 3)
@@ -1174,7 +1285,7 @@ traversal.
 @defproc[(check-duplicates [lst list?]
                            [same? (any/c any/c . -> . any/c) equal?]
                            [#:key extract-key (-> any/c any/c) (lambda (x) x)]
-                           [#:default failure-result (failure-result/c any/c) (lambda () #f)])
+                           [#:default failure-result failure-result/c (lambda () #f)])
          any]{
 
 Returns the first duplicate item in @racket[lst]. More precisely, it
@@ -1194,8 +1305,8 @@ result:
 ]
 
 The @racket[same?] argument should be an equivalence predicate such as
-@racket[equal?] or @racket[eqv?] or a dictionary.
-The procedures @racket[equal?], @racket[eqv?], and @racket[eq?] automatically
+@racket[equal?] or @racket[eqv?].
+The procedures @racket[equal?], @racket[eqv?], @racket[eq?], and @racket[equal-always?] automatically
 use a dictionary for speed.
 
 @examples[#:eval list-eval
@@ -1226,6 +1337,10 @@ The @racket[#:key] argument @racket[extract-key] is used to extract a
 key value from each list element, so two items are considered equal if
 @racket[(same? (extract-key x) (extract-key y))] is true.
 
+Like @racket[check-duplicates], if the @racket[same?] argument is one of
+@racket[equal?], @racket[eqv?], @racket[eq?], and @racket[equal-always?],
+the operation can be specialized to improve performance.
+
 @mz-examples[#:eval list-eval
   (remove-duplicates '(a b b a))
   (remove-duplicates '(1 2 1.0 0))
@@ -1243,7 +1358,7 @@ because @racket[filter-map] avoids
 building the intermediate list.
 
 @mz-examples[#:eval list-eval
-  (filter-map (lambda (x) (and (positive? x) x)) '(1 2 3 -2 8))]}
+  (filter-map (lambda (x) (and (negative? x) (abs x))) '(1 2 -3 -4 8))]}
 
 
 @defproc[(count [proc procedure?] [lst list?] ...+)
@@ -1297,6 +1412,29 @@ performance when it appears directly in a @racket[for] clause.
 @history[#:changed "6.7.0.4"
          @elem{Adjusted to cooperate with @racket[for] in the same
                way that @racket[in-range] does.}]}
+
+
+@defproc[(inclusive-range [start real?] [end real?] [step real? 1]) list?]{
+
+Similar to @racket[in-inclusive-range], but returns lists.
+
+The resulting list holds numbers starting at @racket[start] and whose
+successive elements are computed by adding @racket[step] to their
+predecessor until @racket[end] (included) is reached.
+If no @racket[step] argument is provided, @racket[1] is used.
+
+Like @racket[in-inclusive-range], an @racket[inclusive-range] application can provide better
+performance when it appears directly in a @racket[for] clause.
+
+@mz-examples[#:eval list-eval
+  (inclusive-range 10 20)
+  (inclusive-range 20 40 2)
+  (inclusive-range 20 10 -1)
+  (inclusive-range 10 15 1.5)]
+
+@history[#:added "8.0.0.13"]
+
+}
 
 
 @defproc[(append-map [proc procedure?] [lst list?] ...+)
@@ -1371,7 +1509,7 @@ Raises an error if the input list contains more than 256 elements.
 
 @index["in-rearrangements"]{Returns} a sequence of all permutations of the input list.  It is
 equivalent to @racket[(in-list (permutations l))] but much faster since
-it builds the permutations one-by-one on each iteration
+it builds the permutations one-by-one on each iteration.
 Raises an error if the input list contains more than 256 elements.}
 
 
@@ -1462,12 +1600,12 @@ produces a true value.
 @defproc[(make-reader-graph [v any/c])
          any/c]{
 
-Returns a value like @racket[v], with placeholders created by
-@racket[make-placeholder] replaced with the values that they contain,
-and with placeholders created by @racket[make-hash-placeholder] with an
-immutable hash table.  No part of @racket[v] is mutated; instead, parts
-of @racket[v] are copied as necessary to construct the resulting graph,
-where at most one copy is created for any given value.
+Returns a value like @racket[v], with @deftech{placeholders} created by
+@racket[make-placeholder] replaced with the values that they contain, and
+with @deftech{hash placeholders} created by @racket[make-hash-placeholder]
+with an immutable hash table.  No part of @racket[v] is mutated; instead,
+parts of @racket[v] are copied as necessary to construct the resulting
+graph, where at most one copy is created for any given value.
 
 Since the copied values can be immutable, and since the copy is also
 immutable, @racket[make-reader-graph] can create cycles involving only
@@ -1504,15 +1642,15 @@ the same sort of cyclic values as @racket[read].
 @defproc[(placeholder? [v any/c])
          boolean?]{
 
-Returns @racket[#t] if @racket[v] is a placeholder created by
+Returns @racket[#t] if @racket[v] is a @tech{placeholder} created by
 @racket[make-placeholder], @racket[#f] otherwise.}
 
 
 @defproc[(make-placeholder [v any/c])
          placeholder?]{
 
-Returns a placeholder for use with @racket[placeholder-set!]  and
-@racket[make-reader-graph]. The @racket[v] argument supplies the
+Returns a @tech{placeholder} for use with @racket[placeholder-set!]
+and @racket[make-reader-graph]. The @racket[v] argument supplies the
 initial value for the placeholder.}
 
 
@@ -1531,26 +1669,34 @@ Returns the value of @racket[ph].}
 @defproc[(hash-placeholder? [v any/c])
          boolean?]{
 
-Returns @racket[#t] if @racket[v] is a placeholder created by
-@racket[make-hash-placeholder], @racket[#f] otherwise.}
+Returns @racket[#t] if @racket[v] is a @tech{hash placeholder} created
+by @racket[make-hash-placeholder], @racket[#f] otherwise.}
 
 
 @defproc[(make-hash-placeholder [assocs (listof pair?)])
          hash-placeholder?]{
 
-Like @racket[make-immutable-hash], but produces a table placeholder
+Like @racket[make-immutable-hash], but produces a @tech{hash placeholder}
 for use with @racket[make-reader-graph].}
 
 
 @defproc[(make-hasheq-placeholder [assocs (listof pair?)])
          hash-placeholder?]{
 
-Like @racket[make-immutable-hasheq], but produces a table placeholder
+Like @racket[make-immutable-hasheq], but produces a @tech{hash placeholder}
 for use with @racket[make-reader-graph].}
 
 
 @defproc[(make-hasheqv-placeholder [assocs (listof pair?)])
          hash-placeholder?]{
 
-Like @racket[make-immutable-hasheqv], but produces a table placeholder
+Like @racket[make-immutable-hasheqv], but produces a @tech{hash placeholder}
 for use with @racket[make-reader-graph].}
+
+@defproc[(make-hashalw-placeholder [assocs (listof pair?)])
+         hash-placeholder?]{
+
+Like @racket[make-immutable-hashalw], but produces a @tech{hash placeholder}
+for use with @racket[make-reader-graph].
+
+@history[#:added "8.5.0.3"]}

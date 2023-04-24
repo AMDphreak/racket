@@ -7,12 +7,11 @@
 
 (define cross-system-table #f)
 
-(define system-type-symbols '(os word gc vm link machine so-suffix so-mode fs-change target-machine))
+(define system-type-symbols '(os os* arch word gc vm link machine so-suffix so-mode fs-change target-machine))
 
 (define (compute-cross!)
   (unless cross-system-table
-    (define lib-dir (find-lib-dir))    
-    (define ht (and lib-dir
+    (define ht (for/or ([lib-dir (in-list (get-cross-lib-search-dirs))])
                     (let ([f (build-path lib-dir "system.rktd")])
                       (and (file-exists? f)
                            (let ([ht (call-with-default-reading-parameterization

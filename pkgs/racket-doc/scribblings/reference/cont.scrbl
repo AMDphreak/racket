@@ -7,8 +7,9 @@
 
 See @secref["cont-model"] and @secref["prompt-model"] for general
 information about continuations. Racket's support for prompts and
-composable continuations most closely resembles Dorai Sitaram's
-@racket[%] and @racket[fcontrol] operator @cite["Sitaram93"].
+composable continuations @cite["Flatt07"] closely resembles Sitaram's @racket[%] and
+@racket[fcontrol] operator @cite["Sitaram93"].
+
 
 Racket installs a @tech{continuation barrier} around evaluation in the
 following contexts, preventing full-continuation jumps into the
@@ -94,12 +95,17 @@ handler, which accepts a single thunk to apply (with the prompt
 intact).}
 
 @defproc*[([(make-continuation-prompt-tag) continuation-prompt-tag?]
-           [(make-continuation-prompt-tag [sym symbol?]) continuation-prompt-tag?])]{
+           [(make-continuation-prompt-tag [name symbol?]) continuation-prompt-tag?])]{
 
 Creates a prompt tag that is not @racket[equal?] to the result of any
 other value (including prior or future results from
-@racket[make-continuation-prompt-tag]). The optional @racket[sym]
-argument, if supplied, is used when printing the prompt tag.}
+@racket[make-continuation-prompt-tag]). The optional @racket[name]
+argument, if supplied, specifies the name of the prompt tag
+for printing or @racket[object-name].
+
+@history[#:changed "7.9.0.13" @elem{The @racket[name] argument
+          gives the name of the prompt tag.}]
+}
 
 @defproc[(default-continuation-prompt-tag) continuation-prompt-tag?]{
 
@@ -182,15 +188,15 @@ called in tail position, and the continuation procedure supplied to
 @racket[proc] can only be called during the dynamic extent of the
 @racket[call-with-escape-continuation] call.
 
-Due to the limited applicability of its continuation,
-@racket[call-with-escape-continuation] can be implemented more efficiently
-than @racket[call-with-current-continuation].
-
 A continuation obtained from @racket[call-with-escape-continuation] is
 actually a kind of prompt. Escape continuations are provided mainly
 for backwards compatibility, since they pre-date general prompts in
-Racket, and because @racket[call/ec] is often an easy replacement
-for @racket[call/cc] to improve performance.}
+Racket. In the @tech{BC} implementation of Racket,
+@racket[call-with-escape-continuation] is implemented more efficiently
+than @racket[call-with-current-continuation], so
+@racket[call-with-escape-continuation] can sometimes replace
+@racket[call-with-current-continuation] to improve performance in
+those older Racket variants.}
 
 @defproc[(call/ec
           [proc (continuation? . -> . any)]) 
@@ -198,6 +204,46 @@ for @racket[call/cc] to improve performance.}
 
 The @racket[call/ec] binding is an alias for @racket[call-with-escape-continuation].
 }
+
+@defproc[(call-in-continuation [k continuation?]
+                               [proc (-> any)])
+         any]{
+
+Similar to applying the continuation @racket[k], but instead of
+delivering values to the continuation, @racket[proc] is called with
+@racket[k] as the continuation of the call (so the result of
+@racket[proc] is returned to the continuation). If @racket[k]
+is a composable continuation, the continuation of the call to
+@racket[proc] is the current continuation extended with @racket[k].
+
+@mz-examples[
+(+ 1
+   (call/cc (lambda (k)
+              (call-in-continuation k (lambda () 4)))))
+(+ 1
+   (call/cc (lambda (k)
+              (let ([n 0])
+                (dynamic-wind
+                 void
+                 (lambda ()
+                   (code:comment @#,elem{@racket[n] accessed after post thunk})
+                   (call-in-continuation k (lambda () n)))
+                 (lambda ()
+                   (set! n 4)))))))
+(+ 1
+   (with-continuation-mark
+    'n 4
+     (call/cc (lambda (k)
+                (with-continuation-mark
+                 'n 0
+                 (call-in-continuation
+                  k
+                  (lambda ()
+                    (code:comment @#,elem{@racket['n] mark accessed in continuation})
+                    (continuation-mark-set-first #f 'n))))))))
+]
+
+@history[#:added "7.6.0.17"]}
 
 @defform[(let/cc k body ...+)]{
 Equivalent to @racket[(call/cc (lambda (k) body ...))].
@@ -264,46 +310,49 @@ evaluation of @racket[value-thunk], the continuation of the
 @racket[dynamic-wind] application.
 
 When @racket[pre-thunk] is called due to a continuation jump, the
-continuation of @racket[pre-thunk]
+continuation of the call to @racket[pre-thunk]
 
 @itemize[
 
  @item{jumps to a more deeply nested @racket[pre-thunk], if any, or jumps
        to the destination continuation; then}
 
- @item{continues with the context of the @racket[pre-thunk]'s
-       @racket[dynamic-wind] call.}
+ @item{continues the same as the enclosing @racket[dynamic-wind] call
+       in the destination continuation (i.e., matching the
+       continuation of the original @racket[dynamic-wind] call up
+       to the enclosing prompt that delimited capture).}
 
 ]
 
 Normally, the second part of this continuation is never reached, due
 to a jump in the first part. However, the second part is relevant
 because it enables jumps to escape continuations that are contained in
-the context of the @racket[dynamic-wind] call. Furthermore, it means
-that the continuation marks (see @secref["contmarks"]) and
-parameterization (see @secref["parameters"]) for @racket[pre-thunk]
-correspond to those of the @racket[dynamic-wind] call that installed
-@racket[pre-thunk]. The @racket[pre-thunk] call, however, is
-@racket[parameterize-break]ed to disable breaks (see also
+the continuation of the @racket[dynamic-wind] call within the
+destination continuation. Furthermore, it means that the continuation
+marks (see @secref["contmarks"]) and parameterization (see
+@secref["parameters"]) for @racket[pre-thunk] correspond to those of
+the enclosing @racket[dynamic-wind] call. The @racket[pre-thunk] call,
+however, is @racket[parameterize-break]ed to disable breaks (see also
 @secref["breakhandler"]).
 
 Similarly, when @racket[post-thunk] is called due to a continuation
-jump, the continuation of @racket[post-thunk] jumps to a less deeply
-nested @racket[post-thunk], if any, or jumps to a @racket[pre-thunk]
-protecting the destination, if any, or jumps to the destination
-continuation, then continues from the @racket[post-thunk]'s
-@racket[dynamic-wind] application. As for @racket[pre-thunk], the
-parameterization of the original @racket[dynamic-wind] call is
-restored for the call, and the call is @racket[parameterize-break]ed
-to disable breaks.
+jump, the continuation of calling @racket[post-thunk] jumps to a less
+deeply nested @racket[post-thunk], if any, or jumps to a
+@racket[pre-thunk] protecting the destination, if any, or jumps to the
+destination continuation, then continues the same as the enclosing
+@racket[dynamic-wind] call within the originating continuation for the
+jump. As for @racket[pre-thunk], the continuation marks and
+parameterization of the @racket[dynamic-wind] call are in place for
+@racket[post-thunk], except that the call is further
+@racket[parameterize-break]ed to disable breaks.
 
-In both cases, the target for a jump is recomputed after each
+In both cases, the destination for a jump is recomputed after each
 @racket[pre-thunk] or @racket[post-thunk] completes. When a
 prompt-delimited continuation (see @secref["prompt-model"]) is
 captured in a @racket[post-thunk], it might be delimited and
-instantiated in such a way that the target of a jump turns out to be
+instantiated in such a way that the destination of a jump turns out to be
 different when the continuation is applied than when the continuation
-was captured. There may even be no appropriate target, if a relevant
+was captured. There may even be no appropriate destination, if a relevant
 prompt or escape continuation is not in the continuation after the
 restore; in that case, the first step in a @racket[pre-thunk] or
 @racket[post-thunk]'s continuation can raise an exception.

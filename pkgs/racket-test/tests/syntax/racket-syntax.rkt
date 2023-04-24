@@ -7,7 +7,6 @@
 ;; Missing tests for
 ;;  - generate-temporary
 ;;  - internal-definition-context-apply
-;;  - syntax-local-eval
 
 (check free-identifier=?
        (format-id #'here "~a?" 'null)
@@ -22,8 +21,27 @@
          (format-id #'here "ab~a" #'c)
         #'abc))
 
+(check free-identifier=?
+       (format-id #'here "sub~a" 1)
+       #'sub1)
+
+(check free-identifier=?
+       (format-id #'here "sub~a" #'1)
+       #'sub1)
+
 (check-equal? (format-symbol "~a?" 'null) 'null?)
 (check-equal? (format-symbol "~a?" "null") 'null?)
+(check-equal? (format-symbol "sub~a" 1) 'sub1)
+(check-equal? (format-symbol "sub~a" #'1) 'sub1)
+
+(check-exn
+ exn:fail:contract?
+ (lambda ()
+   (format-id 'here "wrong--first-arg-is-not-syntax")))
+
+(check free-identifier=?
+       (format-id #f "cb~a" #'a)
+       #'cba)
 
 ;; ----
 
@@ -37,6 +55,11 @@
                  (define/with-syntax (n ...) #'(1 2 3))
                  #'(0 n ...)))
               '(0 1 2 3))
+(check-equal? (syntax->datum
+               (let ()
+                 (define/with-syntax (0 (m n ...) ...) #'(0 (1 2) (3 4 5) (6)))
+                 #'(0 m ... (n ... $) ...)))
+              '(0 1 3 6 (2 $) (4 5 $) ($)))
 
 ;; ----
 
@@ -105,3 +128,40 @@
 
 (check-equal? (with-syntax* ([x #'1] [y #'x]) (syntax->datum #'y))
               '1)
+
+;; ----
+
+(require (for-syntax racket/syntax))
+
+; syntax-local-eval
+(let ()
+  (define-syntax x '5)
+  (define-syntax (m stx)
+    (define ctx1 (syntax-local-make-definition-context))
+    (syntax-local-bind-syntaxes
+      (list #'y)
+      #''6
+      ctx1)
+
+    (define ctx2 (syntax-local-make-definition-context))
+    (syntax-local-bind-syntaxes
+      (list #'z)
+      #''7
+      ctx2)
+
+    #`(list
+       ; single intdef case
+       '#,(syntax-local-eval #'(map syntax-local-value (list #'x #'y))
+                             ctx1)
+       ; #f case
+       '#,(syntax-local-eval #'(list 1 2)
+                             #f)
+       ; #f case as default
+       '#,(syntax-local-eval #'(list 1 2))
+       ; list of intdefs case
+       '#,(syntax-local-eval #'(map syntax-local-value (list #'y #'z))
+                             (list ctx1 ctx2))))
+  (check-equal?
+    (m)
+    '((5 6) (1 2) (1 2) (6 7))))
+

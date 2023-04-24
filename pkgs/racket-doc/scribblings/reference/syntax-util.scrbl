@@ -16,7 +16,8 @@
 
 @defproc[(format-id [lctx (or/c syntax? #f)]
                     [fmt string?]
-                    [v (or/c string? symbol? identifier? keyword? char? number?)] ...
+                    [v (or/c string? symbol? keyword? char? number?
+                             (syntax/c (or/c string? symbol? keyword? char? number?)))] ...
                     [#:source src (or/c syntax? #f) #f]
                     [#:props props (or/c syntax? #f) #f]
                     [#:cert ignored (or/c syntax? #f) #f]
@@ -31,8 +32,9 @@ for the lexical context, @racket[src] for the source location, and
 @racket[props] for the properties. An argument supplied with
 @racket[#:cert] is ignored. (See @racket[datum->syntax].)
 
-The format string must use only @litchar{~a} placeholders. Identifiers
-in the argument list are automatically converted to symbols.
+The format string must use only @litchar{~a} placeholders.
+Syntax objects in the argument list are automatically unwrapped
+(e.g., identifiers will be automatically converted to symbols).
 
 @examples[#:eval the-eval
 (define-syntax (make-pred stx)
@@ -65,20 +67,27 @@ sub-range binder record. This property value overrides a
 ]
 
 @history[#:changed "7.4.0.5" @elem{Added the @racket[#:subs?] and
-@racket[#:subs-intro] arguments.}]
+@racket[#:subs-intro] arguments.}
+         #:changed "8.7.0.7" @elem{Allowed @racket[v] to be a syntax object
+wrapping a string, a keyword, a character, or a number.}]
 }
 
 @defproc[(format-symbol [fmt string?]
-                        [v (or/c string? symbol? identifier? keyword? char? number?)] ...)
+                        [v (or/c string? symbol? keyword? char? number?
+                                 (syntax/c (or/c string? symbol? keyword? char? number?)))] ...)
          symbol?]{
 
 Like @racket[format], but produces a symbol. The format string must
-use only @litchar{~a} placeholders. Identifiers in the argument list
-are automatically converted to symbols.
+use only @litchar{~a} placeholders.
+Syntax objects in the argument list are automatically unwrapped
+(e.g., identifiers will be automatically converted to symbols).
 
 @examples[#:eval the-eval
   (format-symbol "make-~a" 'triple)
 ]
+
+@history[#:changed "8.7.0.7" @elem{Allowed @racket[v] to be a syntax object
+wrapping a string, a keyword, a character, or a number.}]
 }
 
 
@@ -90,7 +99,7 @@ are automatically converted to symbols.
          #:contracts ([stx-expr syntax?])]{
 
 Definition form of @racket[with-syntax]. That is, it matches the
-syntax object result of @racket[expr] against @racket[pattern] and
+syntax object result of @racket[stx-expr] against @racket[pattern] and
 creates pattern variable definitions for the pattern variables of
 @racket[pattern].
 
@@ -165,7 +174,7 @@ forms like @racket[with-disappeared-uses].
 
 Evaluates the @racket[body-expr]s and @racket[stx-expr], catching identifiers
 looked up using @racket[syntax-local-value/record]. Adds the caught identifiers
-to the @racket['disappeared-uses] syntax property of the syntax object produced
+to the @racket['disappeared-use] syntax property of the syntax object produced
 by @racket[stx-expr].
 
 @history[#:changed "6.5.0.7" @elem{Added the option to include @racket[body-expr]s.}]
@@ -219,14 +228,14 @@ is used as the basis for the identifier's name.
          syntax?]{
 
 Equivalent to @racket[(internal-definition-context-introduce intdef-ctx stx 'add)]. The
-@racket[internal-definition-context-apply] function is provided for backwards compatibility; the more
-general @racket[internal-definition-context-introduce] function is preferred.
+@racket[internal-definition-context-apply] function is provided for backwards compatibility; the
+ @racket[internal-definition-context-add-scopes] function is preferred.
 }
 
-@defproc[(syntax-local-eval [stx syntax?]
+@defproc[(syntax-local-eval [stx any/c]
                             [intdef-ctx (or/c internal-definition-context?
-                                              (listof internal-definition-context?)
-                                              #f)
+                                              #f
+                                              (listof internal-definition-context?))
                              '()])
          any]{
 

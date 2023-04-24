@@ -26,7 +26,7 @@
               (system "whoami")]
              ['windows
               (system "echo %username%")]
-             [else (pkg-error "not supported")])))))
+             [_ (pkg-error "not supported")])))))
 
   (define ====
     (make-string (string-length name) #\=))
@@ -63,10 +63,10 @@
     (parameterize ([current-directory name])
 
       ;; LICENSE files
-      (displayln "Generating LICENSE-APACHE and LICENSE-MIT files. You are free to change the license.")
+      (displayln "Initializing license (Apache-2.0 OR MIT). You are free to change the license.")
       (with-output-to-file "LICENSE-MIT"
         (lambda () (expand/display #<<EOS
-<<name>> 
+<<name>>
 
 MIT License
 
@@ -124,58 +124,40 @@ compiled/
 EOS
 )))
 
-      ;; .travis.yml
-      (with-output-to-file ".travis.yml"
+      ;; .github/workflows/ci.yml
+      (make-directory ".github")
+      (make-directory ".github/workflows")
+      (with-output-to-file ".github/workflows/ci.yml"
         (lambda () (expand/display #<<EOS
-language: c
-
-# Based on: https://github.com/greghendershott/travis-racket
-
-env:
-  global:
-    # Supply a global RACKET_DIR environment variable. This is where
-    # Racket will be installed. A good idea is to use ~/racket because
-    # that doesn't require sudo to install.
-    - RACKET_DIR=~/racket
-  matrix:
-    # Supply at least one RACKET_VERSION environment variable. This is
-    # used by the install-racket.sh script (run at before_install,
-    # below) to select the version of Racket to download and install.
-    #
-    # Supply more than one RACKET_VERSION (as in the example below) to
-    # create a Travis-CI build matrix to test against multiple Racket
-    # versions.
-    - RACKET_VERSION=6.12
-    - RACKET_VERSION=7.0
-    - RACKET_VERSION=7.1
-    - RACKET_VERSION=7.2
-    - RACKET_VERSION=HEAD
-
-matrix:
-  allow_failures:
-#   - env: RACKET_VERSION=HEAD
-  fast_finish: true
-
-before_install:
-- git clone https://github.com/greghendershott/travis-racket.git ~/travis-racket
-- cat ~/travis-racket/install-racket.sh | bash # pipe to bash not sh!
-- export PATH="${RACKET_DIR}/bin:${PATH}" #install-racket.sh can't set for us
-
-install:
- - raco pkg install --auto --name <<name>>
-
-before_script:
-
-# Here supply steps such as raco make, raco test, etc.  You can run
-# `raco pkg install --deps search-auto` to install any required
-# packages without it getting stuck on a confirmation prompt.
-script:
- - raco test -x -p <<name>>
-
-after_success:
- - raco setup --check-pkg-deps --pkgs <<name>>
- - raco pkg install --auto cover cover-coveralls
- - raco cover -b -f coveralls -d $TRAVIS_BUILD_DIR/coverage .
+on: [push, pull_request]
+name: CI
+jobs:
+  build:
+    name: "Build on Racket '${{ matrix.racket-version }}' (${{ matrix.racket-variant }})"
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.experimental || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        racket-version: ["stable", "current"]
+        racket-variant: ["BC", "CS"]
+        include:
+          - racket-version: current
+            experimental: true
+    steps:
+      - uses: actions/checkout@v3.1.0
+      - uses: Bogdanp/setup-racket@v1.9.1
+        with:
+          architecture: x64
+          distribution: full
+          variant: ${{ matrix.racket-variant }}
+          version: ${{ matrix.racket-version }}
+      - name: Installing <<name>> and its dependencies
+        run: raco pkg install --no-docs --auto --name <<name>>
+      - name: Compiling <<name>> and building its docs
+        run: raco setup --check-pkg-deps --unused-pkg-deps <<name>>
+      - name: Testing <<name>>
+        run: raco test -x -p <<name>>
 
 EOS
 )))
@@ -190,6 +172,7 @@ EOS
 (define pkg-desc "Description Here")
 (define version "0.0")
 (define pkg-authors '(<<user>>))
+(define license '(Apache-2.0 OR MIT))
 
 EOS
 )))

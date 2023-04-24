@@ -1,14 +1,12 @@
 #lang scribble/doc
 @(require "utils.rkt")
 
-@title[#:tag "overview"]{Overview}
+@bc-title[#:tag "overview"]{Overview}
 
-The Racket run-time system is responsible for the implementation of
-primitive datatypes such as numbers and strings, the evaluation and/or
-JIT compilation of Racket bytecode, the macro expansion and
-compilation of Racket from source to bytecode, the allocation and
-reclamation of memory used during evaluation, and the scheduling of
-concurrent threads and parallel tasks.
+The Racket BC runtime system is implemented in C and provides the
+compiler from source to bytecode format, the JIT compiler from
+bytecode to machine code, I/O functionality, threads, and memory
+management.
 
 @section{``Scheme'' versus ``Racket''}
 
@@ -20,43 +18,21 @@ all should be renamed to start @cpp{racket_}.
 
 @; ----------------------------------------------------------------------
 
-@section{Building Racket from Source}
-
-The normal Racket distribution includes @filepath{.rkt} sources for
-collection-based libraries. After modifying library files, run
-@exec{raco setup} (see @secref[#:doc '(lib
-"scribblings/raco/raco.scrbl") "setup"]) to rebuild installed
-libraries.
-
-The normal Racket distribution does not include the C sources for
-Racket's run-time system. To build Racket from scratch, download a
-source distribution from @url{http://download.racket-lang.org};
-detailed build instructions are in the @filepath{README} file in the
-top-level @filepath{src} directory. You can also get the latest
-sources from the @tt{git} repository at
-@url{https://github.com/racket/racket}, but beware that the repository is
-one step away from a normal source distribution, and it provides build
-modes that are more suitable for developing Racket itself; see
-@filepath{INSTALL.txt} in the @tt{git} repository for more
-information.
-
-@; ----------------------------------------------------------------------
-
 @section[#:tag "CGC versus 3m"]{CGC versus 3m}
 
-Before mixing any C code with Racket, first decide whether to use the
+Before mixing any C code with Racket BC, first decide whether to use the
 @bold{3m} variant of Racket, the @bold{CGC} variant of Racket, or
 both:
 
 @itemize[
 
-@item{@bold{@as-index{3m}} : the main variant of Racket, which uses
+@item{@bold{@as-index{3m}} : the main variant of Racket BC, which uses
   @defterm{precise} garbage collection and requires explicit
   registration of pointer roots and allocation shapes. The precise
   garbage collector may move its objects in memory during a
   collection.}
 
-@item{@bold{@as-index{CGC}} : the original variant of Racket, where
+@item{@bold{@as-index{CGC}} : the original variant of Racket BC, where
   memory management depends on a @defterm{conservative} garbage
   collector. The conservative garbage collector can automatically find
   references to managed values from C local variables and (on some
@@ -93,7 +69,7 @@ to call the library.
 
 @; ----------------------------------------------------------------------
 
-@section[#:tag "places"]{Racket and Places}
+@section[#:tag "places"]{Racket BC and Places}
 
 Each Racket @|tech-place| corresponds to a separate OS-implemented
 thread. Each place has its own memory manager. Pointers to GC-managed
@@ -118,15 +94,13 @@ for the original place.
 
 @; ----------------------------------------------------------------------
 
-@section{Racket and Threads}
+@section{Racket BC and Threads}
 
 Racket implements threads for Racket programs without aid from the
 operating system, so that Racket threads are cooperative from the
-perspective of C code. On Unix, stand-alone Racket uses a single
-OS-implemented thread. On Windows and Mac OS, stand-alone
-Racket uses a few private OS-implemented threads for background
-tasks, but these OS-implemented threads are never exposed by the
-Racket API.
+perspective of C code. Stand-alone Racket may uses a few private
+OS-implemented threads for background tasks, but these OS-implemented
+threads are never exposed by the Racket API.
 
 Racket can co-exist with additional OS-implemented threads, but the
 additional OS threads must not call any @cpp{scheme_} function.  Only
@@ -146,7 +120,7 @@ and embedding C code.
 
 @; ----------------------------------------------------------------------
 
-@section[#:tag "im:unicode"]{Racket, Unicode, Characters, and Strings}
+@section[#:tag "im:unicode"]{Racket BC, Unicode, Characters, and Strings}
 
 A character in Racket is a Unicode code point. In C, a character
 value has type @cppi{mzchar}, which is an alias for @cpp{unsigned} ---
@@ -163,7 +137,7 @@ See also @secref["im:strings"] and @secref["im:encodings"].
 
 @; ----------------------------------------------------------------------
 
-@section[#:tag "im:intsize"]{Integers}
+@section[#:tag "im:intsize"]{Racket BC Integers}
 
 Racket expects to be compiled in a mode where @cppi{short} is a
 16-bit integer, @cppi{int} is a 32-bit integer, and @cppi{intptr_t} has

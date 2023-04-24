@@ -45,7 +45,7 @@ the @envvar{PATH} environment variable. On
 Unix and Mac OS, command-line arguments are passed as byte strings,
 and string @racket[arg]s are converted using the current locale's
 encoding (see @secref["encodings"]). On Windows, command-line
-arguments are passed as strings, and bytes strings are converted using
+arguments are passed as strings, and byte strings are converted using
 UTF-8.
 
 On Windows, the first @racket[arg] can be replaced with
@@ -97,13 +97,13 @@ The @racket[subprocess] procedure returns four values:
  @item{a @deftech{subprocess} value representing the created process;}
 
  @item{an input port piped from the process's standard output, or
- @racket[#f] if @racket[stdout-output-port] was a port;}
+ @racket[#f] if @racket[stdout] was a port;}
 
- @item{an output port piped to the process standard input, or
- @racket[#f] if @racket[stdin-input-port] was a port;}
+ @item{an output port piped to the process's standard input, or
+ @racket[#f] if @racket[stdin] was a port;}
 
  @item{an input port piped from the process's standard error, or
- @racket[#f] if @racket[stderr-output-port] was a port or @racket['stdout].}
+ @racket[#f] if @racket[stderr] was a port or @racket['stdout].}
 
 ]
 
@@ -132,13 +132,45 @@ whether the subprocess itself is registered with the current
 @tech{custodian} so that a custodian shutdown calls
 @racket[subprocess-kill] for the subprocess.
 
+The @racket[current-subprocess-keep-file-descriptors] parameter
+determines how file descriptors and handles in the current process are
+shared with the subprocess. File descriptors (on Unix and Mac OS) or
+handles (on Windows) represented by @racket[stdin], @racket[stdout],
+and @racket[stderr] are always shared with the subprocess. With the
+default parameter value of @racket['inherited], handles that are
+inherited on Windows are also shared, while no other file descriptors
+are shared on Unix and Mac OS. The parameter value @racket['all] is
+equivalent to @racket['inherited] on Windows, but on Unix and Mac OS,
+all file descriptors from the current process are shared with the
+subprocess---except for file descriptors 0, 1, and 2 as replaced by
+newly created pipes when the corresponding @racket[stdin],
+@racket[stdout], and @racket[stderr] argument is @racket[#f]. The
+parameter value @racket['()] is the same as @racket['inherited] on
+Unix and Mac OS , but it prevents sharing of inheritable handles on
+Windows. (A future extension may support a list of specific file
+descriptors or handles to share.)
+
 A subprocess can be used as a @tech{synchronizable event} (see @secref["sync"]).
 A subprocess value is @tech{ready for synchronization} when
 @racket[subprocess-wait] would not block; @resultItself{subprocess value}.
 
+Example:
+
+@racketblock[
+(define-values (sp out in err)
+  (subprocess #f #f #f "/bin/ls" "-l"))
+(printf "stdout:\n~a" (port->string out))
+(printf "stderr:\n~a" (port->string err))
+(close-input-port out)
+(close-output-port in)
+(close-input-port err)
+(subprocess-wait sp)
+]
+
 @history[#:changed "6.11.0.1" @elem{Added the @racket[group] argument.}
          #:changed "7.4.0.5" @elem{Added waiting for a fifo without a reader
-                                   as @racket[stdout] and/or @racket[stderr].}]}
+                                   as @racket[stdout] and/or @racket[stderr].}
+         #:changed "8.3.0.4" @elem{Added @racket[current-subprocess-custodian-mode] support.}]}
 
 
 @defproc[(subprocess-wait [subproc subprocess?]) void?]{
@@ -248,6 +280,16 @@ not all of them.}
 A @tech{parameter} that determines whether a subprocess is created as
 a new process group by default. See @racket[subprocess] and
 @racket[subprocess-kill] for more information.}
+
+
+@defparam[current-subprocess-keep-file-descriptors keeps (or/c 'inherited 'all '())]{
+
+A @tech{parameter} that determines how file descriptors (on Unix and
+Mac OS) and handles (on Windows) are shared in a subprocess as created
+by @racket[subprocess] or wrappers like @racket[process]. See
+@racket[subprocess] for more information.
+
+@history[#:added "8.3.0.4"]}
 
 
 @defproc[(shell-execute [verb (or/c string? #f)]
@@ -449,7 +491,7 @@ handling and the limited buffer capacity of subprocess pipes.}
 
  @item{an input port piped from the subprocess's standard output,}
 
- @item{an output port piped to the subprocess standard input,} 
+ @item{an output port piped to the subprocess's standard input,} 
 
  @item{the system process id of the subprocess,}
 

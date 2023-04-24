@@ -11,6 +11,7 @@
   (cond [(Pair? pat) (null-terminated? (Pair-d pat))]
         [(GSeq? pat) (null-terminated? (GSeq-tail pat))]
         [(Null? pat) #t]
+        [(Var? pat) #t]
         [else #f]))
 
 ;; combine a null-terminated pattern with another pattern to match afterwards
@@ -23,6 +24,12 @@
                                (append-pats (GSeq-tail p1) p2)
                                (GSeq-mutable? p1))]
         [(Null? p1) p2]
+        [(Var? p1) (make-GSeq (list (list p1))
+                              (list #f)
+                              (list #f)
+                              (list #f)
+                              p2
+                              #f)]
         [else (error 'match "illegal input to append-pats")]))
 
 (define hard-case?
@@ -35,6 +42,8 @@
 ;; parse stx as a quasi-pattern
 ;; parse parses unquote
 (define (parse-quasi stx parse)
+  (define (rearm new-stx) (syntax-rearm new-stx stx))
+  (define (rearm+pq new-stx) (pq (rearm new-stx)))
   (define (pq s) (parse-quasi s parse))
   (syntax-case stx (quasiquote unquote quote unquote-splicing)
     [(unquote p) (parse #'p)]
@@ -50,19 +59,7 @@
                                stx #'p)))]
     [(p dd . rest)
      (ddk? #'dd)
-     ;; FIXME: parameterize dd-parse so that it can be used here
-     (let* ([count (ddk? #'dd)]
-            [min (and (number? count) count)])
-       (make-GSeq
-        (parameterize ([match-...-nesting (add1 (match-...-nesting))])
-          (list (list (pq #'p))))
-        (list min)
-        ;; no upper bound
-        (list #f)
-        ;; patterns in p get bound to lists
-        (list #f)
-        (pq #'rest)
-        #f))]
+     (dd-parse rearm+pq #'p #'dd #'rest #'list?)]
     [(a . b) (make-Pair (pq #'a) (pq #'b))]
     ;; prefab structs
     [struct

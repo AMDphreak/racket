@@ -18,6 +18,7 @@ databases.}
 @defstruct*[pkg-info ([orig-pkg (or/c (list/c 'catalog string?)
                                       (list/c 'catalog string? string?)
                                       (list/c 'url string?)
+                                      (list/c 'git string?)
                                       (list/c 'file string?)
                                       (list/c 'dir string?)
                                       (list/c 'link string?)
@@ -36,9 +37,16 @@ two-element @racket['catalog] form records a URL for a Git or GitHub
 package source when the catalog reported such a source, and the URL is
 used for operations that adjust @racket['clone]-form installations.
 
+The @racket['git] form is used for URLs that start
+@litchar{git+https://} or @litchar{git+http://} or where the
+@racket['git-url] type was specified for parsing the URL. Other Git
+references (including ones that start @litchar{git://}) use
+@racket['url].
+
 @history[#:changed "6.1.1.5" @elem{Added @racket['clone] and two-level
                                    @racket['catalog] variants for
-                                   @racket[orig-pkg].}]}
+                                   @racket[orig-pkg].}
+         #:changed "8.0.0.13" @elem{Added @racket['git].}]}
 
 
 @defstruct*[(sc-pkg-info pkg-info) ()]{
@@ -104,11 +112,11 @@ collection name if the package is a single-collection package,
                  (or/c string? #f)
                  (or/c 'installation 'user (and/c path? complete-path?) #f))]{
 
-Like @racket[path->pkg+subpath+collects], but returns a fourth value for
+Like @racket[path->pkg+subpath+collect], but returns a fourth value for
 the package's installation scope.}
 
 
-@defproc[(get-pkgs-dir [scope (or/c 'installation 'user 'shared
+@defproc[(get-pkgs-dir [scope (or/c 'installation 'user
                                      (and/c path? complete-path?))]
                        [user-version string? (version)])
          path?]{
@@ -118,7 +126,7 @@ given scope. The @racket[user-version] argument is used to generate
 the result for @racket['user] scope.}
 
 
-@defproc[(read-pkgs-db [scope (or/c 'installation 'user 'shared
+@defproc[(read-pkgs-db [scope (or/c 'installation 'user
                                      (and/c path? complete-path?))])
          (hash/c string? pkg-info?)]{
 

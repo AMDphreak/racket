@@ -92,8 +92,9 @@ with some exceptions: @racket[quote-syntax] and @racket[#%top] are not allowed;
 @racket[letrec-values] can have only a single body expression; and
 numbers, booleans, strings, and byte strings are self-quoting.
 Primitives are accessed directly by name, and shadowing is not allowed
-within a @racketidfont{linklet} form for primitive names, imported
-variables, defined variables, or local variables.
+within a @racketidfont{linklet} form for primitive names (see
+@racket[linklet-body-reserved-symbol?]), imported variables, defined
+variables, or local variables.
 
 When an @racket[_exported-id/renamed] has no corresponding definition
 among the @racket[_defn-or-expr]s, then the variable is effectively
@@ -120,7 +121,7 @@ otherwise.}
                              [name any/c #f]
                              [import-keys #f #f]
                              [get-import #f #f]
-                             [options (listof (or/c 'serializable 'unsafe 'static
+                             [options (listof (or/c 'serializable 'unsafe 'static 'quick
                                                      'use-prompt 'uninterned-literal))
                                       '(serializable)])
             linklet?]
@@ -130,7 +131,7 @@ otherwise.}
                              [get-import (or/c #f (any/c . -> . (values (or/c linklet? instance? #f)
                                                                         (or/c vector? #f))))
                                          #f]
-                             [options (listof (or/c 'serializable 'unsafe 'static
+                             [options (listof (or/c 'serializable 'unsafe 'static 'quick
                                                     'use-prompt 'uninterned-literal))
                                       '(serializable)])
             (values linklet? vector?)])]{
@@ -194,6 +195,11 @@ at most once. Compilation with @racket['static] is intended to improve
 the performance of references within the linklet to defined and
 imported variables.
 
+If @racket['quick] is included in @racket[options], then linklet
+compilation may trade run-time performance for compile-time
+performance---that is, spend less time compiling the linklet, but the
+resulting linklet may run more slowly.
+
 If @racket['use-prompt] is included in @racket[options], then
 instantiating resulting linklet always wraps a prompt around each
 definition and immediate expression in the linklet. Otherwise,
@@ -212,14 +218,15 @@ The symbols in @racket[options] must be distinct, otherwise
 @exnraise[exn:fail:contract].
 
 @history[#:changed "7.1.0.8" @elem{Added the @racket['use-prompt] option.}
-         #:changed "7.1.0.10" @elem{Added the @racket['uninterned-literal] option.}]}
+         #:changed "7.1.0.10" @elem{Added the @racket['uninterned-literal] option.}
+         #:changed "7.5.0.14" @elem{Added the @racket['quick] option.}]}
 
 
 @defproc*[([(recompile-linklet [linklet linklet?]
                                [name any/c #f]
                                [import-keys #f #f]
                                [get-import #f #f]
-                               [options (listof (or/c 'serializable 'unsafe 'static
+                               [options (listof (or/c 'serializable 'unsafe 'static 'quick
                                                       'use-prompt 'uninterned-literal))
                                         '(serializable)])
             linklet?]
@@ -230,7 +237,7 @@ The symbols in @racket[options] must be distinct, otherwise
                                                                        (or/c vector? #f)))
                                                  #f)
                                            (lambda (import-key) (values #f #f))]
-                               [options (listof (or/c 'serializable 'unsafe 'static
+                               [options (listof (or/c 'serializable 'unsafe 'static 'quick
                                                       'use-prompt 'uninterned-literal))
                                         '(serializable)])
              (values linklet? vector?)])]{
@@ -240,7 +247,8 @@ and potentially optimizes it further.
 
 @history[#:changed "7.1.0.6" @elem{Added the @racket[options] argument.}
          #:changed "7.1.0.8" @elem{Added the @racket['use-prompt] option.}
-         #:changed "7.1.0.10" @elem{Added the @racket['uninterned-literal] option.}]}
+         #:changed "7.1.0.10" @elem{Added the @racket['uninterned-literal] option.}
+         #:changed "7.5.0.14" @elem{Added the @racket['quick] option.}]}
 
 
 @defproc[(eval-linklet [linklet linklet?]) linklet?]{
@@ -351,6 +359,15 @@ be recovered from @racket[write] output by @racket[read].}
 
 Extracts the content of a @tech{linklet bundle} into a @tech{hash
 table}.}
+
+
+@defproc[(linklet-body-reserved-symbol? [sym symbol?]) boolean?]{
+
+Return @racket[#t] if @racket[sym] is a primitive name or other
+identifier that is not allowed as a binding within a linklet,
+@racket[#f] otherwise.
+
+@history[#:added "8.2.0.1"]}
          
 
 @defproc[(instance? [v any/c]) boolean?]{

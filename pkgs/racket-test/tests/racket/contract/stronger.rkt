@@ -5,7 +5,8 @@
                 (make-basic-contract-namespace 'racket/contract
                                                'racket/list
                                                'racket/class
-                                               'racket/math)])
+                                               'racket/math
+                                               'racket/sequence)])
 
   (contract-eval '(define-contract-struct couple (hd tl)))
   (contract-eval '(define-contract-struct triple (a b c)))
@@ -67,6 +68,13 @@
   (ctest #t trust/not-stronger? (and/c natural? (>=/c 5)) (integer-in 5 #f))
   (ctest #t trust/not-stronger? (integer-in 0 #f) (and/c exact-nonnegative-integer? (>=/c -4)))
   (ctest #t trust/not-stronger? (and/c exact-nonnegative-integer? (>=/c -4)) (integer-in 0 #f))
+
+  (ctest #t trust/not-stronger? (integer-in -1 10) (between/c -1 10))
+  (ctest #t trust/not-stronger? (integer-in  2 10) (between/c -1 10))
+  (ctest #t trust/not-stronger? (integer-in -1 6) (between/c -1 10))
+  (ctest #f trust/not-stronger? (integer-in -1 11) (between/c -1 10))
+  (ctest #t trust/not-stronger? (integer-in -1 10) real?)
+  (ctest #t trust/not-stronger? exact-integer? real?)
 
   (ctest #t trust/not-stronger? #\a (char-in #\a #\c))
   (ctest #f trust/not-stronger? #\a (char-in #\b #\c))
@@ -231,6 +239,7 @@
                                (parameter/c (between/c 1 4) (between/c 0 5)))
   (ctest #f trust/not-stronger? (parameter/c (between/c 1 4) (between/c 0 5))
                                (parameter/c (between/c 0 5) (between/c 1 4)))
+  (ctest #f trust/not-stronger? (parameter/c (between/c 0 5)) (parameter/c (between/c 0 5) (between/c 1 6)))
 
   (ctest #t trust/not-stronger? (symbols 'x 'y) (symbols 'x 'y 'z))
   (ctest #f trust/not-stronger? (symbols 'x 'y 'z) (symbols 'x 'y))
@@ -341,6 +350,15 @@
       (define x (flat-rec-contract x (first-or/c (cons/c x '()) '())))
       (,test #t trust/not-stronger? x (first-or/c (cons/c x '()) '()))))
 
+  (contract-eval
+   `(let ()
+      (define x (flat-murec-contract ([x (or/c (cons/c x '()) '())]) x))
+      (,test #t trust/not-stronger? x (or/c (cons/c x '()) '()))))
+  (contract-eval
+   `(let ()
+      (define x (flat-murec-contract ([x (first-or/c (cons/c x '()) '())]) x))
+      (,test #t trust/not-stronger? x (first-or/c (cons/c x '()) '()))))
+
   (ctest #t trust/not-stronger? "x" string?)
   (ctest #f trust/not-stronger? string? "x")
 
@@ -380,6 +398,15 @@
 
   (ctest #t trust/not-stronger? (syntax/c (<=/c 3)) (syntax/c (<=/c 4)))
   (ctest #f trust/not-stronger? (syntax/c (<=/c 4)) (syntax/c (<=/c 3)))
+
+  (ctest #t trust/not-stronger? (sequence/c (<=/c 3)) (sequence/c (<=/c 4)))
+  (ctest #f trust/not-stronger? (sequence/c (<=/c 3) (<=/c 3)) (sequence/c (<=/c 3)))
+  (ctest #f trust/not-stronger? (sequence/c (<=/c 3)) (sequence/c (<=/c 3) (<=/c 3)))
+  (ctest #f trust/not-stronger? (sequence/c (<=/c 4)) (sequence/c (<=/c 3)))
+  (ctest #t trust/not-stronger? (sequence/c (<=/c 3) #:min-count 5) (sequence/c (<=/c 3)))
+  (ctest #f trust/not-stronger? (sequence/c (<=/c 3)) (sequence/c (<=/c 3) #:min-count 5))
+  (ctest #t trust/not-stronger? (sequence/c (<=/c 3) #:min-count 5) (sequence/c (<=/c 3) #:min-count 4))
+  (ctest #f trust/not-stronger? (sequence/c (<=/c 3) #:min-count 4) (sequence/c (<=/c 3) #:min-count 5))
 
   (ctest #t trust/not-stronger? (parametric->/c (x) (-> x x)) (parametric->/c (x) (-> x (or/c x #f))))
   (ctest #t trust/not-stronger? (parametric->/c (x) (-> x x)) (parametric->/c (x) (-> x (first-or/c x #f))))
@@ -528,6 +555,110 @@
 
   (ctest #t trust/not-stronger? (evt/c integer?) (evt/c integer?))
   (ctest #f trust/not-stronger? (evt/c integer?) (evt/c boolean?))
+
+  (ctest #t trust/not-stronger?
+         (case-> (-> (integer-in 0 10) (integer-in 0 10) (integer-in 0 10)))
+         (case-> (-> (integer-in 0 10) (integer-in 0 10) (integer-in 0 10))))
+  (ctest #f trust/not-stronger?
+         (case-> (-> (integer-in 0 10) boolean? (integer-in 0 10)))
+         (case-> (-> (integer-in 0 10) (integer-in 0 10) (integer-in 0 10))))
+  (ctest #f trust/not-stronger?
+         (case-> (-> (integer-in 0 10) (integer-in 1 5) (integer-in 0 10)))
+         (case-> (-> (integer-in 0 10) (integer-in 0 10) (integer-in 0 10))))
+  (ctest #t trust/not-stronger?
+         (case-> (-> (integer-in 0 10) (integer-in 0 10) (integer-in 0 10)))
+         (case-> (-> (integer-in 0 10) (integer-in 1 5) (integer-in 0 10))))
+  (ctest #t trust/not-stronger?
+         (case-> (-> (integer-in 0 10) (integer-in 0 10) (integer-in 1 5)))
+         (case-> (-> (integer-in 0 10) (integer-in 0 10) (integer-in 0 10))))
+  (ctest #f trust/not-stronger?
+         (case-> (-> (integer-in 0 10) (integer-in 0 10) (integer-in 0 10)))
+         (case-> (-> (integer-in 0 10) (integer-in 0 10) (integer-in 1 5))))
+  (ctest #t trust/not-stronger?
+         (case-> (-> (integer-in 0 10) (integer-in 0 10) (integer-in 0 10))
+                 (-> (integer-in 0 10) (integer-in 0 10)))
+         (case-> (-> (integer-in 0 10) (integer-in 0 10) (integer-in 0 10))
+                 (-> (integer-in 0 10) (integer-in 0 10))))
+  (ctest #t trust/not-stronger?
+         (case-> (-> (integer-in 0 10) (integer-in 0 10) (integer-in 0 10))
+                 (-> (integer-in 0 10) (integer-in 1 5)))
+         (case-> (-> (integer-in 0 10) (integer-in 1 5) (integer-in 0 10))
+                 (-> (integer-in 0 10) (integer-in 0 10))))
+  (ctest #f trust/not-stronger?
+         (case-> (-> (integer-in 0 10) (integer-in 1 5) (integer-in 0 10))
+                 (-> (integer-in 0 10) (integer-in 0 10)))
+         (case-> (-> (integer-in 0 10) (integer-in 0 10) (integer-in 0 10))
+                 (-> (integer-in 0 10) (integer-in 1 5))))
+  (ctest #f trust/not-stronger?
+         (case->m (-> (integer-in 0 10) (integer-in 1 5) (integer-in 0 10))
+                  (-> (integer-in 0 10) (integer-in 0 10)))
+         (case-> (-> (integer-in 0 10) (integer-in 0 10) (integer-in 0 10))
+                 (-> (integer-in 0 10) (integer-in 1 5))))
+  (ctest #t trust/not-stronger?
+         (case-> (-> (integer-in 0 10) (integer-in 0 10) any)
+                 (-> (integer-in 0 10) (integer-in 0 10)))
+         (case-> (-> (integer-in 0 10) (integer-in 0 10) any)
+                 (-> (integer-in 0 10) (integer-in 0 10))))
+  (ctest #f trust/not-stronger?
+         (case-> (-> (integer-in 0 10) (integer-in 0 10) any)
+                 (-> (integer-in 0 10) (integer-in 0 10)))
+         (case-> (-> (integer-in 0 10) (integer-in 0 10) (integer-in 0 10))
+                 (-> (integer-in 0 10) (integer-in 0 10))))
+  (ctest #t trust/not-stronger?
+         (case-> (-> (integer-in 0 10) (integer-in 0 10) (integer-in 0 10))
+                 (-> (integer-in 0 10) (integer-in 0 10)))
+         (case-> (-> (integer-in 0 10) (integer-in 0 10) any)
+                 (-> (integer-in 0 10) (integer-in 0 10))))
+  (ctest #t trust/not-stronger?
+         (case-> (-> (integer-in 0 10) (integer-in 0 10) (values (integer-in 0 10) (integer-in 1 11)))
+                 (-> (integer-in 0 10) (integer-in 0 10)))
+         (case-> (-> (integer-in 0 10) (integer-in 0 10) any)
+                 (-> (integer-in 0 10) (integer-in 0 10))))
+  (ctest #f trust/not-stronger?
+         (case-> (-> (integer-in 0 10) (integer-in 0 10) any)
+                 (-> (integer-in 0 10) (integer-in 0 10)))
+         (case-> (-> (integer-in 0 10) (integer-in 0 10) (values (integer-in 0 10) (integer-in 1 11)))
+                 (-> (integer-in 0 10) (integer-in 0 10))))
+  (ctest #f trust/not-stronger?
+         (case-> (-> any/c (integer-in 0 10) (integer-in 0 10) (values (integer-in 0 10) (integer-in 1 11)))
+                 (-> (integer-in 0 10) (integer-in 0 10)))
+         (case-> (-> (integer-in 0 10) (integer-in 1 5) (integer-in 1 10))
+                 (-> (integer-in 0 10) (integer-in 0 10))))
+  (ctest #f trust/not-stronger?
+         (case-> (-> (integer-in 0 10) (integer-in 1 5) (integer-in 1 10))
+                 (-> (integer-in 0 10) (integer-in 0 10)))
+         (case-> (-> any/c (integer-in 0 10) (integer-in 0 10) (values (integer-in 0 10) (integer-in 1 11)))
+                 (-> (integer-in 0 10) (integer-in 0 10))))
+  (ctest #t trust/not-stronger?
+         (case->m (->       (integer-in 0 10) (integer-in 0 10) (integer-in 0 10))
+                  (->       (integer-in 0 10) (integer-in 1 5)))
+         (case->  (-> any/c (integer-in 0 10) (integer-in 0 10) (integer-in 0 10))
+                  (-> any/c (integer-in 0 10) (integer-in 1 5))))
+  (ctest #t trust/not-stronger?
+         (case-> (-> any/c (integer-in 0 10) (integer-in 0 10) (integer-in 0 10))
+                 (-> any/c (integer-in 0 10) (integer-in 1 5)))
+         (case->m (-> (integer-in 0 10) (integer-in 0 10) (integer-in 0 10))
+                  (-> (integer-in 0 10) (integer-in 0 10))))
+  (ctest #t trust/not-stronger?
+         (case->m (->       (integer-in 0 10) (integer-in 0 10) (integer-in 1 5))
+                  (->       (integer-in 0 10) (integer-in 0 10)))
+         (case->  (-> any/c (integer-in 0 10) (integer-in 0 10) (integer-in 0 10))
+                  (-> any/c (integer-in 0 10) (integer-in 0 10))))
+  (ctest #f trust/not-stronger?
+         (case-> (-> any/c (integer-in 0 10) (integer-in 0 10) (integer-in 0 10))
+                 (-> any/c (integer-in 0 10) (integer-in 1 5)))
+         (case->m (-> (integer-in 0 10) (integer-in 0 10) (integer-in 1 5))
+                  (-> (integer-in 0 10) (integer-in 0 10))))
+  (ctest #f trust/not-stronger?
+         (case->m (-> (integer-in 0 10) (integer-in 0 10) (integer-in 0 10))
+                  (-> (integer-in 0 10) (integer-in 0 10)))
+         (case-> (-> any/c (integer-in 0 10) (integer-in 0 10) (integer-in 1 5))
+                 (-> any/c (integer-in 0 10) (integer-in 1 5))))
+  (ctest #t trust/not-stronger?
+         (case-> (-> any/c (integer-in 0 10) (integer-in 0 10) (integer-in 1 5))
+                 (-> any/c (integer-in 0 10) (integer-in 1 5)))
+         (case->m (-> (integer-in 0 10) (integer-in 0 10) (integer-in 0 10))
+                  (-> (integer-in 0 10) (integer-in 0 10))))
 
   ;; chances are, this predicate will accept "x", but
   ;; we don't want to consider it stronger, since it
@@ -713,6 +844,7 @@
         (struct/dc s
                    [a (>=/c c)]
                    [b (a) (>=/c a)]))
+      (set! mk mk) ;suppress inlining
       (define one (mk 1))
       (define two (mk 2))
       (,test #f trust/not-stronger? one two)

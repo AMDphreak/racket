@@ -13,7 +13,7 @@
     (define vers-len (min 63 (read-byte in)))
     (define vers (read-bytes vers-len in))
     (unless (equal? vers version-bytes)
-      (raise-read-error 'read-compiled-linklet
+      (raise-read-error '|loading code|
                         "version mismatch"
                         "expected" (version)
                         "found" (bytes->string/utf-8 vers #\?)
@@ -21,13 +21,15 @@
                                (if (path? n)
                                    (unquoted-printing-string
                                     (path->string n))
-                                   in))))
+                                   in))
+                        "possible solution"
+                        (unquoted-printing-string "running `racket -y`, `raco make`, or `raco setup`")))
     (define vm-len (min 63 (read-byte in)))
     (define vm (read-bytes vm-len in))
     (define as-correlated-linklet? (equal? vm correlated-linklet-vm-bytes))
     (unless (or as-correlated-linklet?
                 (equal? vm vm-bytes))
-      (raise-read-error 'read-compiled-linklet
+      (raise-read-error '|loading code|
                         "virtual-machine mismatch"
                         "expected" (bytes->string/utf-8 vm-bytes)
                         "found" (bytes->string/utf-8 vm #\?)
@@ -202,7 +204,7 @@
          [(null? details) null]
          [else
           (list*
-           "  " (car details) ": " (format "~v" (cadr details))
+           "\n  " (car details) ": " (format "~v" (cadr details))
            (loop (cddr details)))])))
     (current-continuation-marks)
     null)))

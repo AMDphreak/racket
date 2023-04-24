@@ -8,22 +8,22 @@
          racket/unsafe/ops
          (only-in racket/syntax format-symbol)
          (only-in racket/generic exn:fail:support)
-         (for-syntax racket/base racket/syntax))
+         (for-syntax racket/base racket/syntax syntax/for-body))
 
-(provide set seteq seteqv
-         weak-set weak-seteq weak-seteqv
-         mutable-set mutable-seteq mutable-seteqv
-         list->set list->seteq list->seteqv
-         list->weak-set list->weak-seteq list->weak-seteqv
-         list->mutable-set list->mutable-seteq list->mutable-seteqv
-         set-eq? set-eqv? set-equal?
+(provide set seteq seteqv setalw
+         weak-set weak-seteq weak-seteqv weak-setalw
+         mutable-set mutable-seteq mutable-seteqv mutable-setalw
+         list->set list->seteq list->seteqv list->setalw
+         list->weak-set list->weak-seteq list->weak-seteqv list->weak-setalw
+         list->mutable-set list->mutable-seteq list->mutable-seteqv list->mutable-setalw
+         set-eq? set-eqv? set-equal? set-equal-always?
          set-weak? set-mutable? set?
-         for/set for/seteq for/seteqv
-         for*/set for*/seteq for*/seteqv
-         for/weak-set for/weak-seteq for/weak-seteqv
-         for*/weak-set for*/weak-seteq for*/weak-seteqv
-         for/mutable-set for/mutable-seteq for/mutable-seteqv
-         for*/mutable-set for*/mutable-seteq for*/mutable-seteqv
+         for/set for/seteq for/seteqv for/setalw
+         for*/set for*/seteq for*/seteqv for*/setalw
+         for/weak-set for/weak-seteq for/weak-seteqv for/weak-setalw
+         for*/weak-set for*/weak-seteq for*/weak-seteqv for*/weak-setalw
+         for/mutable-set for/mutable-seteq for/mutable-seteqv for/mutable-setalw
+         for*/mutable-set for*/mutable-seteq for*/mutable-seteqv for*/mutable-setalw
 
          define-custom-set-types
          make-custom-set-types
@@ -544,6 +544,7 @@
 (define (hash-compatible? x y)
   (cond
     [(hash-equal? x) (hash-equal? y)]
+    [(hash-equal-always? x) (hash-equal-always? y)]
     [(hash-eqv? x) (hash-eqv? y)]
     [(hash-eq? x) (hash-eq? y)]))
 
@@ -570,6 +571,7 @@
            [else
             (define cmp-str
               (cond [(hash-equal? table) "set"]
+                    [(hash-equal-always? table) "setalw"]
                     [(hash-eqv? table) "seteqv"]
                     [(hash-eq? table) "seteq"]))
             (string-append key-str cmp-str)]))
@@ -682,7 +684,7 @@
                     "given ~a: ~e\n"
                     "argument position: 1st")
      method-name
-     (if immut "(not/c set-mutable?)" "set-mutable?")
+     (if immut "(not/c (or/c set-mutable? set-weak?))" "(or/c set-mutable? set-weak?)")
      (if immut "mutable set" "immutable set")
      s)
     (current-continuation-marks))))
@@ -970,6 +972,9 @@
 (define (list->seteqv xs)
   (dprintf "list->seteqv\n")
   (make-immutable-set #f make-immutable-hasheqv xs))
+(define (list->setalw xs)
+  (dprintf "list->setalw\n")
+  (make-immutable-set #f make-immutable-hashalw xs))
 (define (list->weak-set xs)
   (dprintf "list->weak-set\n")
   (make-weak-set #f make-weak-hash xs))
@@ -979,6 +984,9 @@
 (define (list->weak-seteqv xs)
   (dprintf "list->weak-seteqv\n")
   (make-weak-set #f make-weak-hasheqv xs))
+(define (list->weak-setalw xs)
+  (dprintf "list->weak-setalw\n")
+  (make-weak-set #f make-weak-hashalw xs))
 (define (list->mutable-set xs)
   (dprintf "list->mutable-set\n")
   (make-mutable-set #f make-hash xs))
@@ -988,6 +996,9 @@
 (define (list->mutable-seteqv xs)
   (dprintf "list->mutable-seteqv\n")
   (make-mutable-set #f make-hasheqv xs))
+(define (list->mutable-setalw xs)
+  (dprintf "list->mutable-setalw\n")
+  (make-mutable-set #f make-hashalw xs))
 
 (define (set . xs)
   (dprintf "set\n")
@@ -998,6 +1009,9 @@
 (define (seteqv . xs)
   (dprintf "seteqv\n")
   (list->seteqv xs))
+(define (setalw . xs)
+  (dprintf "setalw\n")
+  (list->setalw xs))
 (define (weak-set . xs)
   (dprintf "weak-set\n")
   (list->weak-set xs))
@@ -1007,6 +1021,9 @@
 (define (weak-seteqv . xs)
   (dprintf "weak-seteqv\n")
   (list->weak-seteqv xs))
+(define (weak-setalw . xs)
+  (dprintf "weak-setalw\n")
+  (list->weak-setalw xs))
 (define (mutable-set . xs)
   (dprintf "mutable-set\n")
   (list->mutable-set xs))
@@ -1016,6 +1033,9 @@
 (define (mutable-seteqv . xs)
   (dprintf "mutable-seteqv\n")
   (list->mutable-seteqv xs))
+(define (mutable-setalw . xs)
+  (dprintf "mutable-setalw\n")
+  (list->mutable-setalw xs))
 
 (define (set-eq? x)
   (dprintf "set-eq?\n")
@@ -1023,6 +1043,9 @@
 (define (set-eqv? x)
   (dprintf "set-eqv?\n")
   (and (custom-set? x) (hash-eqv? (custom-set-table x))))
+(define (set-equal-always? x)
+  (dprintf "set-equal-always?\n")
+  (and (custom-set? x) (hash-equal-always? (custom-set-table x))))
 (define (set-equal? x)
   (dprintf "set-equal?\n")
   (and (custom-set? x) (hash-equal? (custom-set-table x))))
@@ -1045,13 +1068,14 @@
       (lambda (stx)
         (syntax-case stx ()
           [(form clauses body ... expr)
-           (with-syntax ([original stx])
+           (with-syntax ([original stx]
+                         [((pre-body ...) (post-body ...)) (split-for-body stx #'(body ... expr))])
              (syntax-protect
               #'(immutable-custom-set
                  (begin0 #f (dprintf "~a\n" 'form))
                  (for_/fold/derived original ([table (make-table)]) clauses
-                   body ...
-                   (hash-set table expr #t)))))]))))
+                   pre-body ...
+                   (hash-set table (let () post-body ...) #t)))))]))))
 
   (define (immutable-fors table-id)
     (values (immutable-for #'for/fold/derived table-id)
@@ -1064,13 +1088,14 @@
       (lambda (stx)
         (syntax-case stx ()
           [(form clauses body ... expr)
-           (with-syntax ([original stx])
+           (with-syntax ([original stx]
+                         [((pre-body ...) (post-body ...)) (split-for-body stx #'(body ... expr))])
              (syntax-protect
               #'(let ([table (make-table)])
                   (dprintf "~a\n" 'form)
                   (for_/fold/derived original () clauses
-                    body ...
-                    (hash-set! table expr #t)
+                    pre-body ...
+                    (hash-set! table (let () post-body ...) #t)
                     (values))
                   (make-set #f table))))]))))
 
@@ -1089,6 +1114,8 @@
   (immutable-fors #'make-immutable-hasheq))
 (define-syntaxes (for/seteqv for*/seteqv)
   (immutable-fors #'make-immutable-hasheqv))
+(define-syntaxes (for/setalw for*/setalw)
+  (immutable-fors #'make-immutable-hashalw))
 
 (define-syntaxes (for/weak-set for*/weak-set)
   (weak-fors #'make-weak-hash))
@@ -1096,6 +1123,8 @@
   (weak-fors #'make-weak-hasheq))
 (define-syntaxes (for/weak-seteqv for*/weak-seteqv)
   (weak-fors #'make-weak-hasheqv))
+(define-syntaxes (for/weak-setalw for*/weak-setalw)
+  (weak-fors #'make-weak-hashalw))
 
 (define-syntaxes (for/mutable-set for*/mutable-set)
   (mutable-fors #'make-hash))
@@ -1103,3 +1132,5 @@
   (mutable-fors #'make-hasheq))
 (define-syntaxes (for/mutable-seteqv for*/mutable-seteqv)
   (mutable-fors #'make-hasheqv))
+(define-syntaxes (for/mutable-setalw for*/mutable-setalw)
+  (mutable-fors #'make-hashalw))

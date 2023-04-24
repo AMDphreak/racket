@@ -7,6 +7,7 @@
          "../file/parameter.rkt"
          "../file/host.rkt"
          "../file/error.rkt"
+         "../file/permissions.rkt"
          "../format/main.rkt"
          "fd-port.rkt"
          "close.rkt"
@@ -54,11 +55,12 @@
     (port-count-lines! p))
   p)
 
-(define (do-open-output-file #:plus-input? [plus-input? #f] who path mode1 mode2)
+(define (do-open-output-file #:plus-input? [plus-input? #f] who path mode1 mode2 perms replace-perms?)
   (check who path-string? path)
+  (check who permissions? #:contract permissions-desc perms)
   (define (mode->flags mode)
     (case mode
-      [(test) RKTIO_OPEN_TEXT]
+      [(text) RKTIO_OPEN_TEXT]
       [(truncate truncate/replace) (+ RKTIO_OPEN_TRUNCATE
                                       RKTIO_OPEN_CAN_EXIST)]
       [(must-truncate) (+ RKTIO_OPEN_TRUNCATE
@@ -85,9 +87,10 @@
     (+ RKTIO_OPEN_WRITE
        (if plus-input? RKTIO_OPEN_READ 0)
        (mode->flags mode1)
-       (mode->flags mode2)))
+       (mode->flags mode2)
+       (if replace-perms? RKTIO_OPEN_REPLACE_PERMS 0)))
   (define fd0
-    (rktio_open rktio host-path flags))
+    (rktio_open_with_create_permissions rktio host-path flags perms))
   (define fd
     (cond
       [(not (rktio-error? fd0)) fd0]
@@ -105,7 +108,7 @@
                                           "error deleting file\n"
                                           "  path: ~a")
                                          (host-> host-path))))
-       (rktio_open rktio host-path flags)]
+       (rktio_open_with_create_permissions rktio host-path flags perms)]
       [else fd0]))
   (when (rktio-error? fd)
     (end-atomic)
@@ -135,11 +138,13 @@
       (values ip op)
       op))
 
-(define/who (open-output-file path [mode1 none] [mode2 none])
-  (do-open-output-file who path mode1 mode2))
+(define DEFAULT-CREATE-PERMS #o666)
 
-(define/who (open-input-output-file path [mode1 none] [mode2 none])
-  (do-open-output-file #:plus-input? #t who path mode1 mode2))
+(define/who (open-output-file path [mode1 none] [mode2 none] [perms DEFAULT-CREATE-PERMS] [replace-perms? #f])
+  (do-open-output-file who path mode1 mode2 perms replace-perms?))
+
+(define/who (open-input-output-file path [mode1 none] [mode2 none] [perms DEFAULT-CREATE-PERMS] [replace-perms? #f])
+  (do-open-output-file #:plus-input? #t who path mode1 mode2 perms replace-perms?))
 
 (define/who (call-with-input-file path proc [mode none])
   (check who path-string? path)
@@ -149,10 +154,11 @@
    (proc i)
    (close-input-port i)))
 
-(define/who (call-with-output-file path proc [mode1 none] [mode2 none])
+(define/who (call-with-output-file path proc [mode1 none] [mode2 none] [perms DEFAULT-CREATE-PERMS] [replace-perms? #f])
   (check who path-string? path)
   (check who (procedure-arity-includes/c 1) proc)
-  (define o (open-output-file path mode1 mode2))
+  (check who permissions? #:contract permissions-desc perms)
+  (define o (open-output-file path mode1 mode2 perms replace-perms?))
   (begin0
    (proc o)
    (close-output-port o)))
@@ -168,10 +174,11 @@
      (lambda ()
        (close-input-port i)))))
 
-(define/who (with-output-to-file path proc [mode1 none] [mode2 none])
+(define/who (with-output-to-file path proc [mode1 none] [mode2 none] [perms DEFAULT-CREATE-PERMS] [replace-perms? #f])
   (check who path-string? path)
   (check who (procedure-arity-includes/c 0) proc)
-  (define o (open-output-file path mode1 mode2))
+  (check who permissions? #:contract permissions-desc perms)
+  (define o (open-output-file path mode1 mode2 perms replace-perms?))
   (parameterize ([current-output-port o])
     (dynamic-wind
      void

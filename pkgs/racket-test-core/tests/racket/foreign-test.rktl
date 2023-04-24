@@ -8,10 +8,14 @@
          ffi/unsafe/alloc
          ffi/unsafe/define
          ffi/unsafe/define/conventions
+         ffi/unsafe/global
+         ffi/unsafe/atomic
+         ffi/unsafe/os-async-channel
          ffi/vector
          racket/extflonum
          racket/place
-         racket/file)
+         racket/file
+         racket/unsafe/ops)
 
 (define test-async? (and (place-enabled?) (not (eq? 'windows (system-type)))))
 
@@ -72,17 +76,19 @@
     (and progfiles (concat progfiles "/Microsoft Visual Studio 10.0")))
   (when (and studio (directory-exists? studio))
     (define (paths-env var . ps)
+      (define orig-val (getenv var))
       (define val
         (apply concat (for/list ([p (in-list ps)]
                                  #:when (and p (directory-exists? p)))
                         (concat p ";"))))
       (printf ">>> $~a = ~s\n" var val)
-      (putenv var val))
+      (putenv var (if orig-val
+                      (concat orig-val ";" val)
+                      val)))
     (define (vc p)     (concat studio "/VC/" p))
     (define (common p) (concat studio "/Common7/" p))
     (define (winsdk p) (concat progfiles "/Microsoft SDKs/Windows/v7.0A/" p))
     (paths-env "PATH"
-               (getenv "PATH")
                (vc (if 64bit? "BIN/amd64" "BIN"))
                (vc "IDE") (vc "Tools") (vc "Tools/bin")
                (common "Tools") (common "IDE"))
@@ -156,8 +162,22 @@
   (check s 'c 14)
   (check s 'd 16))
 
+(let ([_bm _bitmask])
+  (let ([s (_bm '(a b c = 14 d))])
+    (test 2 values (cast 'b s _int))))
+
+(let ()
+  (define _test32_enum (_enum `(TEST32 = 1073741906) _sint32))
+  (define _test64_enum (_enum `(TEST64 = 4611686018427387904) _sint64))
+  (test 1073741906 cast 'TEST32 _test32_enum _sint32)
+  (test 'TEST32 cast 1073741906 _sint32 _test32_enum)
+  (test 4611686018427387904 cast  'TEST64 _test64_enum _sint64)
+  (test 'TEST64 cast 4611686018427387904 _sint64 _test64_enum))
+
 ;; Make sure `_box` at least compiles:
 (test #t ctype? (_fun (_box _int) -> _void))
+(test #t ctype? (_fun (_box _int #f) -> _void))
+(test #t ctype? (_fun (_box _int atomic-interior) -> _void))
 
 ;; Check error message on bad _fun form
 (syntax-test #'(_fun (b) :: _bool -> _void) #rx"unnamed argument .without an expression. is not allowed")
@@ -278,12 +298,8 @@
         ((ffi 'hoho (_fun _int (_fun _int -> (_fun _int -> _int)) -> _int))
          3 (lambda (x) (lambda (y) (+ y (* x x))))))
   ;; ---
-  ;; FIXME: this test is broken, because the array allocated by `(_list io _int len)`
-  ;; has no reason to stay in place; a GC during the callback may move it.
-  ;; The solution is probably to extend `_list` so that an allocation mode like
-  ;; 'atomic-interior can be supplied.
   (let ([qsort (get-ffi-obj 'qsort #f
-                            (_fun (l    : (_list io _int len))
+                            (_fun (l    : (_list io _int len atomic-interior))
                                   (len  : _int = (length l))
                                   (size : _int = (ctype-sizeof _int))
                                   (compare : (_fun _pointer _pointer -> _int))
@@ -327,17 +343,33 @@
   ;; test sending a callback for C to hold, preventing the callback from GCing
   (let ([with-keeper
          (lambda (k)
+           (define (sqr x)
+             (when (eq? (system-type 'vm) 'chez-scheme)
+               (test #t in-atomic-mode?))
+             (* x x))
            (t (void) 'grab_callback
               (_fun (_fun #:keep k _int  -> _int) -> _void) sqr)
            (t 9      'use_grabbed_callback (_fun _int -> _int) 3)
            (collect-garbage) ; make sure it survives a GC
            (t 25     'use_grabbed_callback (_fun _int -> _int) 5)
            (collect-garbage)
-           (t 81     'use_grabbed_callback (_fun _int -> _int) 9))])
+           (t 81     'use_grabbed_callback (_fun _int -> _int) 9)
+           (void/reference-sink sqr))])
     (with-keeper #t)
     (let ([b (box #f)])
       (with-keeper b)
       (set-box! b #f)))
+  ;; ---
+  ;; test passing an array of strings
+  (test "world"
+        (ffi 'second_string (_fun (_list i _string) -> _string))
+        (list "hello" "world" "!"))
+  ;; check that an io array of strings can have GC_allocated strings get replaced
+  ;; by foreign addresses
+  (test '("olleh" "dlrow" "?!" #f)
+        (ffi 'reverse_strings (_fun (lst : (_list io _string 4)) -> _void -> lst))
+        (list "hello" "world" "!?" #f #f))
+  
   ;; ---
   ;; test exposing internal mzscheme functionality
   (when (eq? 'racket (system-type 'vm))
@@ -391,6 +423,7 @@
         (let ([ic7i-3 ((ffi 'ic7i_cb (_fun _ic7i (_fun _ic7i -> _ic7i) -> _ic7i))
                        ic7i
                        (lambda (ic7i-4)
+                         (collect-garbage 'minor)
                          (test 12 ic7i-i1 ic7i-4)
                          (test (cons 255 (map sub1 (cdr v))) ic7i-c7 ic7i-4)
                          (test 13 ic7i-i2 ic7i-4)
@@ -491,6 +524,79 @@
   (do ([i 0 (add1 i)]) [(= i l)]
     (test x u8vector-ref v i)))
 
+(let ()
+  (define-syntax (check stx)
+    (syntax-case stx ()
+      [(_ vec _type zero e1 e2 e3 has-unsafe?)
+       (let ([id (lambda (a b [c ""])
+                   (datum->syntax
+                    #'vec
+                    (string->symbol
+                     (format "~a~a~a"
+                             (if (syntax? a) (syntax-e a) a)
+                             (if (syntax? b) (syntax-e b) b)
+                             (if (syntax? c) (syntax-e c) c)))))])
+         (with-syntax ([make-vec (id "make-" #'vec)]
+                       [vec? (id #'vec "?")]
+                       [vec-length (id #'vec "-length")]
+                       [vec-ref (id #'vec "-ref")]
+                       [vec-set! (id #'vec "-set!")]
+                       [unsafe-vec-ref (id "unsafe-" #'vec "-ref")]
+                       [unsafe-vec-set! (id "unsafe-" #'vec "-set!")]
+                       [list->vec (id "list->" #'vec)]
+                       [vec->list (id #'vec "->list")]
+                       [vec->cpointer (id #'vec "->cpointer")]
+                       [_vec (id "_" #'vec)])
+           #`(let ([v1 (make-vec 5 zero)]
+                   [v2 (vec e1 e2 e3)]
+                   #,@(if (syntax-e #'has-unsafe?)
+                          '()
+                          (list #`[unsafe-vec-ref vec-ref]
+                                #`[unsafe-vec-set! vec-set!])))
+               (test #f vec? (make-vector 5))
+               (test #t vec? v1)
+               (test #t vec? v2)
+               (test 5 vec-length v1)
+               (test 3 vec-length v2)
+               (test zero vec-ref v1 0)
+               (test zero vec-ref v1 2)
+               (test zero vec-ref v1 4)
+               (test e1 vec-ref v2 0)
+               (test e2 vec-ref v2 1)
+               (test e3 vec-ref v2 2)
+               (test e3 vec-ref v2 2)
+               (test (void) vec-set! v1 2 e1)
+               (test zero vec-ref v1 1)
+               (test e1 vec-ref v1 2)
+               (test zero vec-ref v1 3)
+               (test zero unsafe-vec-ref v1 4)
+               (test (void) unsafe-vec-set! v1 4 e2)
+               (test e2 unsafe-vec-ref v1 4)
+               (test (list zero zero e1 zero e2) vec->list v1)
+               (test (list e1 e2 e3) vec->list v2)
+               (let ([v3 (cast (vec->cpointer v1) _pointer (_vec o 5))])
+                 (test (vec->list v1) vec->list v3))
+               (let* ([p (malloc 'raw 4 _type)]
+                      [v4 (cast p  _pointer (_vec o 4))])
+                 (test (void) vec-set! v4 0 e3)
+                 (test (void) vec-set! v4 1 e1)
+                 (test (void) vec-set! v4 2 e1)
+                 (test (void) vec-set! v4 3 e2)
+                 (test e1 vec-ref v4 1)
+                 (test e3 vec-ref v4 0))
+               (void))))]))
+  (check u8vector _ubyte 0 1 127 255 #f)
+  (check s8vector _sbyte 0 1 127 -128 #f)
+  (check u16vector _ushort 0 1 (expt 2 8) (sub1 (expt 2 16)) #t)
+  (check s16vector _sshort 0 1 (sub1 (expt 2 15)) (- (expt 2 15)) #t)
+  (check u32vector _uint 0 1 (expt 2 16) (sub1 (expt 2 32)) #f)
+  (check s32vector _sint 0 1 (sub1 (expt 2 31)) (- (expt 2 31)) #f)
+  (check u64vector _uint64 0 1 (expt 2 32) (sub1 (expt 2 64)) #f)
+  (check s64vector _sint64 0 1 (sub1 (expt 2 63)) (- (expt 2 63)) #f)
+  (check f32vector _float 0.0 1.0 1e10 -1e10 #f)
+  (check f64vector _double 0.0 1.0 1e300 -1e300 #t)
+  (void))
+
 ;; Test pointer arithmetic and memmove-like operations
 (let ([p (malloc 10 _int)])
   (memset p 0 10 _int)
@@ -575,6 +681,11 @@
 		  free)])
     (free p)))
 
+(let ([return_null (get-ffi-obj 'return_null test-lib (_fun -> _bytes/nul-terminated))])
+  (test #f return_null))
+(let ([return_null (get-ffi-obj 'return_null test-lib (_fun -> (_bytes/nul-terminated o 20)))])
+  (test #f return_null))
+
 ;; Test equality and hashing of c pointers:
 (let ([seventeen1 (cast 17 _intptr _pointer)]
       [seventeen2 (cast 17 _intptr _pointer)]
@@ -631,8 +742,48 @@
   (test (cast p _thing-pointer _intptr)
         cast q _stuff-pointer _intptr))
 
+;; For casts where the BC output might share with the input, so
+;; an offset pointer needs to be 'atomic-interior
+(define (share-protect bstr)
+  (if (eq? 'racket (system-type 'vm))
+      (let ([new-bstr (malloc 'atomic-interior (add1 (bytes-length bstr)))])
+        (memcpy new-bstr bstr (add1 (bytes-length bstr)))
+        (make-sized-byte-string new-bstr (bytes-length bstr)))
+      bstr))
+
+;; `cast` should auto-upgrade target pointer types using `_gcable` for a GCable argument
+(test #t cpointer-gcable? (cast #"x" _pointer _pointer))
+(test #t cpointer-gcable? (cast #"x" _gcpointer _pointer))
+(test #t cpointer-gcable? (cast #"x" _pointer _gcpointer))
+(test #t cpointer-gcable? (cast (malloc 8) _pointer _pointer))
+(test #t cpointer-gcable? (cast (malloc 8) _gcpointer _pointer))
+(test #t cpointer-gcable? (cast (malloc 8) _pointer _gcpointer))
+(test #t cpointer-gcable? (cast (ptr-add (malloc 8) 5) _pointer _pointer))
+(test #t cpointer-gcable? (cast #"x" _bytes _pointer))
+(test #t cpointer-gcable? (cast #"x" _bytes _gcpointer))
+(test #t cpointer-gcable? (cast #"x" _bytes _bytes))
+(test "lo" cast #"lo\0" _pointer _string/utf-8)
+(test "lo" cast (if (system-big-endian?) #"l\0o\0\0\0" #"l\0o\0\0\0") _pointer _string/utf-16)
+(test "lo" cast (if (system-big-endian?) #"\0\0\0l\0\0\0o\0\0\0\0\0\0\0\0" #"l\0\0\0o\0\0\0\0\0\0\0")
+      _pointer _string/ucs-4)
+(test #t cpointer-gcable? (cast (ptr-add #"xy" 1) _pointer _bytes))
+(test #t cpointer-gcable? (cast (ptr-add #"xy" 1) _pointer _pointer))
+(test (char->integer #\y) ptr-ref (cast (ptr-add #"xy" 1) _pointer _pointer) _byte)
+(test #"lo" cast (ptr-add (share-protect #"hello\0") 3) _pointer _bytes)
+(test "lo" cast (ptr-add #"hello\0" 3) _pointer _string/utf-8)
+(test "lo" cast (ptr-add (if (system-big-endian?) #"e\0l\0l\0o\0\0\0" #"\0l\0l\0o\0\0\0") 3) _pointer _string/utf-16)
+(test "lo" cast (ptr-add (share-protect (if (system-big-endian?) #"\0\0\0l\0\0\0l\0\0\0o\0\0\0\0\0\0\0\0" #"\0\0\0\0l\0\0\0o\0\0\0\0\0\0\0")) 4)
+      _pointer _string/ucs-4)
+(test #t cpointer-gcable? (cast '(#"apple") (_list i _bytes) _gcpointer))
+(test #t
+      'many-casts
+      (for/and ([i (in-range 1000)])
+        (cpointer-gcable? (cast (bytes 1 2 3 4)
+                                _bytes
+                                _pointer))))
+
 ;; test 'interior allocation mode
-(when (eq? 'racket (system-type 'vm))
+(let ()
   ;; Example by Ron Garcia
   (define-struct data (a b))
   (define (cbox s)
@@ -666,6 +817,49 @@
                                           (ptr-set! m _int i 0)))))))))
 
 (let ()
+  (define-syntax (_varargs stx)
+    (syntax-case stx ()
+      [(_ arg ...)
+       #`(_fun #:varargs-after 2
+               _int ; init for result
+               (_int = #,(quotient (length (syntax->list #'(arg ...))) 2))
+               ;; each argument is an _int in [1, 5] followed by:
+               ;;  1 - _int
+               ;;  2 - _long
+               ;;  3 - _double
+               ;;  4 - _int pointer
+               ;;  5 - (_fun #:varargs-after 2 _int _long ... -> _int)
+               arg ... -> _long)]))
+  (test 77
+        (get-ffi-obj 'varargs_check test-lib (_varargs))
+        77)
+  (test 75
+        (get-ffi-obj 'varargs_check test-lib (_varargs (_int = 1) _int))
+        77 -2)
+  (test 277
+        (get-ffi-obj 'varargs_check test-lib (_varargs (_int = 2) _long))
+        77 200)
+  (test 86
+        (get-ffi-obj 'varargs_check test-lib (_varargs (_int = 3) _double))
+        76 10.2)
+  (test 96
+        (get-ffi-obj 'varargs_check test-lib (_varargs (_int = 3) _double (_int = 1) _int (_int = 2) _long (_int = 3) _double))
+        86 1.0 2 3 4.0)
+  (test 67
+        (get-ffi-obj 'varargs_check test-lib (_varargs (_int = 4) (_ptr i _int) (_int = 1) _int))
+        50 8 9)
+  (test 67
+        (get-ffi-obj 'varargs_check test-lib (_varargs (_int = 4) (_ptr i _int #f) (_int = 1) _int))
+        50 8 9)
+  (test 67
+        (get-ffi-obj 'varargs_check test-lib (_varargs (_int = 4) (_ptr i _int atomic-interior) (_int = 1) _int))
+        50 8 9)
+  (test 16
+        (get-ffi-obj 'varargs_check test-lib (_varargs (_int = 5) (_fun #:varargs-after 2 _int _long _double -> _int)))
+        10 (lambda (a b c) (inexact->exact (+ a b c))))
+  (void))
+
+(let ()
   (struct foo (ptr)
     #:property prop:cpointer 0)
   
@@ -676,6 +870,9 @@
   
   (define a-bar (bar (malloc 16 'raw)))
   (free a-bar))
+
+;; in Posix, so true for all OSes?
+(test 13 lookup-errno 'EACCES)
 
 (unless (eq? (system-type) 'windows)
   ;; saved-errno tests
@@ -735,20 +932,85 @@
   ;; Check a corner of UTF-16 conversion:
   (test "\U171D3" cast (cast "\U171D3" _string/utf-16 _gcpointer) _gcpointer _string/utf-16))
 
+;; strings can be cast
+(test "heλλo" cast (cast "he\u3bb\u3bbo" _string/utf-16 _gcpointer) _gcpointer _string/utf-16)
+
 ;; check async:
 (when test-async?
   (define (check async like)
-    (define foreign_thread_callback (get-ffi-obj 'foreign_thread_callback test-lib 
-                                                 (_fun #:blocking? #t
-                                                       (_fun #:async-apply async
-                                                             _intptr -> _intptr)
-                                                       _intptr
-                                                       (_fun #:async-apply (lambda (f) (f))
-                                                             -> _void)
-                                                       -> _intptr)))
-    (test (like 16) foreign_thread_callback (lambda (v) (add1 v)) 16 sleep))
+    (cond
+      [(eq? (system-type 'vm) 'racket)
+       (define foreign_thread_callback (get-ffi-obj 'foreign_thread_callback test-lib 
+                                                    (_fun #:blocking? #t
+                                                          (_fun #:async-apply async
+                                                                _intptr -> _intptr)
+                                                          _intptr
+                                                          (_fun #:async-apply (lambda (f) (f))
+                                                                -> _void)
+                                                          -> _intptr)))
+       (test (like 16) foreign_thread_callback (lambda (v) (add1 v)) 16 sleep)]
+      [else
+       (define foreign_thread_callback_setup (get-ffi-obj 'foreign_thread_callback_setup test-lib 
+                                                          (_fun #:blocking? #t ; doesn't do anything in this case
+                                                                (_fun #:async-apply async
+                                                                      _intptr -> _intptr)
+                                                                _intptr
+                                                                -> _pointer)))
+       (define foreign_thread_callback_check_done (get-ffi-obj 'foreign_thread_callback_check_done test-lib 
+                                                               (_fun _pointer
+                                                                     -> _bool)))
+       (define foreign_thread_callback_finish (get-ffi-obj 'foreign_thread_callback_finish test-lib 
+                                                           (_fun _pointer
+                                                                 -> _intptr)))
+       (define d (foreign_thread_callback_setup (lambda (v) (add1 v)) 16))
+       (let loop ()
+         (unless (foreign_thread_callback_check_done d)
+           (sleep)
+           (loop)))
+       (test (like 16) foreign_thread_callback_finish d)]))
   (check (lambda (f) (f)) add1)
+  (check (lambda (f) (thread f)) add1)
+  (let ()
+    ;; using thread mailboxes
+    (define runner
+      (thread
+       (lambda ()
+         (let loop ()
+           (define p (thread-receive))
+           (p)
+           (loop)))))
+    (check (lambda (f) (thread-send runner f)) add1))
+  (when (eq? 'chez-scheme (system-type 'vm))
+    (define chan (make-os-async-channel))
+    (void
+     (thread
+      (lambda ()
+        (let loop ()
+          (define p (sync chan))
+          (p)
+          (loop)))))
+    (check (lambda (f) (os-async-channel-put chan f)) add1))
   (check (box 20) (lambda (x) 20)))
+
+;; check `#:callback-exns?`
+(let ([callback_hungry (get-ffi-obj 'callback_hungry test-lib
+                                    (_fun #:callback-exns? #t
+                                          (_fun #:atomic? #t -> _int) -> _int))])
+  (test 17 callback_hungry (lambda () 17))
+  (for ([i 1000])
+    (with-handlers ([(lambda (x) (eq? x 'out)) void])
+      (callback_hungry (lambda () (raise 'out))))
+    (sync (system-idle-evt))))
+;; Same thing, with a lock
+(let ([callback_hungry (get-ffi-obj 'callback_hungry test-lib
+                                    (_fun #:callback-exns? #t
+                                          #:lock-name "hungry"
+                                          (_fun #:atomic? #t -> _int) -> _int))])
+  (test 170 callback_hungry (lambda () 170))
+  (for ([i 1000])
+    (with-handlers ([(lambda (x) (eq? x 'out)) void])
+      (callback_hungry (lambda () (raise 'out))))
+    (sync (system-idle-evt))))
 
 ;; check in-array
 (let ()
@@ -895,7 +1157,6 @@
     (for ([s s-list] [b b-list] [i (in-naturals)])
       (check-equal? (array-ref (MISCPTR-as d) i) s)
       (check-equal? (array-ref (MISCPTR-ab d) i) b)))
-
 
   ;; --- simple failing tests
   (define-serializable-cstruct _F4 ([a _int]) #:malloc-mode 'abc)
@@ -1133,6 +1394,22 @@
 (test 17 serializable-example-1-a (deserialize (serialize (make-serializable-example-1 17))))
 
 ;; ----------------------------------------
+;; Check that `i`, `o`, and `io` are matched as symbols, not by binding:
+
+(let ([i 'no]
+      [o 'no]
+      [io 'no])
+  (test #t ctype? (_ptr i _int))
+  (test #t ctype? (_ptr o _int))
+  (test #t ctype? (_ptr io _int))
+  (test #t ctype? (_list i _int))
+  (test #t ctype? (_list o _int 10))
+  (test #t ctype? (_list io _int 10))
+  (test #t ctype? (_vector i _int))
+  (test #t ctype? (_vector o _int 10))
+  (test #t ctype? (_vector io _int 10)))
+
+;; ----------------------------------------
 
 (define-cpointer-type _foo)
 (test 'foo? object-name foo?)
@@ -1150,118 +1427,129 @@
 ;; ----------------------------------------
 ;; Test JIT inlining
 
-(define bstr (cast (make-bytes 64) _pointer _pointer))
+(define (test-ptr-jit-inline bstr)
+  (for/fold ([v 1.0]) ([i (in-range 100)])
+    (ptr-set! bstr _float v)
+    (ptr-set! bstr _float 1 (+ v 0.5))
+    (ptr-set! bstr _float 'abs 8 (+ v 0.25))
+    (unless (= v (ptr-ref bstr _float))
+      (error 'float "failed"))
+    (unless (= (+ v 0.5) (ptr-ref bstr _float 'abs 4))
+      (error 'float "failed(2) ~s ~s" (+ v 0.5) (ptr-ref bstr _float 'abs 4)))
+    (unless (= (+ v 0.25) (ptr-ref bstr _float 2))
+      (error 'float "failed(3)"))
+    (+ 1.0 v))
 
-(for/fold ([v 1.0]) ([i (in-range 100)])
-  (ptr-set! bstr _float v)
-  (ptr-set! bstr _float 1 (+ v 0.5))
-  (ptr-set! bstr _float 'abs 8 (+ v 0.25))
-  (unless (= v (ptr-ref bstr _float))
-    (error 'float "failed"))
-  (unless (= (+ v 0.5) (ptr-ref bstr _float 'abs 4))
-    (error 'float "failed(2) ~s ~s" (+ v 0.5) (ptr-ref bstr _float 'abs 4)))
-  (unless (= (+ v 0.25) (ptr-ref bstr _float 2))
-    (error 'float "failed(3)"))
-  (+ 1.0 v))
+  (for/fold ([v 1.0]) ([i (in-range 100)])
+    (ptr-set! bstr _double v)
+    (ptr-set! bstr _double 1 (+ v 0.5))
+    (ptr-set! bstr _double 'abs 16 (+ v 0.25))
+    (ptr-set! (ptr-add bstr 24) _double (+ v 0.125))
+    (unless (= v (ptr-ref bstr _double))
+      (error 'double "failed"))
+    (unless (= (+ v 0.5) (ptr-ref bstr _double 'abs 8))
+      (error 'double "failed(2)"))
+    (unless (= (+ v 0.25) (ptr-ref bstr _double 2))
+      (error 'double "failed(3)"))
+    (unless (= (+ v 0.5) (ptr-ref (ptr-add bstr 8) _double))
+      (error 'double "failed(4)"))
+    (unless (= (+ v 0.125) (ptr-ref (ptr-add bstr 24) _double))
+      (error 'double "failed(5)"))
+    (+ 1.0 v))
 
-(for/fold ([v 1.0]) ([i (in-range 100)])
-  (ptr-set! bstr _double v)
-  (ptr-set! bstr _double 1 (+ v 0.5))
-  (ptr-set! bstr _double 'abs 16 (+ v 0.25))
-  (unless (= v (ptr-ref bstr _double))
-    (error 'double "failed"))
-  (unless (= (+ v 0.5) (ptr-ref bstr _double 'abs 8))
-    (error 'double "failed(2)"))
-  (unless (= (+ v 0.25) (ptr-ref bstr _double 2))
-    (error 'double "failed(3)"))
-  (+ 1.0 v))
+  (for ([i (in-range 256)])
+    (ptr-set! bstr _uint8 i)
+    (ptr-set! bstr _uint8 1 (- 255 i))
+    (unless (= i (ptr-ref bstr _uint8))
+      (error 'uint8 "fail ~s vs. ~s" i (ptr-ref bstr _uint8)))
+    (unless (= (- 255 i) (ptr-ref bstr _uint8 'abs 1))
+      (error 'uint8 "fail(2) ~s vs. ~s" (- 255 i) (ptr-ref bstr _uint8 'abs 1))))
 
-(for ([i (in-range 256)])
-  (ptr-set! bstr _uint8 i)
-  (ptr-set! bstr _uint8 1 (- 255 i))
-  (unless (= i (ptr-ref bstr _uint8))
-    (error 'uint8 "fail ~s vs. ~s" i (ptr-ref bstr _uint8)))
-  (unless (= (- 255 i) (ptr-ref bstr _uint8 'abs 1))
-    (error 'uint8 "fail(2) ~s vs. ~s" (- 255 i) (ptr-ref bstr _uint8 'abs 1))))
+  (for ([i (in-range -128 128)])
+    (ptr-set! bstr _int8 i)
+    (unless (= i (ptr-ref bstr _int8))
+      (error 'int8 "fail ~s vs. ~s" i (ptr-ref bstr _int8))))
 
-(for ([i (in-range -128 128)])
-  (ptr-set! bstr _int8 i)
-  (unless (= i (ptr-ref bstr _int8))
-    (error 'int8 "fail ~s vs. ~s" i (ptr-ref bstr _int8))))
+  (for ([i (in-range (expt 2 16))])
+    (ptr-set! bstr _uint16 i)
+    (ptr-set! bstr _uint16 3 (- (sub1 (expt 2 16)) i))
+    (unless (= i (ptr-ref bstr _uint16))
+      (error 'uint16 "fail ~s vs. ~s" i (ptr-ref bstr _uint16)))
+    (unless (= (- (sub1 (expt 2 16)) i) (ptr-ref bstr _uint16 'abs 6))
+      (error 'uint16 "fail(2) ~s vs. ~s" (- (sub1 (expt 2 16)) i) (ptr-ref bstr _uint16 'abs 6))))
 
-(for ([i (in-range (expt 2 16))])
-  (ptr-set! bstr _uint16 i)
-  (ptr-set! bstr _uint16 3 (- (sub1 (expt 2 16)) i))
-  (unless (= i (ptr-ref bstr _uint16))
-    (error 'uint16 "fail ~s vs. ~s" i (ptr-ref bstr _uint16)))
-  (unless (= (- (sub1 (expt 2 16)) i) (ptr-ref bstr _uint16 'abs 6))
-    (error 'uint16 "fail(2) ~s vs. ~s" (- (sub1 (expt 2 16)) i) (ptr-ref bstr _uint16 'abs 6))))
+  (for ([j (in-range 100)])
+    (for ([i (in-range (- (expt 2 15)) (sub1 (expt 2 15)))])
+      (ptr-set! bstr _int16 i)
+      (unless (= i (ptr-ref bstr _int16))
+        (error 'int16 "fail ~s vs. ~s" i (ptr-ref bstr _int16)))))
 
-(for ([j (in-range 100)])
-  (for ([i (in-range (- (expt 2 15)) (sub1 (expt 2 15)))])
-    (ptr-set! bstr _int16 i)
-    (unless (= i (ptr-ref bstr _int16))
-      (error 'int16 "fail ~s vs. ~s" i (ptr-ref bstr _int16)))))
+  (let ()
+    (define (go lo hi)
+      (for ([i (in-range lo hi)])
+        (ptr-set! bstr _uint32 i)
+        (ptr-set! bstr _uint32 1 (- hi (- i lo) 1))
+        (unless (= i (ptr-ref bstr _uint32))
+          (error 'uint32 "fail ~s vs. ~s" i (ptr-ref bstr _uint32)))
+        (unless (= (- hi (- i lo) 1) (ptr-ref bstr _uint32 'abs 4))
+          (error 'uint32 "fail ~s vs. ~s" (- hi (- i lo) 1) (ptr-ref bstr _uint32)))))
+    (go 0 256)
+    (go (- (expt 2 31) 256) (+ (expt 2 31) 256))
+    (go (- (expt 2 32) 256) (expt 2 32)))
+
+  (let ()
+    (define (go lo hi)
+      (for ([i (in-range lo hi)])
+        (ptr-set! bstr _int32 i)
+        (unless (= i (ptr-ref bstr _int32))
+          (error 'int32 "fail ~s vs. ~s" i (ptr-ref bstr _int32)))))
+    (go -256 256)
+    (go (- (expt 2 31) 256) (sub1 (expt 2 31)))
+    (go (- (expt 2 31)) (- 256 (expt 2 31))))
+
+  (let ()
+    (define (go lo hi)
+      (for ([i (in-range lo hi)])
+        (ptr-set! bstr _uint64 i)
+        (ptr-set! bstr _uint64 1 (- hi (- i lo) 1))
+        (unless (= i (ptr-ref bstr _uint64))
+          (error 'uint64 "fail ~s vs. ~s" i (ptr-ref bstr _uint64)))
+        (unless (= (- hi (- i lo) 1) (ptr-ref bstr _uint64 'abs 8))
+          (error 'uint32 "fail ~s vs. ~s" (- hi (- i lo) 1) (ptr-ref bstr _uint64)))))
+    (go 0 256)
+    (go (- (expt 2 63) 256) (+ (expt 2 63) 256))
+    (go (- (expt 2 64) 256) (expt 2 64)))
+
+  (let ()
+    (define (go lo hi)
+      (for ([i (in-range lo hi)])
+        (ptr-set! bstr _int64 i)
+        (unless (= i (ptr-ref bstr _int64))
+          (error 'int64 "fail ~s vs. ~s" i (ptr-ref bstr _int64)))))
+    (go -256 256)
+    (go (- (expt 2 63) 256) (sub1 (expt 2 63)))
+    (go (- (expt 2 63)) (- 256 (expt 2 63))))
+
+  (let ()
+    (define p (cast bstr _pointer _pointer))
+    (for ([i (in-range 100)])
+      (ptr-set! bstr _pointer (ptr-add p i))
+      (ptr-set! bstr _pointer 2 p)
+      (unless (ptr-equal? p (ptr-add (ptr-ref bstr _pointer) (- i)))
+        (error 'pointer "fail ~s vs. ~s"
+               (cast p _pointer _intptr)
+               (cast (ptr-ref bstr _pointer) _pointer _intptr)))
+      (unless (ptr-equal? p (ptr-ref bstr _pointer 'abs (* 2 (ctype-sizeof _pointer))))
+        (error 'pointer "fail ~s vs. ~s"
+               (cast p _pointer _intptr)
+               (cast (ptr-ref bstr _pointer 'abs (ctype-sizeof _pointer)) _pointer _intptr))))))
 
 (let ()
-  (define (go lo hi)
-    (for ([i (in-range lo hi)])
-      (ptr-set! bstr _uint32 i)
-      (ptr-set! bstr _uint32 1 (- hi (- i lo) 1))
-      (unless (= i (ptr-ref bstr _uint32))
-        (error 'uint32 "fail ~s vs. ~s" i (ptr-ref bstr _uint32)))
-      (unless (= (- hi (- i lo) 1) (ptr-ref bstr _uint32 'abs 4))
-        (error 'uint32 "fail ~s vs. ~s" (- hi (- i lo) 1) (ptr-ref bstr _uint32)))))
-  (go 0 256)
-  (go (- (expt 2 31) 256) (+ (expt 2 31) 256))
-  (go (- (expt 2 32) 256) (expt 2 32)))
-
-(let ()
-  (define (go lo hi)
-    (for ([i (in-range lo hi)])
-      (ptr-set! bstr _int32 i)
-      (unless (= i (ptr-ref bstr _int32))
-        (error 'int32 "fail ~s vs. ~s" i (ptr-ref bstr _int32)))))
-  (go -256 256)
-  (go (- (expt 2 31) 256) (sub1 (expt 2 31)))
-  (go (- (expt 2 31)) (- 256 (expt 2 31))))
-
-(let ()
-  (define (go lo hi)
-    (for ([i (in-range lo hi)])
-      (ptr-set! bstr _uint64 i)
-      (ptr-set! bstr _uint64 1 (- hi (- i lo) 1))
-      (unless (= i (ptr-ref bstr _uint64))
-        (error 'uint64 "fail ~s vs. ~s" i (ptr-ref bstr _uint64)))
-      (unless (= (- hi (- i lo) 1) (ptr-ref bstr _uint64 'abs 8))
-        (error 'uint32 "fail ~s vs. ~s" (- hi (- i lo) 1) (ptr-ref bstr _uint64)))))
-  (go 0 256)
-  (go (- (expt 2 63) 256) (+ (expt 2 63) 256))
-  (go (- (expt 2 64) 256) (expt 2 64)))
-
-(let ()
-  (define (go lo hi)
-    (for ([i (in-range lo hi)])
-      (ptr-set! bstr _int64 i)
-      (unless (= i (ptr-ref bstr _int64))
-        (error 'int64 "fail ~s vs. ~s" i (ptr-ref bstr _int64)))))
-  (go -256 256)
-  (go (- (expt 2 63) 256) (sub1 (expt 2 63)))
-  (go (- (expt 2 63)) (- 256 (expt 2 63))))
-
-(let ()
-  (define p (cast bstr _pointer _pointer))
-  (for ([i (in-range 100)])
-    (ptr-set! bstr _pointer (ptr-add p i))
-    (ptr-set! bstr _pointer 2 p)
-    (unless (ptr-equal? p (ptr-add (ptr-ref bstr _pointer) (- i)))
-      (error 'pointer "fail ~s vs. ~s"
-             (cast p _pointer _intptr)
-             (cast (ptr-ref bstr _pointer) _pointer _intptr)))
-    (unless (ptr-equal? p (ptr-ref bstr _pointer 'abs (* 2 (ctype-sizeof _pointer))))
-      (error 'pointer "fail ~s vs. ~s"
-             (cast p _pointer _intptr)
-             (cast (ptr-ref bstr _pointer 'abs (ctype-sizeof _pointer)) _pointer _intptr)))))
+  (test-ptr-jit-inline (make-bytes 64))
+  (test-ptr-jit-inline (cast (make-bytes 64) _pointer _pointer))
+  (let ([p (malloc 'raw 64)])
+    (test-ptr-jit-inline p)
+    (free p)))
 
 ;; ----------------------------------------
 
@@ -1333,6 +1621,46 @@
     (saved-errno 5)
     (test 5 saved-errno)))
 
+(let ()
+  (define-ffi-definer define-test-lib test-lib)
+
+  (define-test-lib g1 _int #:variable)
+  (define-test-lib curry_ret_int_int (_fun _int -> _int))
+
+  (g1 12)
+  (test 25 curry_ret_int_int 13)
+  (test 12 g1)
+
+  (define-test-lib g2 _int #:variable)
+  (define-test-lib ho_return (_fun _int -> _int))
+  (define update-g2-fun-name 'ho)
+  (define-test-lib update-g2 (_fun (_fun _int -> _int) _int -> _void)
+    #:c-id ,update-g2-fun-name)
+  (g2 20)
+  (test (void) update-g2 (lambda (n) (* n 3)) 15)
+  (test 45 g2)
+  (test 48 ho_return 3)
+
+  (define-test-lib no_such_var _int #:variable #:fail (lambda () #f))
+  (test #f values no_such_var))
+
+(let ()
+  (define-ffi-definer define-test-lib test-lib
+    #:make-c-id convention:hyphen->underscore
+    #:default-make-fail (lambda (name) (lambda () #f)))
+  (define (valid-cpointer? v) (and (cpointer? v) (not (eq? v #f))))
+  (let ()
+    (define-test-lib add1-int-int _fpointer)
+    (test #t valid-cpointer? add1-int-int))
+  (let ()
+    ;; Convention should not be applied when explicit #:c-id.
+    (define-test-lib add1-by-any-other-name _fpointer #:c-id add1_int_int)
+    (test #t valid-cpointer? add1-by-any-other-name))
+  (let ()
+    ;; Convention should not be applied when explicit #:c-id.
+    (define-test-lib add1-int-int _fpointer #:c-id add1-int-int)
+    (test #f valid-cpointer? add1-int-int)))
+
 ;; ----------------------------------------
 ;; Make sure `_union` can deal with various things
 ;; that create a large structure
@@ -1346,6 +1674,34 @@
                                        _FcMatrix-pointer
                                        _FcCharSet)]))
   (malloc _FcValue))
+
+;; ----------------------------------------
+
+(let* ([bstr (string->bytes/utf-8 (format "~a ~a" (current-inexact-milliseconds) (random)))]
+       [orig-bstr (bytes-copy bstr)])
+  (err/rt-test (register-process-global 7 8))
+  (err/rt-test (register-process-global "7" 8))
+  (test #f register-process-global bstr #f)
+  (test #f register-process-global bstr #"data\0")
+  (test #"data" cast (register-process-global bstr #f) _pointer _bytes)
+  (bytes-set! bstr 0 65)
+  (test #f register-process-global bstr #f)
+  (test #"data" cast (register-process-global orig-bstr #"data\0") _pointer _bytes))
+
+;; ----------------------------------------
+;; Make sure `make-ctype` is not confused by a conversion function that
+;; could have extra arguments
+
+(let ()
+  (define _strnum (make-ctype _int
+                              (lambda (s [ignored 'ignore-me])
+                                (test 'ignore-me values ignored)
+                                (string->number s))
+                              (lambda (n [ignored 'ignore-me])
+                                (test 'ignore-me values ignored)
+                                (number->string n))))
+  (test 5 cast "5" _strnum _int)
+  (test "5" cast 5 _int _strnum))
 
 ;; ----------------------------------------
 

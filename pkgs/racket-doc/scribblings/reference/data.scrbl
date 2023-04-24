@@ -11,6 +11,9 @@ manipulating instances of the datatype.
 @local-table-of-contents[#:style 'immediate-only]
 
 @; ------------------------------------------------------------
+@include-section["equality.scrbl"]
+
+@; ------------------------------------------------------------
 @include-section["booleans.scrbl"]
 
 @; ------------------------------------------------------------
@@ -32,46 +35,7 @@ manipulating instances of the datatype.
 @include-section["regexps.scrbl"]
 
 @; ------------------------------------------------------------
-@section[#:tag "keywords"]{Keywords}
-
-@guideintro["keywords"]{keywords}
-
-A @deftech{keyword} is like an @tech{interned} symbol, but its printed
-form starts with @litchar{#:}, and a keyword cannot be used as an
-identifier. Furthermore, a keyword by itself is not a valid
-expression, though a keyword can be @racket[quote]d to form an
-expression that produces the symbol.
-
-Two keywords are @racket[eq?] if and only if they print the same
-(i.e., keywords are always @tech{interned}).
-
-Like symbols, keywords are only weakly held by the internal keyword
-table; see @secref["symbols"] for more information.
-
-@see-read-print["keyword"]{keywords}
-
-@defproc[(keyword? [v any/c]) boolean?]{
-
-Returns @racket[#t] if @racket[v] is a keyword, @racket[#f] otherwise.}
-
-@defproc[(keyword->string [keyword keyword?]) string?]{
-
-Returns a string for the @racket[display]ed form of @racket[keyword],
-not including the leading @litchar{#:}.}
-
-@defproc[(string->keyword [str string?]) keyword?]{
-
-Returns a keyword whose @racket[display]ed form is the same as that of
-@racket[str], but with a leading @litchar{#:}.}
-
-@defproc[(keyword<? [a-keyword keyword?] [b-keyword keyword?] ...) boolean?]{
-
-Returns @racket[#t] if the arguments are sorted, where the comparison
-for each pair of keywords is the same as using
-@racket[keyword->string] with @racket[string->bytes/utf-8] and
-@racket[bytes<?].
-
-@history/arity[]}
+@include-section["keywords.scrbl"]
 
 @; ----------------------------------------------------------------------
 @include-section["pairs.scrbl"]
@@ -81,6 +45,9 @@ for each pair of keywords is the same as using
 
 @; ----------------------------------------------------------------------
 @include-section["vectors.scrbl"]
+
+@; ----------------------------------------------------------------------
+@include-section["stencil-vectors.scrbl"]
 
 @; ------------------------------------------------------------
 @section[#:tag "boxes"]{Boxes}
@@ -102,7 +69,9 @@ A literal or printed box starts with @litchar{#&}. @see-read-print["box"]{boxes}
 
 @defproc[(box? [v any/c]) boolean?]{
 
-Returns @racket[#t] if @racket[v] is a box, @racket[#f] otherwise.}
+Returns @racket[#t] if @racket[v] is a box, @racket[#f] otherwise.
+
+See also @racket[immutable-box?] and @racket[mutable-box?].}
 
 
 @defproc[(box [v any/c]) box?]{
@@ -154,12 +123,18 @@ boxes that are not @tech{impersonators}.
   @racket[box], the operation is equivalent to 
 
   @racketblock[
-  (and (eq? old (unbox loc)) (set-box! loc new) #t)]
+  (and (eq? old (unbox box)) (set-box! box new) #t)]
+
+  except that @racket[box-cas!] can spuriously fail on some platforms.
+  That is, with low probability, the result can be @racket[#f] with the
+  value in @racket[box] left unchanged, even if @racket[box] contains
+  @racket[old].
 
   When Racket is compiled with support for @tech{futures},
-  @racket[box-cas!] uses a hardware @emph{compare and set} operation.
-  Uses of @racket[box-cas!] be performed safely in a @tech{future} (i.e.,
-  allowing the future thunk to continue in parallel). }
+  @racket[box-cas!] is guaranteed to use a hardware @emph{compare and
+  set} operation. Uses of @racket[box-cas!] be performed safely in a
+  @tech{future} (i.e., allowing the future thunk to continue in
+  parallel). See also @secref["memory-order"].}
 
 @; ----------------------------------------------------------------------
 @include-section["hashes.scrbl"]

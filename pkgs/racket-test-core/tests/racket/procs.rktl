@@ -192,6 +192,30 @@
                     (test 0-ok? procedure-arity-includes? (car p) 0 #t)
                     ;; While we're here test renaming, etc.:
                     (test 'other object-name (procedure-rename (car p) 'other))
+                    (test 'racket procedure-realm (procedure-rename (car p) 'other))
+                    (test 'elsewhere procedure-realm (procedure-rename (car p) 'other 'elsewhere))
+                    (test 'racket procedure-realm (procedure-rename (procedure-rename (car p) 'other 'elsewhere) 'again))
+                    (test 'home procedure-realm (procedure-rename (procedure-rename (car p) 'other 'elsewhere) 'again 'home))
+                    (let-values ([(required allowed) (procedure-keywords (car p))])
+                      (when (null? required)
+                        (test 'elsewhere procedure-realm (procedure-reduce-arity (procedure-rename (car p) 'other 'elsewhere)
+                                                                                 (procedure-arity (car p))))
+                        (test 'elsewhere procedure-realm (procedure-reduce-arity (car p)
+                                                                                 (procedure-arity (car p))
+                                                                                 'other
+                                                                                 'elsewhere)))
+                      (test 'elsewhere procedure-realm (procedure-reduce-keyword-arity
+                                                        (procedure-rename (car p) 'other 'elsewhere)
+                                                        (procedure-arity (car p))
+                                                        required
+                                                        allowed))
+                      (test 'elsewhere procedure-realm (procedure-reduce-keyword-arity
+                                                        (car p)
+                                                        (procedure-arity (car p))
+                                                        required
+                                                        allowed
+                                                        'other
+                                                        'elsewhere)))
                     (test (procedure-arity (car p)) procedure-arity (procedure-rename (car p) 'other))
                     (test (procedure-arity (car p)) procedure-arity (procedure->method (car p)))
                     (check-arity-error (car p) 10 (if method? 9 10))
@@ -407,7 +431,9 @@
 
 (run-procedure-tests procedure-arity procedure-reduce-arity)
 (run-procedure-tests (lambda (p) (mask->arity (procedure-arity-mask p)))
-                     (lambda (p a [name #f]) (procedure-reduce-arity-mask p (arity->mask a) name)))
+                     (lambda (p a [name #f] [realm 'racket]) (procedure-reduce-arity-mask p (arity->mask a) name realm)))
+
+(test -4 procedure-arity-mask apply)
 
 ;; ------------------------------------------------------------
 ;; Check arity reporting for methods.
@@ -472,6 +498,28 @@
 (err/rt-test (procedure-reduce-keyword-arity void 1 null '(#:b #:a))
              (lambda (exn) (regexp-match #rx"position: 4th" (exn-message exn))))
 
+
+;; ----------------------------------------
+;; Check `procedure-extract-target`
+
+(let ()
+  (struct p (v)
+    #:property prop:procedure 0)
+
+  (define (f x [y 0]) x)
+
+  (define pf (p f))
+  (define ppf (p pf))
+
+  (test #t eq? f (procedure-extract-target pf))
+  (test #t eq? pf (procedure-extract-target ppf))
+
+  (define r (procedure-reduce-arity f 1))
+  (test #t not (procedure-extract-target r))
+
+  (define rpf (procedure-reduce-arity pf 1))
+  (test #t not (procedure-extract-target rpf)))
+
 ;; ----------------------------------------
 ;; Check mutation of direct-called keyword procedure
 
@@ -486,7 +534,7 @@
   (set! f #f))
 
 ;; ----------------------------------------
-;; Check mutation of direct-called keyword procedure
+;; Check name of keyword procedure
 
 (let ()
   (define (f1 #:x x) (list x))
@@ -645,6 +693,252 @@
   (set! f f)
   (test 'done f 'done)
   (test 'yes values top-level-variable-to-mutate-form-specialized))
+
+
+;; ----------------------------------------
+;; check some strange procedure names
+
+(define-syntax (as-unnamed stx)
+  (syntax-case stx ()
+    [(_ e)
+     (syntax-property #'e 'inferred-name (void))]))
+
+(test #f object-name (eval '(let ([x (as-unnamed (lambda (x) x))])
+                              x)))
+
+(test '|[| object-name (let ([|[| (lambda (x) x)])
+                          |[|))
+(test '|]| object-name (let ([|]| (lambda (x) x)])
+                          |]|))
+
+(eval '(define (return-a-function-that-returns-y)
+         (lambda () y)))
+(test #f object-name (return-a-function-that-returns-y))
+
+;; ----------------------------------------
+;; Check 'inferred-name property on `lambda` that supports keywords
+;; and optional arguments
+
+(let ([mk
+       (lambda (mod-name proc)
+         (define e
+           `(module ,mod-name racket/base
+              (require (for-syntax racket/base))
+              (provide check-all)
+
+              (define-for-syntax (add-name stx)
+                (syntax-property stx 'inferred-name 'new-name))
+
+              (define-for-syntax fun
+                #',proc)
+
+              (define-syntax (go1 stx)
+                (syntax-case stx ()
+                  [(_ id)
+                   #`(define id #,fun)]))
+              (define-syntax (go2 stx)
+                (syntax-case stx ()
+                  [(_ id)
+                   #`(define id #,(add-name fun))]))
+              (define-syntax (go3 stx)
+                (syntax-case stx ()
+                  [(_ id)
+                   #`(define id (#%expression #,(add-name fun)))]))
+              (define-syntax (go4 stx)
+                (syntax-case stx ()
+                  [(_ id)
+                   #`(define id (let () #,(add-name fun)))]))
+
+              (go1 f1)
+              (go2 f2)
+              (go3 f3)
+              (go4 f4)
+
+              (define (check-all check)
+                (go1 g1)
+                (go2 g2)
+                (go3 g3)
+                (go4 g4)
+
+                (check f1 'f1)
+                (check f2 'new-name)
+                (check f3 'new-name)
+                (check f4 'new-name)
+
+                (check g1 'g1)
+                (check g2 'new-name)
+                (check g3 'new-name)
+                (check g4 'new-name))))
+         (eval e)
+         ((dynamic-require `',mod-name 'check-all)
+          (lambda (proc name)
+            (test name mod-name (object-name proc)))))])
+  (mk 'checks-many-declared-inferred-names
+      '(lambda (x) x))
+  (mk 'checks-many-declared-inferred-names/opt
+      '(lambda (x [y 10]) x))
+  (mk 'checks-many-declared-inferred-names/keyword
+      '(lambda (x #:z z) x))
+  (mk 'checks-many-declared-inferred-names/opt-keyword
+      '(lambda (x #:z [z 11]) x)))
+
+;; ----------------------------------------
+
+(let ()
+  (struct a ()
+    #:property prop:procedure (lambda (a x)
+                                (list a x)))
+
+  (define the-a (a))
+
+  (struct b ()
+    #:property prop:procedure the-a)
+
+  (define the-b (b))
+
+  (test (list the-a the-b) the-b)
+  (test 0 procedure-arity the-b))
+
+;; ----------------------------------------
+;; Make sure wrong number with keywords is an arity exception:
+
+(let ()
+  (define (hello a b #:key key) (display a))
+  (test #t
+        exn:fail:contract:arity?
+        (with-handlers ([values values])
+          (hello 1 #:key 'hi))))
+
+;; ----------------------------------------
+;; Regression test to make sure an internal chaperone is not disallowed
+;; due to a `prop:procedure` method whose implementation accepts 0 arguments
+;; (but it can never get called that way)
+
+(let ()
+  (struct function ()
+    #:property prop:procedure
+    (make-keyword-procedure
+     ;; will only be called with at least 1 argument for "self"
+     (λ (kws kw-vs . vs)
+       'whatever)))
+
+  (define (chap proc)
+    (chaperone-procedure proc
+                         (make-keyword-procedure
+                          (lambda (kw kw-vs . xs)
+                            xs))))
+
+  (test #t procedure? (function))
+  (test #t procedure? (chap (function)))
+  (test #t procedure? (chap (chap (function)))))
+
+;; ----------------------------------------
+
+(module kw-defns racket/base
+  (provide (all-defined-out))
+
+  (define (func-name/opt.1 arg [opt.1 (lambda (x) x)])
+    (object-name arg))
+
+  (define (func-name/opt.2 arg [opt.2 (lambda (x) x)])
+    (object-name opt.2))
+
+  (define (func-name/kw.1 arg1 #:kw.1 arg2)
+    (object-name arg1))
+
+  (define (func-name/kw.2 arg1 #:kw.2 arg2)
+    (object-name arg2))
+
+  (define (func-name/kw.opt.1 arg #:kw.opt.1 [kw.opt.1 (lambda (x) x)])
+    (object-name arg))
+
+  (define (func-name/kw.opt.2 arg #:kw.opt.2 [kw.opt.2 (lambda (x) x)])
+    (object-name kw.opt.2))
+  )
+(require 'kw-defns)
+
+(define ((proc-has-name? name) s)
+  (and (symbol? s) (regexp-match? name (symbol->string s))))
+
+(test #t (proc-has-name? #rx"procs.rktl:")
+         (func-name/opt.1 (lambda (z) z)))
+
+;; the default value of the optional argument picks up
+;; the name of the optional argument
+(test #t (proc-has-name? #rx"opt[.]2")
+         (func-name/opt.2 (lambda (z) z)))
+(test #t (proc-has-name? #rx"procs.rktl:")
+         (func-name/opt.2 (lambda (z) z) (lambda (w) w)))
+
+(test #t (proc-has-name? #rx"procs.rktl:")
+         (func-name/kw.1 (lambda (z) z) #:kw.1 (lambda (w) w)))
+
+(test #t (proc-has-name? #rx"procs.rktl:")
+         (func-name/kw.2 (lambda (z) z) #:kw.2 (lambda (w) w)))
+
+(test #t (proc-has-name? #rx"procs.rktl:")
+         (func-name/kw.opt.1 (lambda (z) z)))
+(test #t (proc-has-name? #rx"procs.rktl:")
+         (func-name/kw.opt.1 (lambda (z) z) #:kw.opt.1 (lambda (w) w)))
+
+(test #t (proc-has-name? #rx"kw[.]opt[.]2")
+         (func-name/kw.opt.2 (lambda (z) z)))
+(test #t (proc-has-name? #rx"procs.rktl:")
+         (func-name/kw.opt.2 (lambda (z) z) #:kw.opt.2 (lambda (w) w)))
+
+;; ----------------------------------------
+
+(test (arity-at-least 1)
+      procedure-arity (make-keyword-procedure (lambda (ks vs x . r) void)))
+(test 'foo
+      object-name
+      (procedure-rename (make-keyword-procedure (lambda (ks vs x . r) void)) 'foo))
+(test 'example
+      object-name
+      (procedure-rename apply 'example))
+
+;; ----------------------------------------
+
+(test #t 'primitive-arity
+      (for/and ([v (in-list (list cons car make-struct-type eval values call/cc))])
+        (or (not (primitive? v))
+            (let ([a (primitive-result-arity v)])
+              (or (exact-nonnegative-integer? a)
+                  (arity-at-least? a))))))
+
+;; ----------------------------------------
+;; Make sure literal keyword-argument and optional-argument defaults
+;; are preserved with source locations in a direct call
+
+(let ()
+  (define ten #'10)
+  (define eleven #'11)
+
+  (define e
+    (parameterize ([current-namespace (make-base-namespace)])
+      (expand #`(let ()
+                  (define (f #:x [x #,ten] [y #,eleven])
+                    x)
+                  (f)))))
+
+  (test #t
+        'keyword-optional-srclocs
+        (let loop ([e e])
+          (cond
+            [(syntax? e)
+             (syntax-case e (#%plain-app quote)
+               [(#%plain-app f (quote also-ten) (quote also-eleven))
+                (let ()
+                  (define (same-srcloc? a b)
+                    (and (equal? (syntax-source a)
+                                 (syntax-source b))
+                         (equal? (syntax-position a)
+                                 (syntax-position b))))
+                  (and (same-srcloc? ten #'also-ten)
+                       (same-srcloc? eleven #'also-eleven)))]
+               [_ (and (pair? (syntax-e e))
+                       (ormap loop (syntax->list e)))])]
+            [else #f]))))
 
 ;; ----------------------------------------
 

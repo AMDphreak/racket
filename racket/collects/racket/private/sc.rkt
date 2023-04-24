@@ -3,7 +3,7 @@
 ;; based on Shriram's pattern matcher for Zodiac
 
 (module sc '#%kernel
-  (#%require "stx.rkt" "small-scheme.rkt"
+  (#%require "stx.rkt" "define-et-al.rkt" "qq-and-or.rkt" "cond.rkt"
              (for-template (only '#%kernel set!)
                            "ellipses.rkt"))
 
@@ -380,6 +380,13 @@
                       =>
                       (lambda (key)
                         (let ([l (vector->list (struct->vector (syntax-e p)))])
+                          (when (and (pair? (cdr l))
+                                     (and use-ellipses? (...? (cadr l))))
+                            (raise-syntax-error
+                             (syntax-e who)
+                             "misplaced ellipsis in pattern"
+                             top
+                             (car l)))
                           ;; Match as a list:
                           (let-values ([(match-content did-var? <false>) (m&e (cdr l) p use-ellipses? last? #f)])
                             (if just-vars?

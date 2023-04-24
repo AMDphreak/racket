@@ -112,29 +112,78 @@ the @rfc for more information about JSON.
 ]
 }
 
+@; -----------------------------------------------------------------------------
 @section{Parsing JSON Text into JS-Expressions}
 
 @defproc[(read-json [in input-port? (current-input-port)]
                     [#:null jsnull any/c (json-null)])
          (or/c jsexpr? eof-object?)]{
-  Reads a @tech{jsexpr} from a JSON-encoded input port @racket[in] as a
+  Reads a @tech{jsexpr} from a single JSON-encoded input port @racket[in] as a
   Racket (immutable) value, or produces @racket[eof] if only whitespace
-  remains.
+  remains. Like @racket[read], the function leaves all remaining
+  characters in the port so that a second call can retrieve the
+  remaining JSON input(s). If the JSON inputs aren't delimited per se
+  (true, false, null), they must be separated by whitespace from the
+  following JSON input. Raises @racket[exn:fail:read] if @racket[in] is not
+  at EOF and starts with malformed JSON (that is, no initial sequence of bytes
+  in @racket[in] can be parsed as JSON); see below for examples.
 
 @examples[#:eval ev
   (with-input-from-string
     "{\"arr\" : [1, 2, 3, 4]}"
     (λ () (read-json)))
+
+  (with-input-from-string
+    "\"sandwich\""
+    (λ () (read-json)))
+
+  (with-input-from-string
+    "true false"
+    (λ () (list (read-json) (read-json))))
+
+  (with-input-from-string
+    "true[1,2,3]"
+    (λ () (list (read-json) (read-json))))
+
+  (with-input-from-string
+    "true\"hello\""
+    (λ () (list (read-json) (read-json))))
+
+  (with-input-from-string
+    "\"world\"41"
+    (λ () (list (read-json) (read-json))))
+
   (eval:error
     (with-input-from-string
       "sandwich sandwich" (code:comment "invalid JSON")
       (λ () (read-json))))
+
+  (with-input-from-string
+    "false sandwich" (code:comment "valid JSON prefix, invalid remainder is not (immediately) problematic")
+    (λ () (read-json)))
+
+  (eval:error
+    (with-input-from-string
+      "false42" (code:comment "invalid JSON text sequence")
+      (λ () (read-json))))
+
+  (with-input-from-string
+    "false 42" (code:comment "valid JSON text sequence (notice the space)")
+    (λ () (list (read-json) (read-json))))
+
 ]
+
+@history[#:changed "8.1.0.2" @list{Adjusted the whitespace handling to reject whitespace that isn't either
+           @racket[#\space], @racket[#\tab], @racket[#\newline], or @racket[#\return].}]
 }
 
 @defproc[(string->jsexpr [str string?] [#:null jsnull any/c (json-null)])
          jsexpr?]{
-  Parses the JSON string @racket[str] as an immutable @tech{jsexpr}.
+  Parses a recognizable prefix of the string @racket[str] as an immutable @tech{jsexpr}.
+  If the prefix isn't delimited per se (true, false, null), it
+  must be separated by whitespace from the remaining characters.
+  Raises @racket[exn:fail:read] if the string is malformed JSON.
+
 
 @examples[#:eval ev
   (string->jsexpr "{\"pancake\" : 5, \"waffle\" : 7}")
@@ -143,7 +192,11 @@ the @rfc for more information about JSON.
 
 @defproc[(bytes->jsexpr [str bytes?] [#:null jsnull any/c (json-null)])
          jsexpr?]{
-  Parses the JSON bytes string @racket[str] as an immutable @tech{jsexpr}.
+  Parses a recognizable prefix of the string @racket[str] as an immutable @tech{jsexpr}.
+  If the prefix isn't delimited per se (true, false, null), it
+  must be separated by whitespace from the remaining bytes. Raises
+  @racket[exn:fail:read] if the byte string is malformed JSON.
+
 
 @examples[#:eval ev
   (bytes->jsexpr #"{\"pancake\" : 5, \"waffle\" : 7}")
@@ -161,7 +214,7 @@ should represent a JSON ``@tt{null}''.  This library uses the Racket
 Racket symbols are used only as object keys, which are required to be
 strings in JSON.
 
-Several other options have been used by various libaries.  For example,
+Several other options have been used by various libraries.  For example,
 Dave Herman's PLaneT library (which has been the basis for this library)
 uses the @racket[#\nul] character, other libraries for Racket and other
 Lisps use @racket[(void)], @tt{NIL} (some use it also for JSON

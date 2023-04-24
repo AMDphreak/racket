@@ -43,7 +43,7 @@ and @racket[cdr] is pronounced ``could-er.'')
 Racket's pair datatype and its relation to lists is essentially a
 historical curiosity, along with the dot notation for printing and the
 funny names @racket[car] and @racket[cdr]. Pairs are deeply wired into
-to the culture, specification, and implementation of Racket, however,
+the culture, specification, and implementation of Racket, however,
 so they survive in the language.
 
 You are perhaps most likely to encounter a non-list pair when making a
@@ -86,7 +86,7 @@ prints:
 
 @interaction[
 (eval:alts (@#,racket[quote] ("red" "green" "blue")) '("red" "green" "blue"))
-(eval:alts (@#,racket[quote] ((1) (2 3) (4))) '((1) (2 4) (4)))
+(eval:alts (@#,racket[quote] ((1) (2 3) (4))) '((1) (2 3) (4)))
 (eval:alts (@#,racket[quote] ()) '())
 ]
 
@@ -200,7 +200,7 @@ first element of a two-element list when printing output, in which
 case it uses @racketidfont{'} to print the output:
 
 @interaction[
-(eval:alts (@#,racketvalfont{quote} (@#,racketvalfont{quote} @#,racketvalfont{road})) ''road)
+(eval:alts (@#,racket[quote] (@#,racketvalfont{quote} @#,racketvalfont{road})) ''road)
 (eval:alts '(@#,racketvalfont{quote} @#,racketvalfont{road}) ''road)
 ''road
 ]

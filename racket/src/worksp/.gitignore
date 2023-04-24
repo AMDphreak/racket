@@ -35,4 +35,13 @@ rbuildmode.exe
 cstartup.obj
 cstartup.exe
 
+/bc_suffix.h
+/bc_suffix_new.h
+
 /compiled
+/liblz4.dll
+/liblz4.lib
+/liblz4.exp
+/liblz4mt.dll
+/liblz4mt.lib
+/liblz4mt.exp

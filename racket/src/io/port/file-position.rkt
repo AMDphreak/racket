@@ -2,6 +2,7 @@
 (require "../common/check.rkt"
          "../common/class.rkt"
          "../host/thread.rkt"
+         "../error/message.rkt"
          "port.rkt"
          "input-port.rkt"
          "output-port.rkt"
@@ -19,9 +20,11 @@
                               (lambda ()
                                 (raise
                                  (exn:fail:filesystem
-                                  (string-append
-                                   "file-position: the port's current position is not known\n port: "
-                                   ((error-value->string-handler) p (error-print-width)))
+                                  (error-message->string
+                                   who
+                                   (string-append
+                                    "the port's current position is not known\n port: "
+                                    ((error-value->string-handler) p (error-print-width))))
                                   (current-continuation-marks)))))]
     [(p pos)
      (unless (or (input-port? p) (output-port? p))
@@ -30,6 +33,11 @@
             (lambda (p) (or (exact-nonnegative-integer? p) (eof-object? p)))
             #:contract "(or/c exact-nonnegative-integer? eof-object?)"
             pos)
+     (when (and (number? p) (pos . >= . (expt 2 63)))
+       (raise-arguments-error who
+                              "new position is too large"
+                              "port" p
+                              "position" pos))
      (let ([cp (cond
                  [(input-port? p) (->core-input-port p)]
                  [else (->core-output-port p)])])

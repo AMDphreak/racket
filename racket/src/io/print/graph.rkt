@@ -49,11 +49,19 @@
                                             #:break (not fuel))
               (define val (hash-ref v k #f))
               (quick-no-graph? val (quick-no-graph? k fuel))))]
+      [(stencil-vector? v)
+       (and (not print-graph?)
+            (let loop ([fuel (sub1 fuel)] [i 0])
+              (cond
+                [(not fuel) #f]
+                [(= i (stencil-vector-length v)) fuel]
+                [else (loop (quick-no-graph? (stencil-vector-ref v i) fuel) (add1 i))])))]
       [(mpair? v)
        (and (not print-graph?)
             (not (eq? mode PRINT-MODE/UNQUOTED))
             (quick-no-graph? (mcdr v) (quick-no-graph? (mcar v) (sub1 fuel))))]
-      [(custom-write? v)
+      [(and (custom-write? v)
+            (not (struct-type? v)))
        #f]
       [(and (struct? v)
             (config-get config print-struct))
@@ -126,7 +134,7 @@
               (set! counter (add1 counter))
               (when (eq? g 'checking)
                 (set! cycle? #t)))
-            #f)]
+            (as-constructor? g))]
       [(pair? v)
        (checking! v)
        (define car-unquoted? (build-graph (car v) mode))
@@ -158,12 +166,22 @@
                k-unquoted?
                unquoted?)))
        (done! v unquoted?)]
+      [(stencil-vector? v)
+       (checking! v)
+       (let loop ([i 0])
+         (unless (= i (stencil-vector-length v))
+           (build-graph (stencil-vector-ref v i) (if (eq? mode DISPLAY-MODE)
+                                                     DISPLAY-MODE
+                                                     WRITE-MODE))
+           (loop (add1 i))))
+       (done! v #f)]
       [(mpair? v)
        (checking! v)
        (build-graph (mcar v) mode)
        (build-graph (mcdr v) mode)
        (done! v (eq? mode PRINT-MODE/UNQUOTED))]
-      [(custom-write? v)
+      [(and (custom-write? v)
+            (not (struct-type? v)))
        (define print-quotable (if (eq? mode PRINT-MODE/UNQUOTED)
                                   (custom-print-quotable-accessor v 'self)
                                   'self))
@@ -182,7 +200,10 @@
                  (set! unquoted? (or e-unquoted? unquoted?)))]
               [else (build-graph e mode)]))))
        (checking! v)
-       ((custom-write-accessor v) v checking-port mode)
+       ((custom-write-accessor v) v checking-port (if (and (eq? mode PRINT-MODE/UNQUOTED)
+                                                           (eq? print-quotable 'always))
+                                                      PRINT-MODE/QUOTED
+                                                      mode))
        (done! v unquoted?)]
       [(and (struct? v)
             (config-get config print-struct))

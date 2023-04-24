@@ -393,7 +393,7 @@ Let's look a few possibilities related to allocation and pointers:
 
  Although the data allocated by @racket[malloc] can move
  around, @racket[p] will always point to it, and no garbage collection
- will happen between the time that the address is extracted form
+ will happen between the time that the address is extracted from
  @racket[p] to pass to @racket[wgetnstr] and the time that
  @racket[wgetnstr] returns.}
 
@@ -453,7 +453,8 @@ convenience) can be used directly as a pointer value (unlike character
 strings, which are always copied for UTF-8 encoding or decoding).
 
 For more information about memory management and garbage collection,
-see @secref[#:doc InsideRacket-doc "im:memoryalloc"] in
+see @secref[#:doc InsideRacket-doc "cs-memory"]
+and @secref[#:doc InsideRacket-doc "im:memoryalloc"] in
 @|InsideRacket|.
 
 @; --------------------------------------------------

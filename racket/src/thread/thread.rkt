@@ -9,12 +9,15 @@
          "evt.rkt"
          "waiter.rkt"
          "semaphore.rkt"
+         (submod "semaphore.rkt" for-thread)
          "thread-group.rkt"
          "atomic.rkt"
          "schedule-info.rkt"
          "custodian.rkt"
          "custodian-object.rkt"
-         "exit.rkt")
+         "exit.rkt"
+         "error.rkt"
+         "sink.rkt")
 
 (provide (rename-out [make-thread thread])
          thread/suspend-to-kill
@@ -74,6 +77,7 @@
            thread-dead?
            thread-dead!
            thread-did-work!
+           thread-poll-not-done!
            
            thread-reschedule!
 
@@ -114,7 +118,6 @@
                      [descheduled? #:mutable]
                      [interrupt-callback #:mutable] ; non-#f => wake up on kill
                      
-                     [dead-sema #:mutable] ; created on demand
                      [dead-evt #:mutable] ; created on demand
                      [suspended-box #:mutable] ; created on demand; box contains thread if suspended
                      [suspended-evt #:mutable]
@@ -129,12 +132,13 @@
 
                      [cpu-time #:mutable] ; accumulates CPU time in milliseconds
 
-                     [future #:mutable]   ; current would-be future
-                     
-                     [condition-wakeup #:mutable])
+                     [future #:mutable])  ; current would-be future
+  #:authentic
+  #:sealed
+  #:property host:prop:unsafe-authentic-override #t ; allow evt chaperone
   #:property prop:waiter
   (make-waiter-methods 
-   #:suspend! (lambda (t i-cb r-cb) (thread-deschedule! t #f i-cb r-cb))
+   #:suspend! (lambda (t i-cb) (thread-deschedule! t #f i-cb))
    #:resume! (lambda (t v) (thread-reschedule! t) v))
   #:property prop:evt (lambda (t) (wrap-evt (get-thread-dead-evt t)
                                             (lambda (v) t)))
@@ -185,7 +189,6 @@
                     #f ; descheduled
                     #f ; interrupt-callback
                     
-                    #f ; dead-sema
                     #f ; dead-evt
                     #f ; suspended-box
                     #f ; suspended-evt
@@ -201,8 +204,6 @@
                     0 ; cpu-time
 
                     #f ; future
-
-                    void ; condition-wakeup
                     )) 
   ((atomically
     (define cref (and c (custodian-register-thread c t remove-thread-custodian)))
@@ -263,18 +264,32 @@
   (assert-atomic-mode)
   (set-thread-engine! t 'done)
   (run-interrupt-callback t)
-  (when (thread-dead-sema t)
-    (semaphore-post-all (thread-dead-sema t)))
+  (let ([dead-evt (thread-dead-evt t)])
+    (when dead-evt
+      (semaphore-post-all dead-evt)
+      (when (dead-evt? dead-evt)
+        (for ([cr (in-list (dead-evt-custodian-references dead-evt))])
+          (unsafe-custodian-unregister dead-evt cr))
+        (set-dead-evt-custodian-references! dead-evt null))))
+  (let ([suspended-evt (thread-suspended-evt t)])
+    (when (suspend-evt? suspended-evt)
+      (define sema (suspend-resume-evt-sema suspended-evt))
+      (when (suspend-semaphore? sema)
+        (for ([cr (in-list (suspend-semaphore-custodian-references sema))])
+          (unsafe-custodian-unregister sema cr)))))
   (unless (thread-descheduled? t)
     (thread-group-remove! (thread-parent t) t)
     (thread-unscheduled-for-work-tracking! t))
   (remove-from-sleeping-threads! t)
   (run-kill-callbacks! t)
+  (set-thread-suspend+resume-callbacks! t null)
   (when (thread-forward-break-to t)
     (do-break-thread (thread-forward-break-to t) 'break #f))
   (for ([cr (in-list (thread-custodian-references t))])
     (unsafe-custodian-unregister t cr))
-  (set-thread-custodian-references! t null))
+  (set-thread-custodian-references! t null)
+  (set-thread-mailbox! t #f)
+  (set-thread-mailbox-wakeup! t void))
 
 ;; ----------------------------------------
 ;; Thread termination
@@ -293,18 +308,15 @@
 
 (define/who (kill-thread t)
   (check who thread? t)
-  (unless (for/and ([cr (in-list (thread-custodian-references t))])
-            (custodian-manages-reference? (current-custodian) cr))
-    (raise-arguments-error who
-                           "the current custodian does not solely manage the specified thread"
-                           "thread" t))
+  (check-current-custodian-manages who t)
   (cond
     [(thread-suspend-to-kill? t)
      ((atomically
        (do-thread-suspend t)))]
     [else
      (atomically
-      (do-kill-thread t))
+      (do-kill-thread t)
+      (void))
      (when (eq? t (current-thread/in-atomic))
        (when (eq? t root-thread)
          (force-exit 0))
@@ -330,6 +342,34 @@
        (do-thread-suspend t)]
       [else
        (do-kill-thread t)])))
+
+;; Called in atomic mode:
+(define (remove-dead-evt-custodian evt c)
+  (assert-atomic-mode)
+  (define new-crs (for/list ([cref (in-list (dead-evt-custodian-references evt))]
+                             #:unless (custodian-manages-reference? c cref))
+                    cref))
+  (set-dead-evt-custodian-references! evt new-crs)
+  (when (null? new-crs)
+    (semaphore-post-all evt)))
+
+;; Called in atomic mode:
+(define (remove-suspend-semaphore-custodian sema c)
+  (assert-atomic-mode)
+  (define new-crs (for/list ([cref (in-list (suspend-semaphore-custodian-references sema))]
+                             #:unless (custodian-manages-reference? c cref))
+                    cref))
+  (set-suspend-semaphore-custodian-references! sema new-crs)
+  (when (null? new-crs)
+    (semaphore-post-all sema)))
+
+(define (check-current-custodian-manages who t)
+  (define c (current-custodian))
+  (unless (for/and ([cr (in-list (thread-custodian-references t))])
+            (custodian-manages-reference? c cr))
+    (raise-arguments-error who
+                           "the current custodian does not solely manage the specified thread"
+                           "thread" t)))
 
 (define (thread-representative-custodian t)
   (atomically
@@ -365,15 +405,25 @@
 
 (define/who (thread-wait t)
   (check who thread? t)
-  (semaphore-wait (get-thread-dead-sema t)))
+  (cond
+    [(eq? t (current-thread))
+     ;; as a special case, enable GC of this thread if not otherwise referenced,
+     ;; since the thread obviously can't continue after it is terminated
+     (semaphore-wait (make-semaphore))]
+    [else
+     (semaphore-wait (get-thread-dead-evt t))]))
 
-(struct dead-evt (sema)
-        #:property prop:evt (lambda (tde) (wrap-evt (dead-evt-sema tde)
-                                               (lambda (s) tde)))
-        #:reflection-name 'thread-dead-evt)
+(struct dead-evt custodian-accessible-semaphore ([custodian-references #:mutable])
+  #:authentic
+  #:reflection-name 'thread-dead-evt)
+
+(struct dead-evt/suspend-to-kill semaphore ()
+  #:authentic
+  #:reflection-name 'thread-dead-evt)
 
 (define (thread-dead-evt? v)
-  (dead-evt? v))
+  (or (dead-evt? v)
+      (dead-evt/suspend-to-kill? v)))
 
 (define get-thread-dead-evt
   (let ([thread-dead-evt
@@ -381,17 +431,20 @@
            (check 'thread-dead-evt thread? t)
            (atomically
             (unless (thread-dead-evt t)
-              (set-thread-dead-evt! t (dead-evt (get-thread-dead-sema t)))))
+              (define evt (if (thread-suspend-to-kill? t)
+                              (dead-evt/suspend-to-kill #f #f 0)
+                              (dead-evt #f #f 0 null)))
+              (set-thread-dead-evt! t evt)
+              (cond
+                [(eq? 'done (thread-engine t))
+                 (semaphore-post-all evt)]
+                [(dead-evt? evt)
+                 (define refs (thread-custodian-references t))
+                 (set-dead-evt-custodian-references! evt refs)
+                 (for ([cr (in-list refs)])
+                   (custodian-register-also cr evt remove-dead-evt-custodian #f #t))])))
            (thread-dead-evt t))])
     thread-dead-evt))
-
-(define (get-thread-dead-sema t)
-  (atomically
-   (unless (thread-dead-sema t)
-     (set-thread-dead-sema! t (make-semaphore 0))
-     (when (eq? 'done (thread-engine t))
-       (semaphore-post-all (thread-dead-sema t)))))
-  (thread-dead-sema t))
 
 ;; ----------------------------------------
 ;; Thread suspend and resume
@@ -420,15 +473,20 @@
 ;; thread, where the thunk returns `(void)`;
 (define (do-thread-deschedule! t timeout-at)
   (assert-atomic-mode)
-  (when (thread-descheduled? t)
-    (internal-error "tried to deschedule a descheduled thread"))
-  (set-thread-descheduled?! t #t)
-  (thread-group-remove! (thread-parent t) t)
-  (thread-unscheduled-for-work-tracking! t)
-  (when timeout-at
-    (add-to-sleeping-threads! t (sandman-merge-timeout #f timeout-at)))
-  (when (eq? t (current-thread/in-atomic))
-    (thread-did-work!))
+  (cond
+    [(thread-descheduled? t)
+     (unless (eq? (thread-descheduled? t) 'terribly-wrong)
+       ;; avoid complaining forever about the same thread:
+       (set-thread-descheduled?! t 'terribly-wrong)
+       (internal-error "tried to deschedule a descheduled thread"))]
+    [else
+     (set-thread-descheduled?! t #t)
+     (thread-group-remove! (thread-parent t) t)
+     (thread-unscheduled-for-work-tracking! t)
+     (when timeout-at
+       (add-to-sleeping-threads! t (sandman-merge-timeout #f timeout-at)))
+     (when (eq? t (current-thread/in-atomic))
+       (thread-did-work!))])
   ;; Beware that this thunk is not used when a thread is descheduled
   ;; by a custodian callback
   (lambda ()
@@ -437,26 +495,27 @@
         (when (positive? (current-atomic))
           (if (force-atomic-timeout-callback)
               (loop)
-              (internal-error "attempt to deschedule the current thread in atomic mode"))))
-      (engine-block)
-      (check-for-break))))
+              (begin
+                (abort-atomic)
+                (internal-error "attempt to deschedule the current thread in atomic mode")))))
+      ;; implies `(check-for-break)`:
+      (engine-block))))
 
 ;; Extends `do-thread-deschdule!` where `t` is always `(current-thread)`.
 ;; The `interrupt-callback` is called if the thread receives a break
 ;; signal, is killed, or is suspended; if the break signal is
-;; supressed or resumed, then `retry-callback` is called to try again
+;; suppressed or resumed, then `retry-callback` is called to try again
 ;; --- but `retry-callback` will only be used if `interrupt-callback`
 ;; was previously called, and neither is called if the thread is
 ;; "internal"-resumed normally instead of by a break signal of a
 ;; `thread-resume`.
-(define (thread-deschedule! t timeout-at interrupt-callback retry-callback)
-  (define needs-retry? #f)
+(define (thread-deschedule! t timeout-at interrupt-callback)
+  (define  retry-callback #f)
   (atomically
    (set-thread-interrupt-callback! t (lambda ()
                                        ;; If the interrupt callback gets invoked,
                                        ;; then remember that we need a retry
-                                       (set! needs-retry? #t)
-                                       (interrupt-callback)))
+                                       (set! retry-callback (interrupt-callback))))
    (define finish (do-thread-deschedule! t timeout-at))
    ;; It's ok if the thread gets interrupted
    ;; outside the atomic region, because we'd
@@ -464,7 +523,7 @@
    (lambda ()
      ;; In non-atomic mode:
      (finish)
-     (when needs-retry?
+     (when retry-callback
        (retry-callback)))))
 
 ;; in atomic mode
@@ -482,6 +541,7 @@
 
 (define/who (thread-suspend t)
   (check who thread? t)
+  (check-current-custodian-manages who t)
   ((atomically
     (do-thread-suspend t))))
 
@@ -511,6 +571,7 @@
        [(not (thread-descheduled? t))
         (do-thread-deschedule! t #f)]
        [else
+        (remove-from-sleeping-threads! t)
         void])]))
 
 (define/who (thread-resume t [benefactor #f])
@@ -518,54 +579,79 @@
   (check who (lambda (p) (or (not p) (thread? p) (custodian? p)))
          #:contract "(or/c #f thread? custodian?)"
          benefactor)
-  (when (and (custodian? benefactor)
-             (custodian-shut-down? benefactor))
-    (raise-custodian-is-shut-down who benefactor))
-  (atomically
-   (do-thread-resume t benefactor)))
+  (unless (atomically
+           (do-thread-resume t benefactor))
+    (raise-custodian-is-shut-down who benefactor)))
 
 ;; in atomic mode
+;; returns #f if `benefactor` is a shut-down custodian
 (define (do-thread-resume t benefactor)
   (assert-atomic-mode)
-  (unless (thread-dead? t)
-    (cond
-      [(thread? benefactor)
-       (for ([cr (in-list (thread-custodian-references benefactor))])
-         (add-custodian-to-thread! t (custodian-reference->custodian cr)))
-       (add-transitive-resume-to-thread! benefactor t)]
-      [(custodian? benefactor)
-       (add-custodian-to-thread! t benefactor)])
-    (when (and (thread-suspended? t)
-               (pair? (thread-custodian-references t)))
-      (define resumed-evt (thread-resumed-evt t))
-      (when resumed-evt
-        (set-suspend-resume-evt-thread! resumed-evt t)
-        (semaphore-post-all (suspend-resume-evt-sema resumed-evt))
-        (set-thread-resumed-evt! t #f))
-      (set-thread-suspended?! t #f)
-      (run-suspend/resume-callbacks t cdr)
-      (thread-reschedule! t)
-      (do-resume-transitive-resumes t #f))))
+  (cond
+    [(thread-dead? t)
+     ;; not resuming thread, but still potentially report whether the
+     ;; given custodian is shutdown
+     (not (and (custodian? benefactor)
+               (custodian-shut-down? benefactor)))]
+    [else
+     (define add-ok?
+       (cond
+         [(thread? benefactor)
+          (for ([cr (in-list (thread-custodian-references benefactor))])
+            (add-custodian-to-thread! t (custodian-reference->custodian cr)))
+          (add-transitive-resume-to-thread! benefactor t)
+          #t]
+         [(custodian? benefactor)
+          (add-custodian-to-thread! t benefactor)]
+         [else #t]))
+     (when (and (thread-suspended? t)
+                (pair? (thread-custodian-references t)))
+       (define resumed-evt (thread-resumed-evt t))
+       (when resumed-evt
+         (set-suspend-resume-evt-thread! resumed-evt t)
+         (semaphore-post-all (suspend-resume-evt-sema resumed-evt))
+         (set-thread-resumed-evt! t #f))
+       (set-thread-suspended?! t #f)
+       (run-suspend/resume-callbacks t cdr)
+       (thread-reschedule! t)
+       (do-resume-transitive-resumes t #f))
+     add-ok?]))
 
 ;; in atomic mode
+;; returns #f if `benefactor` is a shut-down custodian
 (define (add-custodian-to-thread! t c)
   (assert-atomic-mode)
   (let loop ([crs (thread-custodian-references t)]
              [accum null])
     (cond
       [(null? crs)
-       (define new-crs
-         (cons (unsafe-custodian-register c t remove-thread-custodian #f #t)
-               accum))
-       (set-thread-custodian-references! t new-crs)
-       (do-resume-transitive-resumes t c)]
+       (define cr (custodian-register-thread c t remove-thread-custodian))
+       (cond
+         [(not cr)
+          ;; add failed due to shut-down custodian
+          #f]
+         [else
+          (define refs (cons cr accum))
+          (set-thread-custodian-references! t refs)
+          (let ([evt (thread-dead-evt t)])
+            (when (dead-evt? evt)
+              (custodian-register-also cr evt remove-dead-evt-custodian #f #t)
+              (set-dead-evt-custodian-references! evt refs)))
+          (let ([suspended-evt (thread-suspended-evt t)])
+            (when (suspend-evt? suspended-evt)
+              (define sema (suspend-resume-evt-sema suspended-evt))
+              (when (suspend-semaphore? sema)
+                (custodian-register-also cr sema remove-suspend-semaphore-custodian #f #t)
+                (set-suspend-semaphore-custodian-references! sema refs))))
+          (do-resume-transitive-resumes t c)
+          #t])]
       [else
        (define old-c (custodian-reference->custodian (car crs)))
        (cond
          [(or (eq? c old-c)
               (custodian-subordinate? c old-c))
-          ;; no need to add new
-          (void)]
+          ;; no need to add new (and apparently not shut down)
+          #t]
          [(custodian-subordinate? old-c c)
           ;; new one replaces old one; we can simplify forget the
           ;; old reference
@@ -654,6 +740,9 @@
 (struct resume-evt suspend-resume-evt ()
   #:reflection-name 'thread-resume-evt)
 
+(struct suspend-semaphore custodian-accessible-semaphore ([custodian-references #:mutable])
+  #:authentic)
+
 (define/who (thread-resume-evt t)
   (check who thread? t)
   (atomically
@@ -678,7 +767,19 @@
       (suspend-evt always-evt t)]
      [else
       (or (thread-suspended-evt t)
-          (let ([s (suspend-evt (make-semaphore) #f)])
+          (let* ([sema
+                  (cond
+                    [(thread-suspend-to-kill? t)
+                     (define refs (thread-custodian-references t))
+                     (define sema (suspend-semaphore #f #f 0 refs))
+                     (for ([cr (in-list refs)])
+                       (custodian-register-also cr sema remove-suspend-semaphore-custodian #f #t))
+                     sema]
+                    [else (make-semaphore)])]
+                 [s (suspend-evt sema (and (thread-suspend-to-kill? t)
+                                           ;; eagerly record thread, since we will need it
+                                           ;; if the thread is suspend via a custodian
+                                           t))])
             (set-thread-suspended-evt! t s)
             s))])))
 
@@ -694,7 +795,7 @@
     [(or (not sched-info)
          (schedule-info-did-work? sched-info))
      (thread-did-work!)]
-    [else (thread-did-no-work!)])
+    [else (thread-poll-done! (current-thread/in-atomic))])
    (set-thread-sched-info! (current-thread/in-atomic) sched-info))
   (engine-block))
 
@@ -710,15 +811,15 @@
      (thread-yield #f)]
     [else
      (define until-msecs (+ (* secs 1000.0)
-                            (current-inexact-milliseconds)))
+                            (current-inexact-monotonic-milliseconds)))
      (let loop ()
        ((thread-deschedule! (current-thread)
                             until-msecs
-                            void
                             (lambda ()
-                              ;; Woke up due to an ignored break?
-                              ;; Try again:
-                              (loop)))))]))
+                              (lambda ()
+                                ;; Woke up due to an ignored break?
+                                ;; Try again:
+                                (loop))))))]))
 
 ;; ----------------------------------------
 ;; Tracking thread progress
@@ -729,9 +830,14 @@
 ;; performed work:
 (define-place-local poll-done-threads #hasheq())
 
-(define (thread-did-no-work!)
-  (set! poll-done-threads (hash-set poll-done-threads (current-thread) #t)))
+(define (thread-poll-done! t)
+  (set! poll-done-threads (hash-set poll-done-threads t #t)))
 
+(define (thread-poll-not-done! t)
+  (set! poll-done-threads (hash-remove poll-done-threads t)))
+
+;; When a thread has done work, then other threads might get a
+;; different answer by polling
 (define (thread-did-work!)
   (set! poll-done-threads #hasheq()))
 
@@ -801,7 +907,7 @@
              (call-with-escape-continuation
               (lambda (k)
                 (raise (exn:break*
-                        "user break"
+                        (error-message->string #f "user break")
                         (current-continuation-marks)
                         k)))))]
           [else void]))))))
@@ -824,6 +930,7 @@
 (define (do-break-thread t kind check-t)
   ((atomically
     (cond
+      [(thread-dead? t) void]
       [(thread-forward-break-to t)
        => (lambda (other-t)
             (lambda () (do-break-thread other-t kind check-t)))]
@@ -834,6 +941,10 @@
        (unless (thread-pending-break t)
          (set-thread-pending-break! t kind)
          (thread-did-work!)
+         (begin
+           ;; interrupt synchronization, if any
+           (run-suspend/resume-callbacks t car)
+           (run-suspend/resume-callbacks t cdr))
          (when (thread-descheduled? t)
            (unless (thread-suspended? t)
              (run-interrupt-callback t)
@@ -884,14 +995,14 @@
                                          ;; Convert to set
                                          (hasheq ignore #t bc #t)]))))
 
-;; in atomic mode
 (define (thread-remove-ignored-break-cell! t bc)
-  (assert-atomic-mode)
-  (when (thread-ignore-break-cell? t bc)
-    (let ([ignore (thread-ignore-break-cells t)])
-      (set-thread-ignore-break-cells! t (cond
-                                          [(eq? ignore bc) #f]
-                                          [else (hash-remove ignore bc)])))))
+  (atomically
+   (when (thread-ignore-break-cell? t bc)
+     (let ([ignore (thread-ignore-break-cells t)])
+       (set-thread-ignore-break-cells! t (cond
+                                           [(eq? ignore bc) #f]
+                                           [else (hash-remove ignore bc)]))))
+   (void)))
 
 ;; ----------------------------------------
 ;; Thread mailboxes
@@ -907,7 +1018,7 @@
   (define mbx (thread-mailbox thd))
   (cond
     [(queue-empty? mbx)
-     (internal-error "No Mail!\n")]
+     (internal-error "no mail!")]
     [else
      (queue-remove! mbx)]))
 
@@ -956,9 +1067,9 @@
                              #f
                              ;; Interrupted for break => not waiting for mail
                              (lambda ()
-                               (set-thread-mailbox-wakeup! t void))
-                             ;; No retry action, because we always retry:
-                             void))
+                               (set-thread-mailbox-wakeup! t void)
+                               ;; No retry action, because we always retry:
+                               void)))
        ;; called out of atomic mode:
        (lambda ()
          (do-yield)
@@ -1007,7 +1118,11 @@
                                         ;; abandon:
                                         (lambda () (set! receive void))
                                         ;; retry (was interrupted, but not abandoned):
-                                        (lambda () (add-wakeup-callback!))))])))
+                                        (lambda ()
+                                          (add-wakeup-callback!)
+                                          (if (is-mail? t)
+                                              (values self #t)
+                                              (values #f #f)))))])))
   #:reflection-name 'thread-receive-evt)
 
 (define/who (thread-receive-evt)
@@ -1023,3 +1138,11 @@
            (define mrefs (thread-custodian-references t))
            (unless (null? mrefs)
              (custodian-check-immediate-limit (car mrefs) n))))))
+
+(void (set-thread-engine-for-roots!
+       (lambda (v)
+         (and (thread? v)
+              (let ([e (thread-engine v)])
+                (and (not (eq? e 'done))
+                     (not (eq? e 'running))
+                     e))))))

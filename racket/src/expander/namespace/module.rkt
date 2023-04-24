@@ -7,6 +7,7 @@
          "../common/module-path.rkt"
          "../compile/module-use.rkt"
          "../expand/root-expand-context.rkt"
+         "../expand/portal-syntax.rkt"
          "../host/linklet.rkt"
          "namespace.rkt"
          "provided.rkt"
@@ -29,6 +30,7 @@
          declare-module!
          module-self
          module-requires
+         module-recur-requires
          module-provides
          module-primitive?
          module-is-predefined?
@@ -40,6 +42,7 @@
          module-get-all-variables
          module-access
          module-compute-access!
+         module-realm
          
          module-instance-namespace
          module-instance-module
@@ -51,6 +54,8 @@
          namespace-visit-available-modules!
          namespace-run-available-modules!
 
+         namespace-module-get-portal-syntax-lookup
+
          namespace-module-use->module+linklet-instances)
 
 (module+ for-module-reflect
@@ -61,9 +66,11 @@
 (struct module (source-name     ; #f, symbol, or complete path
                 self            ; module path index used for a self reference
                 requires        ; list of (cons phase list-of-module-path-index)
+                recur-requires  ; list of (list boolean ...) in parallel to `requires`
                 provides        ; phase-level -> sym -> binding or (provided binding bool bool); see [*] below
                 [access #:mutable] ; phase-level -> sym -> 'provided or 'protected; computed on demand from `provides`
                 language-info   ; #f or vector
+                realm           ; symbol
                 min-phase-level ; phase-level
                 max-phase-level ; phase-level
                 phase-level-linklet-info-callback ; phase-level namespace -> module-linklet-info-or-#f
@@ -77,10 +84,11 @@
                 inspector       ; declaration-time inspector
                 submodule-names ; associated submodules (i.e, when declared together)
                 supermodule-name ; associated supermodule (i.e, when declared together)
-                get-all-variables) ; for `module->indirect-exports`
+                get-all-variables ; for `module->indirect-exports`
+                get-portal-syntax-callback) ; for `identifier-binding-portal-syntax`
   #:authentic)
 
-;; [*] Beware that tabels in `provides` may map non-interned symbols
+;; [*] Beware that tables in `provides` may map non-interned symbols
 ;;     to provided bindings, in case something like a lifted
 ;;     identifier was provided. Since lifting generates a locally
 ;;     deterministic unreadable symbol that is intended to be specific
@@ -100,6 +108,9 @@
 (define (make-module #:source-name [source-name #f]
                      #:self self
                      #:requires [requires null]
+                     #:recur-requires [recur-requires (for/list ([phase+mps (in-list requires)])
+                                                        (for/list ([mp (in-list (cdr phase+mps))])
+                                                          #t))]
                      #:provides provides
                      #:min-phase-level [min-phase-level 0]
                      #:max-phase-level [max-phase-level 0]
@@ -109,19 +120,23 @@
                      #:phase-level-linklet-info-callback [phase-level-linklet-info-callback
                                                           (lambda (phase-level ns insp) #f)]
                      #:language-info [language-info #f]
+                     #:realm [realm 'racket]
                      #:primitive? [primitive? #f]
                      #:predefined? [predefined? #f]
                      #:cross-phase-persistent? [cross-phase-persistent? primitive?]
                      #:no-protected? [no-protected? #f]
                      #:submodule-names [submodule-names null]
                      #:supermodule-name [supermodule-name #f]
-                     #:get-all-variables [get-all-variables (lambda () null)]) ; ok to omit exported
+                     #:get-all-variables [get-all-variables (lambda () null)] ; ok to omit exported
+                     #:get-portal-syntax-callback [get-portal-syntax-callback (lambda (data-box phase sym) #f)])
   (module source-name
           self
-          (unresolve-requires requires)
+          (fresh-requires requires)
+          recur-requires
           provides
           #f ; access
           language-info
+          realm
           min-phase-level max-phase-level
           phase-level-linklet-info-callback
           force-bulk-binding
@@ -134,25 +149,28 @@
           (current-code-inspector)
           submodule-names
           supermodule-name
-          get-all-variables))
+          get-all-variables
+          get-portal-syntax-callback))
 
 (struct module-instance (namespace
                          module                        ; can be #f for the module being expanded
                          [shifted-requires #:mutable]  ; computed on demand; shifted from `module-requires`
-                         phase-level-to-state          ; phase-level -> #f, 'available, 'trying-to-start, or 'started
+                         phase-level-to-state          ; phase-level -> #f, 'available, or 'started
                          [made-available? #:mutable]   ; no #f in `phase-level-to-state`?
                          [attached? #:mutable]         ; whether the instance has been attached elsewhere
-                         data-box)                     ; for use by module implementation
+                         data-box                      ; for use by module implementation
+                         portal-syntaxes)              ; for a module being expanded 
   #:authentic)
 
-(define (make-module-instance m-ns m)
+(define (make-module-instance m-ns m portal-syntaxes)
   (module-instance m-ns           ; namespace
                    m              ; module
                    #f             ; shifted-requires (not yet computed)
                    (make-small-hasheqv) ; phase-level-to-state
                    #f             ; made-available?
                    #f             ; attached?
-                   (box #f)))     ; data-box
+                   (box #f)       ; data-box
+                   portal-syntaxes))
 
 ;; ----------------------------------------
 
@@ -160,7 +178,8 @@
 (define (make-module-namespace ns
                                #:mpi name-mpi
                                #:root-expand-context root-expand-ctx
-                               #:for-submodule? for-submodule?)
+                               #:for-submodule? for-submodule?
+                               #:portal-syntaxes portal-syntaxes)
   (define phase 0) ; always start at 0 when compiling a module
   (define name (module-path-index-resolve name-mpi))
   (define m-ns
@@ -183,7 +202,7 @@
   (small-hash-set! (namespace-phase-to-namespace m-ns) phase m-ns)
   (define at-phase (make-hasheq))
   (hash-set! (namespace-module-instances m-ns) phase at-phase)
-  (hash-set! at-phase name (make-module-instance m-ns #f))
+  (hash-set! at-phase name (make-module-instance m-ns #f portal-syntaxes))
   m-ns)
 
 ;; ----------------------------------------
@@ -205,7 +224,7 @@
     ;; Register this module's exports for use in resolving bulk
     ;; bindings, so that bulk bindings can be shared among other
     ;; modules when unmarshaling; we don't do this without
-    ;; `with-submodules?` to avoid loeaking submodules being
+    ;; `with-submodules?` to avoid leaking submodules being
     ;; expanded, but see also `bind-all-provides!`
     (register-bulk-provide! (namespace-bulk-binding-registry ns)
                             mod-name
@@ -222,8 +241,10 @@
     (define run? (eq? 'started (small-hash-ref states phase #f)))
 
     (define at-phase (hash-ref (namespace-module-instances ns) phase))
-    (hash-set! at-phase mod-name (make-module-instance m-ns m))
-               
+    (hash-set! at-phase mod-name (make-module-instance m-ns m #f))
+
+    (set-module-instance-shifted-requires! prior-mi #f)
+
     (when visit?
       (namespace-module-visit! ns (namespace-mpi m-ns) phase))
     (when run?
@@ -233,24 +254,27 @@
   (when (module-cross-phase-persistent? prior-m)
     (raise-arguments-error 'module
                            "cannot redeclare cross-phase persistent module"
-                           "module name" mod-name))
+                           "module name" (module-name->error-string mod-name)))
   (when (and prior-mi
              (or (module-instance-attached? prior-mi)
                  (not (inspector-superior? (current-code-inspector)
                                            (namespace-inspector (module-instance-namespace prior-mi))))))
     (raise-arguments-error 'module
                            "current code inspector cannot redeclare module"
-                           "module name" mod-name)))
+                           "module name" (module-name->error-string mod-name))))
 
 (define (raise-unknown-module-error who mod-name)
   (raise-arguments-error who
                          "unknown module" 
-                         "module name" mod-name))
+                         "module name" (module-name->error-string mod-name)))
 
 (define (namespace->module-linklet-info ns name phase-level)
   (define m (namespace->module ns name))
   (and m
        ((module-phase-level-linklet-info-callback m) phase-level ns (module-inspector m))))
+
+(define (module-name->error-string mod-name)
+  (unquoted-printing-string (format "~a" mod-name)))
 
 ;; ----------------------------------------
 
@@ -265,7 +289,14 @@
         (let ([c-ns (or (namespace-root-namespace ns) ns)])
           (hash-ref (namespace-module-instances c-ns) name #f))
         (and complain-on-failure?
-             (error "no module instance found:" name 0-phase))))
+             (error 'require
+                    (string-append
+                     "namespace mismatch;\n"
+                     " reference to a module that is not instantiated\n"
+                     "  module: ~a\n"
+                     "  phase: ~a")
+                    name
+                    0-phase))))
   (if (and mi check-available-at-phase-level)
       (check-availablilty mi check-available-at-phase-level unavailable-callback)
       mi))
@@ -283,7 +314,8 @@
                                                             (make-small-hasheqv))]
                             [declaration-inspector (module-inspector m)]
                             [inspector (namespace-inspector existing-m-ns)]))
-  (define mi (make-module-instance m-ns m))
+  (define mi (make-module-instance m-ns m #f))
+  (set-module-instance-attached?! mi #t)
   (cond
    [(module-cross-phase-persistent? m)
     (small-hash-set! (namespace-phase-to-namespace m-ns) 0 m-ns)
@@ -324,7 +356,7 @@
                             [declaration-inspector (module-inspector m)]
                             [inspector (make-inspector (module-inspector m))]))
   (small-hash-set! (namespace-phase-to-namespace m-ns) 0-phase m-ns)
-  (define mi (make-module-instance m-ns m))
+  (define mi (make-module-instance m-ns m #f))
   (if (module-cross-phase-persistent? m)
       (hash-set! (namespace-module-instances ns) name mi)
       (let ([at-phase (or (hash-ref (namespace-module-instances ns) 0-phase #f)
@@ -369,10 +401,15 @@
 (define (namespace-module-instantiate! ns mpi instance-phase #:run-phase [run-phase (namespace-phase ns)]
                                        #:skip-run? [skip-run? #f]
                                        #:otherwise-available? [otherwise-available? #t]
-                                       #:seen [seen #hasheq()])
+                                       #:seen [seen #hasheq()]
+                                       #:seen-list [seen-list null]
+                                       #:minimum-inspector [minimum-inspector #f]
+                                       #:transitive-record [transitive-modules #f])
   (unless (module-path-index? mpi)
     (error "not a module path index:" mpi))
   (define name (module-path-index-resolve mpi #t))
+  (when (and transitive-modules (pair? seen-list))
+    (hash-set! transitive-modules name (hash-set (hash-ref transitive-modules name #hasheqv()) instance-phase #t)))
   (define m (namespace->module ns name))
   (unless m (raise-unknown-module-error 'instantiate name))
   (define (instantiate! instance-phase run-phase ns)
@@ -382,7 +419,10 @@
     (run-module-instance! mi ns #:run-phase run-phase
                           #:skip-run? skip-run?
                           #:otherwise-available? otherwise-available?
-                          #:seen seen))
+                          #:seen seen
+                          #:seen-list seen-list
+                          #:minimum-inspector minimum-inspector
+                          #:transitive-record transitive-modules))
   ;; If the module is cross-phase persistent, make sure it's instantiated
   ;; at phase 0 and registered in `ns` as phaseless; otherwise
   (cond
@@ -391,11 +431,49 @@
    [else
     (instantiate! instance-phase run-phase ns)]))
 
-(define (namespace-module-visit! ns mpi instance-phase #:visit-phase [visit-phase (namespace-phase ns)])
-  (namespace-module-instantiate! ns mpi instance-phase #:run-phase (add1 visit-phase)))
+(define (namespace-module-visit! ns mpi instance-phase #:visit-phase [visit-phase (namespace-phase ns)]
+                                 #:transitive-record [transitive-modules #f])
+  (namespace-module-instantiate! ns mpi instance-phase #:run-phase (add1 visit-phase)
+                                 #:transitive-record transitive-modules))
 
-(define (namespace-module-make-available! ns mpi instance-phase #:visit-phase [visit-phase (namespace-phase ns)])
-  (namespace-module-instantiate! ns mpi instance-phase #:run-phase (add1 visit-phase) #:skip-run? #t))
+(define (namespace-module-make-available! ns mpi instance-phase #:visit-phase [visit-phase (namespace-phase ns)]
+                                          #:transitive-record [transitive-modules #f])
+  (namespace-module-instantiate! ns mpi instance-phase #:run-phase (add1 visit-phase) #:skip-run? #t
+                                 #:transitive-record transitive-modules))
+
+(define (namespace-module-get-portal-syntax-lookup ns mpi phase-shift)
+  (define name (module-path-index-resolve mpi #t))
+  ;; Get or create a namespace for the module+phase combination:
+  (define ready-mi (namespace->module-instance ns name phase-shift))
+  (define (try-namespace-lookup ns phase sym)
+    (define v (namespace-get-transformer ns phase sym (lambda () #f)))
+    (and (portal-syntax? v)
+         (portal-syntax-content v)))
+  (cond
+    [(and ready-mi (module-instance-portal-syntaxes ready-mi))
+     => (lambda (portal-syntaxes)
+          (lambda (phase sym)
+            (hash-ref (hash-ref portal-syntaxes phase #hasheqv()) sym #f)))]
+    [(top-level-module-path-index? mpi)
+     (lambda (phase sym)
+       (try-namespace-lookup ns (phase+ phase phase-shift) sym))]
+    [else
+     (define mi (or ready-mi
+                    (let ([m (namespace->module ns name)])
+                      (unless m (raise-unknown-module-error 'identifier-binding-portal-syntax name))
+                      (namespace-create-module-instance! ns name phase-shift m mpi))))
+     (define m-ns (module-instance-namespace mi))
+     (define bulk-binding-registry (namespace-bulk-binding-registry m-ns))
+     (define m (module-instance-module mi))
+     (define insp (module-inspector m))
+     (define data-box (module-instance-data-box mi))
+     (define prep (module-prepare-instance m))
+     (prep data-box m-ns phase-shift mpi bulk-binding-registry insp)
+     (define get (module-get-portal-syntax-callback m))
+     (lambda (phase sym)
+       (or (get data-box phase sym)
+           ;; in case a top-level definition happened in the module's namespace:
+           (try-namespace-lookup m-ns phase sym)))]))
 
 ;; The `instance-phase` corresponds to the phase shift for the module
 ;; instances. The module may have content at different phase levels,
@@ -408,7 +486,10 @@
 (define (run-module-instance! mi ns #:run-phase run-phase
                               #:skip-run? skip-run? 
                               #:otherwise-available? otherwise-available?
-                              #:seen [seen #hasheq()])
+                              #:seen [seen #hasheq()]
+                              #:seen-list [seen-list null]
+                              #:minimum-inspector [minimum-inspector #f]
+                              #:transitive-record [transitive-modules #f])
   (performance-region
    ['eval 'requires]
    ;; Nothing to do if we've run this phase already and made the
@@ -416,12 +497,23 @@
    (define m-ns (module-instance-namespace mi))
    (define instance-phase (namespace-0-phase m-ns))
    (define run-phase-level (phase- run-phase instance-phase))
+   (define m (module-instance-module mi))
+   (define inspector (and m (module-inspector m)))
+   (when (and minimum-inspector inspector)
+     (unless (or (eq? inspector minimum-inspector)
+                 (inspector-superior? inspector minimum-inspector))
+       (error 'require
+              "cannot import module with weaker code inspector\n  module: ~a"
+              (module-path-index-resolve
+               (namespace-mpi (module-instance-namespace mi))))))
    (unless (and (or skip-run?
-                    (let ([v (small-hash-ref (module-instance-phase-level-to-state mi) run-phase-level #f)])
-                      (or (eq? 'started v)
-                          (eq? 'trying-to-start v))))
+                    (eq? 'started (small-hash-ref (module-instance-phase-level-to-state mi) run-phase-level #f)))
                 (or (not otherwise-available?)
-                    (module-instance-made-available? mi)))
+                    (module-instance-made-available? mi))
+                (or (not transitive-modules)
+                    ;; need to traverse cross-phase to get all transitive modules
+                    ;; registered, even though we won't have to do more than that
+                    (not (module-cross-phase-persistent? (module-instance-module mi)))))
      ;; Something to do...
      (define m (module-instance-module mi))
      (unless m
@@ -431,22 +523,26 @@
      (define bulk-binding-registry (namespace-bulk-binding-registry m-ns))
      
      (when (hash-ref seen mi #f)
-       (error 'require "import cycle detected during module instantiation"))
+       (error 'require
+              (apply string-append
+                     "import cycle detected during module instantiation\n"
+                     "  dependency chain:"
+                     (module-instances->indented-module-names mi seen-list))))
 
-     (unless (or skip-run?
-                 (eq? (small-hash-ref (module-instance-phase-level-to-state mi) run-phase-level #f) 'started))
-       ;; In case instantiating imported modules does something that triggers
-       ;; a force of available modules, make sure we don't try to instantiate
-       ;; while we're in the process of instantiating:
-       (small-hash-set! (module-instance-phase-level-to-state mi) run-phase-level 'trying-to-start))
-
-     ;; If we haven't shifted required mpis already, do that
+     ;; If we haven't shifted required mpis already, do that;
+     ;; the list of required mpis is pruned to the set that we
+     ;; need to explicitly instaniate, where others are presumed
+     ;; to be instantiated transitively and we should skip trying
+     ;; again for this module's direct require
      (unless (module-instance-shifted-requires mi)
        (set-module-instance-shifted-requires!
         mi
-        (for/list ([phase+mpis (in-list (module-requires m))])
+        (for/list ([phase+mpis (in-list (module-requires m))]
+                   [recurs (in-list (module-recur-requires m))])
           (cons (car phase+mpis)
-                (for/list ([req-mpi (in-list (cdr phase+mpis))])
+                (for/list ([req-mpi (in-list (cdr phase+mpis))]
+                           [recur? (in-list recurs)]
+                           #:when recur?)
                   (module-path-index-shift req-mpi
                                            (module-self m)
                                            mpi))))))
@@ -459,7 +555,10 @@
                                         #:run-phase run-phase
                                         #:skip-run? skip-run?
                                         #:otherwise-available? otherwise-available?
-                                        #:seen (hash-set seen mi #t))))
+                                        #:seen (hash-set seen mi #t)
+                                        #:seen-list (cons mi seen-list)
+                                        #:minimum-inspector inspector
+                                        #:transitive-record transitive-modules)))
      
      ;; Run or make available phases of the module body:
      (unless (label-phase? instance-phase)
@@ -546,13 +645,14 @@
 
 ;; ----------------------------------------
 
-;; ensure that each module path index is unresolved, so that resolving
-;; on instantiation will trigger module loads
-(define (unresolve-requires requires)
+;; ensure that each module path index is unresolved and does not share
+;; with oter instances, so that resolving on instantiation will
+;; trigger module loads
+(define (fresh-requires requires)
   (for/list ([phase+mpis (in-list requires)])
     (cons (car phase+mpis)
           (for/list ([req-mpi (in-list (cdr phase+mpis))])
-            (module-path-index-unresolve req-mpi)))))
+            (module-path-index-fresh req-mpi)))))
 
 ;; ----------------------------------------
 
@@ -567,3 +667,19 @@
                             'provided))))))
   (set-module-access! m access)
   access)
+
+;; ----------------------------------------
+
+(define (module-instances->indented-module-names mi seen-list)
+  (let ([mi->name (lambda (mi)
+                    (format "\n   ~a" (module-path-index-resolve
+                                       (namespace-mpi (module-instance-namespace mi)))))])
+    (cons
+     (mi->name mi)
+     (let loop ([seen-list seen-list])
+       (cond
+         [(null? seen-list) '()]
+         [(eq? mi (car seen-list))
+          (list (mi->name mi))]
+         [else
+          (cons (mi->name (car seen-list)) (loop (cdr seen-list)))])))))

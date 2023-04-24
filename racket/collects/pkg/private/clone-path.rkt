@@ -9,6 +9,7 @@
          "pkg-db.rkt"
          "catalog.rkt"
          "repo-path.rkt"
+         "git-url-scheme.rkt"
          "desc.rkt"
          "dirs.rkt"
          "print.rkt")
@@ -53,6 +54,7 @@
                                    from-command-line?
                                    convert-to-non-clone?
                                    prefetch-group)
+
   ;; A `repo-descs` is (hash repo (hash pkg-name desc) ...)
   (define (add-repo repo-descs repo name desc)
     (hash-set repo-descs repo
@@ -259,7 +261,7 @@
          (define-values (new-name new-type)
             (package-source->name+type src #f))
          (case new-type
-           [(git github)
+           [(git git-url github)
             (pkg-desc src 'clone name
                       (pkg-desc-checksum desc)
                       (pkg-desc-auto? desc)
@@ -309,7 +311,7 @@
                                 [(link static-link)
                                  (~a "\n  extra advice:\n"
                                      "   Your current installation is a directory link, and the directory might\n"
-                                     "   be a Git repostory checkout, but the package system doesn't know that.\n"
+                                     "   be a Git repository checkout, but the package system doesn't know that.\n"
                                      "   If so, try\n"
                                      "    cd " (simplify-path
                                                 (path->complete-path (cadr current-orig-pkg) (pkg-installed-dir)))
@@ -392,7 +394,7 @@
                              #:prefetch? prefetch?
                              #:prefetch-group prefetch-group))]
            [else #f])]
-         [(git github clone)
+         [(git git-url github clone)
           (define pkg-url (string->url (pkg-desc-source d)))
           (define-values (transport host port repo branch path)
             (split-git-or-hub-url #:type type pkg-url))
@@ -418,9 +420,11 @@
     [`(catalog ,lookup-name ,url-str)
      (pkg-desc url-str (if reject-existing?
                            'clone
-                           (if (equal? "github" (url-scheme (string->url url-str)))
-                               'github
-                               'git))
+                           (let ([scheme (url-scheme (string->url url-str))])
+                             (cond
+                               [(equal? "github" scheme) 'github]
+                               [(git-url-scheme? scheme) 'git-url]
+                               [else 'git])))
                name
                checksum auto? extra-path)]
     [`(url ,url-str)
@@ -432,7 +436,12 @@
         (pkg-desc url-str (if reject-existing? 'clone current-type) name
                   checksum auto? extra-path)]
        [else #f])]
-    [else #f]))
+    [`(git ,url-str)
+     (define-values (current-name current-type)
+       (package-source->name+type url-str 'git-url))
+     (pkg-desc url-str (if reject-existing? 'clone current-type) name
+               checksum auto? extra-path)]
+    [_ #f]))
 
 ;; For a `desc`, extract it's clone location, if it's a clone
 (define (desc-clone desc)
@@ -444,19 +453,23 @@
 
 ;; Change a clone-compatible desc into a clone desc:
 (define (convert-desc-to-clone d clone catalog-lookup-cache download-printf)
+  (define-values (name type) (package-source->name+type
+                              (pkg-desc-source d)
+                              (pkg-desc-type d)))
   (struct-copy pkg-desc d
+               [name (or (pkg-desc-name d)
+                         ;; preserve name used for lookup, since it could be
+                         ;; different from one inferred from the resolved source
+                         (and (eq? type 'name)
+                              name))]
                [source
-                (let ()
-                  (define-values (name type) (package-source->name+type 
-                                              (pkg-desc-source d) 
-                                              (pkg-desc-type d)))
-                  (if (eq? type 'name)
-                      ;; Since we got here, it must be that we have a
-                      ;; Git repo source cached:
-                      (package-catalog-lookup-source name
-                                                     catalog-lookup-cache
-                                                     download-printf)
-                      (pkg-desc-source d)))]
+                (if (eq? type 'name)
+                    ;; Since we got here, it must be that we have a
+                    ;; Git repo source cached:
+                    (package-catalog-lookup-source name
+                                                   catalog-lookup-cache
+                                                   download-printf)
+                    (pkg-desc-source d))]
                [type 'clone]
                [extra-path clone]))
 

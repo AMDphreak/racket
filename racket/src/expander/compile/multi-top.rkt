@@ -49,9 +49,11 @@
     (compiled-in-memory (hash->linklet-directory ht)
                         #f ; self
                         #f ; requires
+                        #f ; recur-requires
                         #f ; provides
                         #hasheqv()
                         #f
+                        #hasheqv()
                         #hasheqv()
                         #() ; mpis
                         #() ; syntax-literals

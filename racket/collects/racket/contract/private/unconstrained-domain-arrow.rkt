@@ -61,7 +61,7 @@
   (define range-contracts (unconstrained-domain->-ranges ctc))
   (define make-wrapper-proc (unconstrained-domain->-make-wrapper-proc ctc))
   (define late-neg-projections (map get/build-late-neg-projection range-contracts))
-  (define can-check-procedure-result-arity? (andmap any/c? range-contracts))
+  (define can-check-procedure-result-arity? (andmap prop:any/c? range-contracts))
   (define desired-procedure-result-arity (length range-contracts))
   (define chaperone-or-impersonate-procedure (if (chaperone-unconstrained-domain->? ctc)
                                                  chaperone-procedure
@@ -120,8 +120,8 @@
 
 (define-struct (impersonator-unconstrained-domain-> unconstrained-domain->) ()
   #:property
-  prop:chaperone-contract
-  (build-chaperone-contract-property
+  prop:contract
+  (build-contract-property
    #:trusted trust-me
    #:name unconstrained-domain->-name
    #:first-order unconstrained-domain->-first-order

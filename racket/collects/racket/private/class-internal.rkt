@@ -12,15 +12,17 @@
          racket/unsafe/undefined
          "class-undef.rkt"
          (for-syntax racket/stxparam
+                     racket/private/immediate-default
                      syntax/kerncase
                      syntax/stx
                      syntax/name
                      syntax/define
                      syntax/flatten-begin
                      syntax/private/boundmap
-                     syntax/parse
-                     syntax/intdef
-                     "classidmap.rkt"))
+                     syntax/parse/pre
+                     syntax/transformer
+                     "classidmap.rkt"
+                     "intdef-util.rkt"))
 
 (define insp (current-inspector)) ; for all opaque structures
 
@@ -42,7 +44,7 @@
               interface interface* interface?
               object% object? externalizable<%> printable<%> writable<%> equal<%>
               object=? object-or-false=? object=-hash-code
-              new make-object instantiate
+              new make-object instantiate dynamic-instantiate
               send send/apply send/keyword-apply send* send+ dynamic-send
               class-field-accessor class-field-mutator with-method
               get-field set-field! field-bound? field-names
@@ -364,14 +366,20 @@
              [expand
               (lambda (defn-or-expr)
                 (local-expand
-                 defn-or-expr
+                 (syntax-property defn-or-expr 'class-body #true)
                  expand-context
                  stop-forms
-                 def-ctx))])
-        (let loop ([l defn-and-exprs])
+                 def-ctx))]
+             [defn-and-exprs-in-scope
+               (for/list ([s defn-and-exprs])
+                 (internal-definition-context-add-scopes def-ctx s))])
+        (let loop ([l defn-and-exprs-in-scope])
           (if (null? l)
               null
               (let ([e (expand (car l))])
+                (define (copy-prop stx . ps) (for/fold ([stx stx])
+                                                       ([p ps])
+                                               (syntax-property stx p (syntax-property e p))))
                 (syntax-case e (begin define-syntaxes define-values)
                   [(begin . _)
                    (loop (append
@@ -384,10 +392,9 @@
                                          #'rhs
                                          'expression
                                          null)])
-                       (syntax-local-bind-syntaxes (syntax->list #'(id ...)) #'rhs def-ctx)
-                       (with-syntax ([(id ...) (map syntax-local-identifier-as-binding
-                                                    (syntax->list #'(id ...)))])
-                         (cons (syntax/loc e (define-syntaxes (id ...) rhs))
+                       (with-syntax ([(id ...) (syntax-local-bind-syntaxes (syntax->list #'(id ...)) #'rhs def-ctx)])
+                         (cons (copy-prop (syntax/loc e (define-syntaxes (id ...) rhs))
+                                          'disappeared-use 'origin 'disappeared-binding)
                                (loop (cdr l))))))]
                   [(define-values (id ...) rhs)
                    (andmap identifier? (syntax->list #'(id ...)))
@@ -418,7 +425,7 @@
       (let-values ([(in out) (extract kws l void)])
         in))
     
-    (define (flatten alone l)
+    (define ((flatten/def-ctx def-ctx) alone l)
       (apply append
              (map (lambda (i)
                     (let ([l (let ([l (syntax->list i)])
@@ -430,9 +437,9 @@
                       (if alone
                           (map (lambda (i)
                                  (if (identifier? i)
-                                     (alone (syntax-local-identifier-as-binding i))
-                                     (cons (syntax-local-identifier-as-binding (stx-car i))
-                                           (syntax-local-identifier-as-binding (stx-car (stx-cdr i))))))
+                                     (alone (syntax-local-identifier-as-binding i def-ctx))
+                                     (cons (syntax-local-identifier-as-binding (stx-car i) def-ctx)
+                                           (syntax-local-identifier-as-binding (stx-car (stx-cdr i)) def-ctx))))
                                l)
                           l)))
                   l)))
@@ -449,8 +456,8 @@
                     (cons (list a a) (stx-cdr i))
                     i))]))
     
-    (define (norm-init/field-iid norm) (syntax-local-identifier-as-binding (stx-car (stx-car norm))))
-    (define (norm-init/field-eid norm) (syntax-local-identifier-as-binding (stx-car (stx-cdr (stx-car norm)))))
+    (define ((norm-init/field-iid/def-ctx def-ctx) norm) (syntax-local-identifier-as-binding (stx-car (stx-car norm)) def-ctx))
+    (define ((norm-init/field-eid/def-ctx def-ctx) norm) (syntax-local-identifier-as-binding (stx-car (stx-cdr (stx-car norm))) def-ctx))
     
     ;; expands an expression enough that we can check whether it has
     ;; the right form for a method; must use local syntax definitions
@@ -528,7 +535,7 @@
                                              [(pair? vars)
                                               (syntax-case (car vars) ()
                                                 [(id expr)
-                                                 (identifier? #'id)
+                                                 (and (identifier? #'id) (not (immediate-default? #'expr)))
                                                  ;; optional argument; need to wrap arg expression
                                                  (cons
                                                   (with-syntax ([expr (syntax/loc #'expr
@@ -684,6 +691,9 @@
                    [(the-finder) (datum->syntax #f (gensym 'find-self))])
         
         (let* ([def-ctx (syntax-local-make-definition-context)]
+               [norm-init/field-iid (norm-init/field-iid/def-ctx def-ctx)]
+               [norm-init/field-eid (norm-init/field-eid/def-ctx def-ctx)]
+               [flatten (flatten/def-ctx def-ctx)]
                [localized-map (make-bound-identifier-mapping)]
                [any-localized? #f]
                [localize/set-flag (lambda (id)
@@ -693,8 +703,7 @@
                                       id2))]
                [bind-local-id (lambda (orig-id)
                                 (let ([l (localize/set-flag orig-id)]
-                                      [id (syntax-local-identifier-as-binding orig-id)])
-                                  (syntax-local-bind-syntaxes (list id) #f def-ctx)
+                                      [id (car (syntax-local-bind-syntaxes (list orig-id) #f def-ctx))])
                                   (bound-identifier-mapping-put!
                                    localized-map
                                    id
@@ -955,30 +964,7 @@
                           [(rename-inners)
                            (flatten pair (extract* (list (quote-syntax -rename-inner)) decls))])
               
-              ;; this function copies properties from the declarations expressions
-              ;; that get dropped from a class form (e.g. (public x) from the body
-              ;; of a class). It doesn't use syntax-track-origin because there is
-              ;; no residual code that it would make sense to be the result of expanding
-              ;; those away. So, instead we only look at a few properties (as below).
-              ;; Also, add 'disappeared-binding properties from `ctx`.
-              (define (add-decl-props stx)
-                (internal-definition-context-track
-                 def-ctx
-                 (for/fold ([stx stx])
-                           ([decl (in-list (append inspect-decls decls))])
-                   (define (copy-prop src dest stx)
-                     (syntax-property 
-                      stx
-                      dest
-                      (cons (syntax-property decl src)
-                            (syntax-property stx dest))))
-                   (copy-prop
-                    'origin 'disappeared-use
-                    (copy-prop
-                     'disappeared-use 'disappeared-use
-                     (copy-prop
-                      'disappeared-binding 'disappeared-binding
-                      stx))))))
+
               ;; At most one inspect:
               (unless (or (null? inspect-decls)
                           (null? (cdr inspect-decls)))
@@ -1155,9 +1141,15 @@
                            (lambda (what l)
                              (let ([ht (make-hasheq)])
                                (for-each (lambda (id)
-                                           (when (hash-ref ht (syntax-e id) #f)
+                                           (define key (let ([l-id (lookup-localize id)])
+                                                         (if (identifier? l-id)
+                                                             (syntax-e l-id)
+                                                             ;; For a given localized id, `lookup-localize`
+                                                             ;; will return the same (eq?) value
+                                                             l-id)))
+                                           (when (hash-ref ht key #f)
                                              (bad (format "duplicate declared external ~a name" what) id))
-                                           (hash-set! ht (syntax-e id) #t))
+                                           (hash-set! ht key #t))
                                          l)))])
                       ;; method names
                       (check-dup "method" (map cdr (append publics overrides augrides
@@ -1470,8 +1462,6 @@
                                       methods)))]
                                 [lookup-localize-cdr (lambda (p) (lookup-localize (cdr p)))])
                             
-                            (internal-definition-context-seal def-ctx)
-                            
                             ;; ---- build final result ----
                             (with-syntax ([public-names (map lookup-localize-cdr publics)]
                                           [public-final-names (map lookup-localize-cdr public-finals)]
@@ -1535,6 +1525,8 @@
                                           [private-field-names private-field-names])
                               (class-syntax-protect
                               (add-decl-props
+                              def-ctx
+                              (append inspect-decls decls)
                               (quasisyntax/loc stx
                                 (detect-field-unsafe-undefined
                                  compose-class
@@ -1730,7 +1722,14 @@
                  #'super-expression 
                  #f #f
                  (syntax->list #'(interface-expr ...))
-                 (syntax->list #'(defn-or-expr ...)))]))
+                 (syntax->list #'(defn-or-expr ...)))]
+          [(_  super-expression no-parens-interface-expr
+               defn-or-expr
+               ...)
+           (raise-syntax-error 'class*
+                               "expected a sequence of interfaces"
+                               stx
+                               #'no-parens-interface-expr)]))
      ;; class
      (lambda (stx)
         (syntax-case stx ()
@@ -2216,7 +2215,8 @@ last few projections.
          [augonly-names (append pubment-names overment-names augment-names)]
          ;; Misc utilities
          [no-new-methods? (null? public-names)]
-         [no-method-changes? (and (null? public-names)
+         [no-method-changes? (and (null? interfaces)
+                                  (null? public-names)
                                   (null? override-names)
                                   (null? augride-names)
                                   (null? final-names))]
@@ -2662,7 +2662,7 @@ last few projections.
                                   (unless (vector-ref meth-flags index)
                                     (vector-set! meth-flags index (not make-struct:prim)))
                                   
-                                  ;; clear out external contracts for methods that are overriden
+                                  ;; clear out external contracts for methods that are overridden
                                   (when wci-neg-extra-arg-vec
                                     (vector-set! wci-neg-extra-arg-vec index #f)
                                     (hash-remove! wci-neg-acceptors-ht method)))
@@ -2818,7 +2818,7 @@ last few projections.
                                            (send o internalize args)
                                            o))
                                        (lambda (args)
-                                         (let ([o (object-make)])
+                                         (let ([o (make-object-uninitialized c `(class ,name))])
                                            ((class-fixup c) o args)
                                            o)))
                                    (if (interface-extension? i externalizable<%>)
@@ -3437,6 +3437,20 @@ An example
                        kwarg)]))
                  (syntax->list (syntax (kwarg ...))))])))
 
+(define-syntax dynamic-instantiate
+  (make-variable-like-transformer #'(make-dynamic-instantiate (current-contract-region))))
+(define ((make-dynamic-instantiate blame) class pos-args named-args)
+  (unless (class? class)
+    (raise-argument-error 'dynamic-instantiate "class?" class))
+  (unless (list? pos-args)
+    (raise-argument-error 'dynamic-instantiate "list?" pos-args))
+  (unless (and (list? named-args)
+               (for/and ([named-arg (in-list named-args)])
+                 (and (pair? named-arg)
+                      (symbol? (car named-arg)))))
+    (raise-argument-error 'dynamic-instantiate "(listof (cons/c symbol? any/c))" named-args))
+  (do-make-object blame class pos-args named-args))
+
 (define (alist->sexp alist)
   (map (lambda (pair) (list (car pair) (cdr pair))) alist))
 
@@ -3557,6 +3571,9 @@ An example
     (define neg-blame (cadddr info))
     (contract ctc meth pos-blame neg-blame m #f)))
 
+(define (make-object-uninitialized class blame)
+  (do-make-object blame class 'uninit 'uninit))
+
 (define (do-make-object blame class by-pos-args named-args)
   (cond
     [(impersonator-prop:has-wrapped-class-neg-party? class)
@@ -3595,8 +3612,9 @@ An example
   ;; Generate correct class by concretizing methods w/interface ctcs
   (define concrete-class (fetch-concrete-class class blame))
   (define o ((class-make-object concrete-class)))
-  (continue-make-object o concrete-class by-pos-args named-args #t 
-                        wrapped-blame wrapped-neg-party init-proj-pairs)
+  (unless (eq? by-pos-args 'uninit)
+    (continue-make-object o concrete-class by-pos-args named-args #t
+                          wrapped-blame wrapped-neg-party init-proj-pairs))
   o)
 
 (define (get-field-alist obj)
@@ -4713,7 +4731,9 @@ An example
                          [(or (as-write-list? val)
                               (as-value-list? val))
                           (apply string-append
-                                 (for/list ([v (in-list (as-write-list-content val))])
+                                 (for/list ([v (in-list (if (as-write-list? val)
+                                                            (as-write-list-content val)
+                                                            (as-value-list-content val)))])
                                    (format (if (as-write-list? val)
                                                "\n   ~s"
                                                "\n   ~e")
@@ -4907,7 +4927,7 @@ An example
          (rename-out [_interface interface]) interface* interface?
          object% object? object=? object-or-false=? object=-hash-code
          externalizable<%> printable<%> writable<%> equal<%>
-         new make-object instantiate
+         new make-object instantiate dynamic-instantiate
          get-field set-field! field-bound? field-names
          dynamic-get-field dynamic-set-field!
          send send/apply send/keyword-apply send* send+ dynamic-send

@@ -3,22 +3,28 @@
 ;;       [http://scheme2006.cs.uchicago.edu/07-clinger.pdf]
 
 (module case '#%kernel
-  (#%require '#%paramz '#%unsafe "small-scheme.rkt" "define.rkt" "fixnum.rkt"
-             (for-syntax '#%kernel "small-scheme.rkt" "stxcase-scheme.rkt"
-                         "qqstx.rkt" "define.rkt" "sort.rkt" "fixnum.rkt"))
+  (#%require '#%paramz '#%unsafe "qq-and-or.rkt" "cond.rkt" "define.rkt" "fixnum.rkt"
+             (for-syntax '#%kernel "define-et-al.rkt" "qq-and-or.rkt" "cond.rkt"
+                         "stxcase-scheme.rkt"
+                         "qqstx.rkt" "define.rkt" "sort.rkt" "fixnum.rkt"
+                         "stx.rkt"))
   (#%provide case)
-  
+
   (define-syntax (case stx)
-    (syntax-case stx (else)
+    (syntax-case stx ()
       ;; Empty case
       [(_ v)
        (syntax-protect
         (syntax/loc stx (#%expression (begin v (void)))))]
       
       ;; Else-only case
-      [(_ v [else e es ...])
-       (syntax-protect
-        (syntax/loc stx (#%expression (begin v (let-values () e es ...)))))]
+      [(_ v [maybe-else e es ...])
+       (and (identifier? #'maybe-else) (free-identifier=? #'else #'maybe-else))
+       (syntax-property
+        (syntax-protect
+         (syntax/loc stx (#%expression (begin v (let-values () e es ...)))))
+        'disappeared-use
+        (list (syntax-local-introduce #'maybe-else)))]
       
       ;; If we have a syntactically correct form without an 'else' clause,
       ;; add the default 'else' and try again.
@@ -27,13 +33,17 @@
         (syntax/loc stx (self v [(k ...) e1 e2 ...] ... [else (void)])))]
       
       ;; The general case
-      [(_ v [(k ...) e1 e2 ...] ... [else x1 x2 ...])
-       (syntax-protect
-        (if (< (length (syntax-e #'(k ... ...))) *sequential-threshold*)
-            (syntax/loc stx (let ([tmp v])
-                              (case/sequential tmp [(k ...) e1 e2 ...] ... [else x1 x2 ...])))
-            (syntax/loc stx (let ([tmp v])
-                              (case/dispatch   tmp [(k ...) e1 e2 ...] ... [else x1 x2 ...])))))]
+      [(_ v [(k ...) e1 e2 ...] ... [maybe-else x1 x2 ...])
+       (and (identifier? #'maybe-else) (free-identifier=? #'else #'maybe-else))
+       (syntax-property
+        (syntax-protect
+         (if (< (length (syntax-e #'(k ... ...))) *sequential-threshold*)
+             (syntax/loc stx (let ([tmp v])
+                               (case/sequential tmp [(k ...) e1 e2 ...] ... [else x1 x2 ...])))
+             (syntax/loc stx (let ([tmp v])
+                               (case/dispatch   tmp [(k ...) e1 e2 ...] ... [else x1 x2 ...])))))
+        'disappeared-use
+        (list (syntax-local-introduce #'maybe-else)))]
       
       ;; Error cases
       [(_ v clause ...)
@@ -157,7 +167,11 @@
                                          #,exp))]
                           [exp (if (null? (consts-fixnum ks))
                                    exp
-                                   #`(if (fixnum-for-every-system? v)
+                                   #`(if #,(if (null? (consts-other ks))
+                                               ;; can check for fixnum
+                                               #'(fixnum? v)
+                                               ;; maybe could-be-fixnum numbers are in `others`
+                                               #'(fixnum-for-every-system? v))
                                          #,(dispatch-fixnum #'v (consts-fixnum ks))
                                          #,exp))])
                      exp)])

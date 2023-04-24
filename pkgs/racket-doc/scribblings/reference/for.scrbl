@@ -1,5 +1,8 @@
 #lang scribble/doc
-@(require "mz.rkt")
+@(require "mz.rkt"
+          (for-label syntax/for-body
+                     syntax/parse
+                     syntax/parse/define))
 
 @title[#:tag "for"]{Iterations and Comprehensions: @racket[for], @racket[for/list], ...}
 
@@ -18,7 +21,9 @@ The @racket[for] iteration forms are based on SRFI-42
                            [(id ...) seq-expr]
                            (code:line #:when guard-expr)
                            (code:line #:unless guard-expr)
-                           break-clause]
+                           (code:line #:do [do-body ...])
+                           break-clause
+                           (code:line #:splice (splicing-id . form))]
                [break-clause (code:line #:break guard-expr)
                              (code:line #:final guard-expr)]
                [body-or-break body
@@ -55,7 +60,7 @@ a sequence containing a single element. All of the @racket[id]s must
 be distinct according to @racket[bound-identifier=?].
 
 If any @racket[for-clause] has the form @racket[#:when guard-expr],
-then only the preceding clauses (containing no @racket[#:when] or @racket[#:unless])
+then only the preceding clauses (containing no @racket[#:when], @racket[#:unless], or @racket[#:do])
 determine iteration as above, and the @racket[body] is effectively
 wrapped as
 
@@ -64,9 +69,20 @@ wrapped as
   (for (for-clause ...) body ...+))
 ]
 
-using the remaining @racket[for-clauses]. A @racket[for-clause] of
+using the remaining @racket[for-clause]s. A @racket[for-clause] of
 the form @racket[#:unless guard-expr] corresponds to the same transformation
-with @racket[unless] in place of @racket[when].
+with @racket[unless] in place of @racket[when]. A @racket[for-clause] of
+the form @racket[#:do [do-body ...]] similarly creates nesting and
+corresponds to
+
+@racketblock[
+(let ()
+  do-body ...
+  (for (for-clause ...) body ...+))
+]
+
+where the @racket[do-body] forms may introduce definitions that are
+visible in the remaining @racket[for-clause]s.
 
 A @racket[#:break guard-expr] clause is similar to a
 @racket[#:unless guard-expr] clause, but when @racket[#:break]
@@ -81,6 +97,19 @@ iteration and preventing later @racket[body] evaluations, a
 @racket[#:break guard-expr] or @racket[#:final guard-expr]
 clause starts a new internal-definition context.
 
+A @racket[#:splice (splicing-id . form)] clause is replaced by the
+sequence of forms that are produced by expanding @racket[(splicing-id
+. form)], where @racket[splicing-id] is bound using
+@racket[define-splicing-for-clause-syntax]. The binding context of
+that expansion includes previous binding from any clause preceding
+both the @racket[#:splice] form and a @racket[#:when],
+@racket[#:unless], @racket[#:do], @racket[#:break], or
+@racket[#:final] form. The result of a @racket[#:splice] expansion can
+include more @racket[#:splice] forms to further interleave clause
+binding and expansion. Support for @racket[#:splice] clauses is
+intended less for direct use in source @racket[for] forms than for
+building new forms that expand to @racket[for].
+
 In the case of @tech{list} and @tech{stream} sequences, the
 @racket[for] form itself does not keep each element reachable. If a
 list or stream produced by a @racket[seq-expr] is otherwise
@@ -90,12 +119,23 @@ unreachable, and if the @racket[for] body can no longer reference an
 constructor supports additional sequences that behave like lists and
 streams in this way.
 
+If a @racket[seq-expr] is a quoted literal list, vector, exact integer,
+string, byte string, immutable hash, or expands to such a literal,
+then it may be treated as if a sequence transformer such as
+@racket[in-list] was used, unless the @racket[seq-expr] has a true
+value for the @indexed-racket['for:no-implicit-optimization] syntax
+property; in most cases this improves performance.
+
 @examples[
 (for ([i '(1 2 3)]
       [j "abc"]
       #:when (odd? i)
       [k #2(#t #f)])
   (display (list i j k)))
+(for ([i '(1 2 3)]
+      #:do [(define neg-i (* i -1))]
+      [j (list neg-i 0 i)])
+  (display (list j)))
 (for ([(i j) #hash(("a" . 1) ("b" . 20))])
   (display (list i j)))
 (for ([i '(1 2 3)]
@@ -119,7 +159,10 @@ streams in this way.
   (error "doesn't get here"))
 ]
 
-@history[#:changed "6.7.0.4" @elem{Added support for the optional second result.}]}
+@history[#:changed "6.7.0.4" @elem{Added support for the optional second result.}
+         #:changed "7.8.0.11" @elem{Added support for implicit optimization.}
+         #:changed "8.4.0.2" @elem{Added @racket[#:do].}
+         #:changed "8.4.0.3" @elem{Added @racket[#:splice].}]}
 
 @defform[(for/list (for-clause ...) body-or-break ... body)]{ Iterates like
 @racket[for], but that the last expression in the @racket[body]s must
@@ -181,20 +224,25 @@ mutate a shared vector.}
 @defform[(for/hash (for-clause ...) body-or-break ... body)]
 @defform[(for/hasheq (for-clause ...) body-or-break ... body)]
 @defform[(for/hasheqv (for-clause ...) body-or-break ... body)]
+@defform[(for/hashalw (for-clause ...) body-or-break ... body)]
 )]{
 
 Like @racket[for/list], but the result is an immutable @tech{hash
 table}; @racket[for/hash] creates a table using @racket[equal?] to
 distinguish keys, @racket[for/hasheq] produces a table using
-@racket[eq?], and @racket[for/hasheqv] produces a table using
-@racket[eqv?]. The last expression in the @racket[body]s must return
+@racket[eq?], @racket[for/hasheqv] produces a table using
+@racket[eqv?], and @racket[for/hashalw] produces a table using
+@racket[equal-always?].
+The last expression in the @racket[body]s must return
 two values: a key and a value to extend the hash table accumulated by
 the iteration.
 
 @examples[
 (for/hash ([i '(1 2 3)])
   (values i (number->string i)))
-]}
+]
+
+@history[#:changed "8.5.0.3" @elem{Added the @racket[for/hashalw] form.}]}
 
 
 @defform[(for/and (for-clause ...) body-or-break ... body)]{ Iterates like
@@ -267,12 +315,17 @@ is accumulated into a result with @racket[*].
 Similar to @racket[for/list], but the last @racket[body] expression
 should produce as many values as given @racket[id]s.
 The @racket[id]s are bound to
-the lists accumulated so far in the @racket[for-clause]s and
+the reversed lists accumulated so far in the @racket[for-clause]s and
 @racket[body]s.
 
 If a @racket[result-expr] is provided, it is used as with @racket[for/fold]
 when iteration terminates;
-otherwise, the result is as many lists as supplied @racket[id]s
+otherwise, the result is as many lists as supplied @racket[id]s.
+
+The scope of @racket[id] bindings is the same as for accumulator
+identifiers in @racket[for/fold]. Mutating a @racket[id] affects the
+accumulated lists, and mutating it in a way that produces a non-list
+can cause a final @racket[reverse] for each @racket[id] to fail.
 
 @examples[
 (for/lists (l1 l2 l3)
@@ -342,12 +395,6 @@ terminates, if a @racket[result-expr] is provided then the result of the
  otherwise the results of the @racket[for/fold] expression are the
  accumulator values.
 
-An @racket[accum-id] and a binding from a @racket[for-clause] can be
-the same identifier. In that case, the @racket[accum-id] binding
-shadows the one in a @racket[for-clause] within the
-@racket[body-or-break] and @racket[body] forms (even though,
-syntactically, a @racket[for-clause] is closer to to the body).
-
 @examples[
 (for/fold ([sum 0]
            [rev-roots null])
@@ -364,6 +411,24 @@ syntactically, a @racket[for-clause] is closer to to the body).
     [else (values (cons x acc)
                   (hash-set seen x #t))]))
 ]
+
+The binding and evaluation order of @racket[accum-id]s and
+@racket[init-expr]s do not completely follow the textual,
+left-to-right order relative to the @racket[for-clause]s. Instead, the
+sequence expressions in @racket[for-clause]s that determine the
+outermost iteration are evaluated first, then the @racket[init-expr]s
+are evaluated and the @racket[accum-id]s are bound, and finally the
+outermost iteration's identifiers are bound. One consequence is that
+the @racket[accum-id]s are not bound in @racket[for-clause]s for the
+outermost initialization. At the same time, when a @racket[accum-id]
+is used as a @racket[for-clause] binding for the outermost iteration,
+the @racket[for-clause] binding shadows the @racket[accum-id] binding
+in the loop body (which is what you would expect syntactically).
+A fresh variable for each @racket[accum-id] (at a
+fresh location) is bound in each nested iteration that is created by a
+later group for @racket[for-clause]s (after a @racket[#:when] or
+@racket[#:unless], for example).
+
 @history[#:changed "6.11.0.1" @elem{Added the @racket[#:result] form.}]
 }
 
@@ -526,6 +591,7 @@ nested.
 @defform[(for*/hash (for-clause ...) body-or-break ... body)]
 @defform[(for*/hasheq (for-clause ...) body-or-break ... body)]
 @defform[(for*/hasheqv (for-clause ...) body-or-break ... body)]
+@defform[(for*/hashalw (for-clause ...) body-or-break ... body)]
 @defform[(for*/and (for-clause ...) body-or-break ... body)]
 @defform[(for*/or (for-clause ...) body-or-break ... body)]
 @defform[(for*/sum (for-clause ...) body-or-break ... body)]
@@ -548,7 +614,8 @@ Like @racket[for/list], etc., but with the implicit nesting of
   (list i j))
 ]
 
-@history[#:changed "7.3.0.3" @elem{Added the @racket[for*/foldr] form.}]}
+@history[#:changed "7.3.0.3" @elem{Added the @racket[for*/foldr] form.}
+         #:changed "8.5.0.3" @elem{Added the @racket[for*/hashalw] form.}]}
 
 @;------------------------------------------------------------------------
 @section{Deriving New Iteration Forms}
@@ -560,19 +627,21 @@ Like @racket[for/list], etc., but with the implicit nesting of
 Like @racket[for/fold], but the extra @racket[orig-datum] is used as the
 source for all syntax errors.
 
+A macro that expands to @racket[for/fold/derived] should typically use
+@racket[split-for-body] to handle the possibility of macros and other
+definitions mixed with keywords like @racket[#:break].
+
 @mz-examples[#:eval for-eval
-(define-syntax (for/digits stx)
-  (syntax-case stx ()
-    [(_ clauses body ... tail-expr)
-     (with-syntax ([original stx])
-       #'(let-values
-             ([(n k)
-               (for/fold/derived
-                   original ([n 0] [k 1])
-                 clauses
-                 body ...
-                 (values (+ n (* tail-expr k)) (* k 10)))])
-           n))]))
+(require (for-syntax syntax/for-body)
+         syntax/parse/define)
+
+(define-syntax-parse-rule (for/digits clauses body ... tail-expr)
+  #:with original this-syntax
+  #:with ((pre-body ...) (post-body ...)) (split-for-body this-syntax #'(body ... tail-expr))
+  (for/fold/derived original ([n 0] [k 1] #:result n)
+    clauses
+    pre-body ...
+    (values (+ n (* (let () post-body ...) k)) (* k 10))))
 
 @code:comment{If we misuse for/digits, we can get good error reporting}
 @code:comment{because the use of orig-datum allows for source correlation:}
@@ -589,18 +658,18 @@ source for all syntax errors.
 
 
 @code:comment{Another example: compute the max during iteration:}
-(define-syntax (for/max stx)
-  (syntax-case stx ()
-    [(_ clauses body ... tail-expr)
-     (with-syntax ([original stx])
-       #'(for/fold/derived original
-           ([current-max -inf.0])
-           clauses
-           body ...
-           (define maybe-new-max tail-expr)
-           (if (> maybe-new-max current-max)
-               maybe-new-max
-               current-max)))]))
+(define-syntax-parse-rule (for/max clauses body ... tail-expr)
+  #:with original this-syntax
+  #:with ((pre-body ...) (post-body ...)) (split-for-body this-syntax #'(body ... tail-expr))
+  (for/fold/derived original
+    ([current-max -inf.0])
+    clauses
+    pre-body ...
+    (define maybe-new-max (let () post-body ...))
+    (if (> maybe-new-max current-max)
+        maybe-new-max
+        current-max)))
+
 (for/max ([n '(3.14159 2.71828 1.61803)]
           [s '(-1      1       1)])
   (* n s))
@@ -614,17 +683,16 @@ source for all syntax errors.
 Like @racket[for*/fold], but the extra @racket[orig-datum] is used as the source for all syntax errors.
 
 @mz-examples[#:eval for-eval
-(define-syntax (for*/digits stx)
-  (syntax-case stx ()
-    [(_ clauses body ... tail-expr)
-     (with-syntax ([original stx])
-       #'(let-values
-             ([(n k)
-               (for*/fold/derived original ([n 0] [k 1])
-                 clauses
-                 body ...
-                 (values (+ n (* tail-expr k)) (* k 10)))])
-           n))]))
+(require (for-syntax syntax/for-body)
+         syntax/parse/define)
+
+(define-syntax-parse-rule (for*/digits clauses body ... tail-expr)
+  #:with original this-syntax
+  #:with ((pre-body ...) (post-body ...)) (split-for-body this-syntax #'(body ... tail-expr))
+  (for*/fold/derived original ([n 0] [k 1] #:result n)
+    clauses
+    pre-body ...
+    (values (+ n (* (let () post-body ...) k)) (* k 10))))
 
 (eval:error
  (for*/digits
@@ -673,7 +741,7 @@ When @racket[id] is used in any other expression position, the result
 of @racket[expr-transform-expr] is used. If it is a procedure of zero
 arguments, then the result must be an identifier @racket[_other-id],
 and any use of @racket[id] is converted to a use of
-@racket[_other-id]. Otherwise,@racket[expr-transform-expr] must
+@racket[_other-id]. Otherwise, @racket[expr-transform-expr] must
 produce a procedure (of one argument) that is used as a macro
 transformer.
 
@@ -705,8 +773,8 @@ instead of @racket[syntax-protect].
             ([i n])
             (not (zero? i))
             ([(j d) (quotient/remainder i 10)])
-            #true
-            #true
+            #t
+            #t
             [j])]]
       [_ #f])))
 
@@ -753,6 +821,12 @@ context of the @racket[:do-in] use. The identifiers bound by the
 @racket[for] clause are typically part of the @racket[([(inner-id ...)
 inner-expr] ...)] section.
 
+Beware that @racket[_body-bindings] and @racket[_done-expr] can
+contain arbitrary expressions, potentially including @racket[set!] on
+@racket[outer-id] or @racket[inner-id] identifiers if they are visible
+in the original @racket[for] form, so beware of depending on such
+identifiers in @racket[post-guard] and @racket[loop-arg].
+
 The actual @racket[loop] binding and call has additional loop
 arguments to support iterations in parallel with the @racket[:do-in]
 form, and the other pieces are similarly accompanied by pieces from
@@ -762,15 +836,39 @@ For an example of @racket[:do-in], see @racket[define-sequence-syntax].}
 
 @defproc[(for-clause-syntax-protect [stx syntax?]) syntax?]{
 
-Provided @racket[for-syntax]: Like @racket[syntax-protect], but allows
-the @racket[for] expander to @tech{disarm} the result syntax object,
-and arms the pieces of a clause instead of the entire syntax object.
+Provided @racket[for-syntax]: Like @racket[syntax-protect], just
+returns its argument.
 
-Use this function to protect the result of a
-@racket[_clause-transform-expr] that is bound by
-@racket[define-sequence-syntax].}
+@history[#:changed "8.2.0.4" @elem{Changed to just return @racket[stx] instead
+                                   of returning ``armed'' syntax.}]}
 
+@defform[(define-splicing-for-clause-syntax id proc-expr)]{
 
+Binds @racket[id] for reference via a @racket[#:splice] clause in a
+@racket[for] form. The @racket[proc-expr] expression is evaluated in
+@tech{phase level} 1, and it must produce a procedure that accepts a
+syntax object and returns a syntax object.
+
+The procedure's input is a syntax object that appears after
+@racket[#:splice]. The result syntax object must be a parenthesized
+sequence of forms, and the forms are spliced in place of the
+@racket[#:splice] clause in the enclosing @racket[for] form.
+
+@mz-examples[#:eval for-eval
+(define-splicing-for-clause-syntax cross3
+  (lambda (stx)
+    (syntax-case stx ()
+      [(_ n m) #'([n (in-range 3)]
+                  #:when #t
+                  [m (in-range 3)])])))
+
+(for (#:splice (cross3 n m))
+  (println (list n m)))
+]
+
+@history[#:added "8.4.0.3"]}
+
+@;------------------------------------------------------------------------
 @section{Do Loops}
 
 @defform/subs[(do ([id init-expr step-expr-maybe] ...)

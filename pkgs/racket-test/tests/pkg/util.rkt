@@ -19,8 +19,9 @@
 
 ;; Use a consistent directory, so that individual tests can be
 ;; run after "tests-create.rkt":
-(define-runtime-path test-directory (build-path (find-system-path 'temp-dir)
-                                                "pkg-test-work"))
+(define test-directory (build-path (find-system-path 'temp-dir)
+                                   (string-append "pkg-test-work"
+                                                  (or racket-run-suffix ""))))
 
 (define (sync-test-directory)
   (printf "Syncing test directory\n")
@@ -48,7 +49,6 @@
   (define tmp-dir
     (make-temporary-file ".racket.fake-installation~a" 'directory
                          (find-system-path 'temp-dir)))
-  (make-directory* tmp-dir)
   (dynamic-wind
       void
       (λ ()
@@ -104,7 +104,6 @@
   (define tmp-dir
     (make-temporary-file ".racket.fake-root~a" 'directory
                          (find-system-path 'home-dir)))
-  (make-directory* tmp-dir)
   (dynamic-wind
       void
       (λ ()
@@ -113,7 +112,7 @@
          (parameterize ([current-environment-variables
                          (environment-variables-copy
                           (current-environment-variables))])
-           (putenv "PLTADDONDIR" tmp-dir-s)
+           (putenv "PLTUSERHOME" tmp-dir-s)
            (t)))
       (λ ()
         (delete-directory/files tmp-dir))))
@@ -256,13 +255,13 @@
   (initialize-catalogs/git))
 
 (define (initialize-catalogs/git)
-  (define pkg-git.git (make-temporary-file "pkg-git-~a.git"))
-  (delete-file pkg-git.git)
+  (define pkg-git.git (make-temporary-file "pkg-git-~a.git" 'directory))
   (parameterize ([current-directory (build-path test-source-directory "test-pkgs")])
-    (copy-directory/files (build-path test-source-directory "test-pkgs" "pkg-git") pkg-git.git))
+    (for ([f (directory-list "pkg-git")])
+      (copy-directory/files (build-path "pkg-git" f) (build-path pkg-git.git f))))
   (define checksum
     (parameterize ([current-directory pkg-git.git])
-      (system "git init")
+      (system "git init -b main")
       (system "git add -A")
       (system "git commit -m 'initial commit'")
       (string-trim

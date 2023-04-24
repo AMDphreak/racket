@@ -4,13 +4,15 @@
          "place-local.rkt"
          "internal-error.rkt"
          "parameter.rkt"
-         "debug.rkt")
+         "debug.rkt"
+         (for-syntax racket/base))
 
 (provide atomically
          current-atomic
 
          start-atomic
          end-atomic
+         abort-atomic
 
          atomically/no-interrupts
          start-atomic/no-interrupts
@@ -21,21 +23,31 @@
          future-barrier
 
          add-end-atomic-callback!
+         flush-end-atomic-callbacks!
 
          start-implicit-atomic-mode
          end-implicit-atomic-mode
          assert-atomic-mode
 
+         assert-no-end-atomic-callbacks
+
          set-future-block!)
 
 ;; "atomically" is atomic within a place; when a future-running
 ;; pthread tries to enter atomic mode, it is suspended
-(define-syntax-rule (atomically expr ...)
-  (begin
-    (start-atomic)
-    (begin0
-     (let () expr ...)
-     (end-atomic))))
+(define-syntax atomically
+  (syntax-rules (void)
+    [(_ expr ... (void)) ; `(void)` => no need for `begin0`
+     (begin
+       (start-atomic)
+       expr ...
+       (end-atomic))]
+    [(_ expr ...)
+     (begin
+       (start-atomic)
+       (begin0
+         (let () expr ...)
+         (end-atomic)))]))
 
 (define-syntax-rule (atomically/no-interrupts expr ...)
   (begin
@@ -46,11 +58,16 @@
 
 ;; inlined in Chez Scheme embedding:
 (define (start-atomic)
+  ;; Althogh it's adjusting atomicity for the thread scheduler,
+  ;; this function is documented as working in any Scheme thread.
+  ;; The current implementation relies on parameters like
+  ;; `future-barrier` and `current-atomic` being virtual registers
   (future-barrier)
   (current-atomic (fx+ (current-atomic) 1)))
 
 ;; inlined in Chez Scheme embedding:
 (define (end-atomic)
+  ;; See `start-atomic` note on calls from any Scheme thread
   (define n (fx- (current-atomic) 1))
   (cond
     [(fx= n 0)
@@ -64,6 +81,13 @@
      ;; before we exit atomic mode. Make sure that rare
      ;; possibility remains ok.
      (current-atomic n)]))
+
+;; intended to avoid an infinite loop of "can't do that in atomic
+;; mode" exceptions when things have gone terribly wrong, assume that
+;; we're in a state where anything can happen, anyway
+(define (abort-atomic)
+  (current-atomic 0)
+  (end-atomic-callback 0))
 
 (define (do-end-atomic-callback)
   (define cbs (end-atomic-callback))
@@ -115,6 +139,9 @@
          (loop (cdr cbs)))]))
   (host:enable-interrupts))
 
+(define (flush-end-atomic-callbacks!)
+  (end-atomic-callback 0))
+
 ;; ----------------------------------------
 
 (define future-block-for-atomic (lambda () (void)))
@@ -138,11 +165,18 @@
       (internal-error "not implicitly in atomic mode?"))
     (current-implicit-atomic #f))
 
-  (define-syntax-rule (assert-atomic-mode)
-    (unless (or (current-implicit-atomic)
-                (positive? (current-atomic)))
-      (internal-error "should be in atomic mode")))]
+  (define-syntax (assert-atomic-mode stx)
+    (syntax-case stx ()
+      [(_)
+       #`(unless (or (current-implicit-atomic)
+                     (positive? (current-atomic)))
+           (internal-error #,(format "should be in atomic mode: ~s" stx)))]))
+
+  (define (assert-no-end-atomic-callbacks)
+    (unless (eq? 0 (end-atomic-callback))
+      (internal-error "non-empty end-atomic callbacks")))]
  #:off
  [(define-syntax-rule (start-implicit-atomic-mode) (begin))
   (define-syntax-rule (end-implicit-atomic-mode) (begin))
-  (define-syntax-rule (assert-atomic-mode) (begin))])
+  (define-syntax-rule (assert-atomic-mode) (begin))
+  (define-syntax-rule (assert-no-end-atomic-callbacks) (begin))])

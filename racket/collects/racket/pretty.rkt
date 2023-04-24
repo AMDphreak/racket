@@ -246,7 +246,7 @@
                          (lambda (v [o (current-output-port)] #:newline? [n? #t])
                            (pp v o #:newline? n?))))
 
-(define-struct mark (str def) #:mutable)
+(define-struct mark (escapes? str def) #:mutable)
 (define-struct hide (val))
 
 (define (make-tentative-output-port pport width esc)
@@ -300,7 +300,7 @@
                                                    content)))
                              (lambda (use-line? offset width)
                                (when (and (number? width)
-                                          (not first-line?))
+                                         < (not first-line?))
                                  (newline p))
                                (set! first-line? #f)
                                0)
@@ -427,7 +427,10 @@
   (define mpair-open (if (print-mpair-curly-braces) "{" "("))
   (define mpair-close (if (print-mpair-curly-braces) "}" ")"))
   
-  (define table (make-hasheq)) ; Hash table for looking for loops
+  (define table (make-hasheq)) ; For graph structure: object -> mark
+  (define found-cycle? #f)
+
+  (define escapes-table (make-hasheq)) ; For print quoting: object -> boolean[unquoted?]
 
   (define show-inexactness? (pretty-print-show-inexactness))
   (define exact-as-decimal? (pretty-print-exact-as-decimal))
@@ -462,202 +465,145 @@
   (mkvector->repeatless-list flvector->repeatless-list flvector-length flvector-ref equal? flvector->list)
   (mkvector->repeatless-list fxvector->repeatless-list fxvector-length fxvector-ref eq? fxvector->list)
 
-  (define (extract-sub-objects obj pport)
-    (let ([p (open-output-nowhere 'null (port-writes-special? pport))]
-          [l null])
-      (let ([record (lambda (o p) (set! l (cons o l)))])
-        (port-write-handler p record)
-        (port-display-handler p record)
-        (port-print-handler p record))
-      (parameterize ([pretty-printing #f])
-        ((custom-write-accessor obj) obj p #f))
-      l))
+  (define init-mode
+    (cond
+      [display? #f]
+      [print-as-qq? qq-depth]
+      [else #t]))
 
-  (define found-cycle
-    (or print-graph?
-        (let loop ([obj obj])
-          (and (or (vector? obj)
-                   (pair? obj)
-                   (mpair? obj)
-                   (and (box? obj)
-                        print-box?)
-                   (and (custom-write? obj)
-                        (not (struct-type? obj)))
-                   (and (struct? obj) print-struct?)
-                   (and (hash? obj)
-                        (not (and (zero? (hash-count obj))
-                                  (immutable? obj)))
-                        print-hash-table?))
-               (or (hash-ref table obj #f)
-                   (begin
-                     (hash-set! table obj #t)
-                     (let ([cycle
-                            (cond
-                             [(vector? obj)
-                              (let ([len (vector-length obj)])
-                                (let vloop ([i 0])
-                                  (if (= i len)
-                                      #f
-                                      (or (loop (vector-ref obj i))
-                                          (vloop (add1 i))))))]
-                             [(pair? obj)
-                              (or (loop (car obj))
-                                  (loop (cdr obj)))]
-                             [(mpair? obj)
-                              (or (loop (mcar obj))
-                                  (loop (mcdr obj)))]
-                             [(and (box? obj) print-box?) (loop (unbox obj))]
-                             [(and (custom-write? obj)
-                                   (not (struct-type? obj)))
-                              (loop (extract-sub-objects obj pport))]
-                             [(struct? obj)
-                              (ormap loop 
-                                     (vector->list (struct->vector obj)))]
-                             [(hash? obj)
-                              (for/or ([(k v) (in-hash obj)])
-                                (or (loop v) (loop k)))])])
-                       (hash-remove! table obj)
-                       cycle)))))))
-
-  (define __dummy__
-    (when found-cycle
-      (let loop ([obj obj])
-        (if (or (vector? obj)
-                (pair? obj)
-                (mpair? obj)
-                (and (box? obj)
-                     print-box?)
-                (and (custom-write? obj)
-                     (not (struct-type? obj)))
-                (and (struct? obj) print-struct?)
-                (and (hash? obj)
-                     (not (and (zero? (hash-count obj))
-                               (immutable? obj)))
-                     print-hash-table?))
-            ;; A little confusing: use #t for not-found
-            (let ([p (hash-ref table obj #t)])
-              (when (not (mark? p))
-                (if p
-                    (begin
-                      (hash-set! table obj #f)
-                      (cond
-                       [(vector? obj)
-                        (let ([len (vector-length obj)])
-                          (let vloop ([i 0])
-                            (unless (= i len)
-                              (loop (vector-ref obj i))
-                              (vloop (add1 i)))))]
-                       [(pair? obj)
-                        (loop (car obj))
-                        (loop (cdr obj))]
-                       [(mpair? obj)
-                        (loop (mcar obj))
-                        (loop (mcdr obj))]
-                       [(and (box? obj) print-box?) (loop (unbox obj))]
-                       [(and (custom-write? obj)
-                             (not (struct-type? obj)))
-                        (loop (extract-sub-objects obj pport))]
-                       [(struct? obj)
-                        (for-each loop 
-                                  (vector->list (struct->vector obj)))]
-                       [(hash? obj)
-                        (hash-for-each
-                         obj
-                         (lambda (k v)
-                           (loop k)
-                           (loop v)))]))
-                    (begin
-                      (hash-set! table obj 
-                                 (make-mark #f (box #f)))))))
-            (void)))))
-
-  (define escapes-table
-    (let* ([table (make-hasheq)]
-           [local-compound (and print-as-qq?
-                                (make-hasheq))]
-           [is-compound! (lambda (obj)
-                           (hash-set! local-compound obj #t))]
-           [escapes! (lambda (obj)
-                       (hash-set! table obj #t)
-                       #t)]
-           [orf (lambda (a b) (or a b))])
-      (when print-as-qq?
-        (let loop ([obj obj])
-          (cond
-           [(hash-ref table obj #f)
-            ;; already decided that it escapes
+  ;; Recur through the value to find to check for cycles, find graph
+  ;; references, and determining unquoted/quoted printing modes. This
+  ;; loop fills in `table`, `found-cycle?`, and `escapes-table`.
+  (let ([start-compound! (lambda (obj)
+                           (hash-set! table obj 'in-progress))]
+        [end-compound! (lambda (obj escapes?)
+                         (when (eq? 'in-progress (hash-ref table obj #f))
+                           (hash-set! table obj (if escapes? 'done-escapes 'done)))
+                         escapes?)]
+        [escapes! (lambda (obj mode)
+                    (and (not (boolean? mode))
+                         (begin
+                           (hash-set! escapes-table obj #t)
+                           #t)))]
+        [orf (lambda (a b) (or a b))])
+    ;; Returns #t if `obj` needs to print as unquoted
+    (let loop ([obj obj] [mode init-mode])
+      (cond
+        [(hash-ref table obj #f)
+         => (lambda (g)
+              ;; Note: counting all references as the same quoting mode
+              (when (eq? g 'in-progress)
+                (set! found-cycle? #t))
+              (unless (mark? g)
+                (hash-set! table obj (make-mark (eq? g 'done-escapes) #f (box #f))))
+              (or (eq? g 'done-escapes)
+                  (and (mark? g) (mark-escapes? g))))]
+        [else
+         (cond
+           [(vector? obj)
+            (start-compound! obj)
+            (end-compound!
+             obj
+             (let ([len (vector-length obj)])
+               (let vloop ([esc? #f] [i 0])
+                 (if (= i len)
+                     (and esc? 
+                          (escapes! obj mode))
+                     (vloop (or (loop (vector-ref obj i) mode) esc?) 
+                            (add1 i))))))]
+           [(or (flvector? obj)
+                (fxvector? obj))
+            ;; always unquoted:
             #t]
-           [(and local-compound 
-                 (hash-ref local-compound obj #f))
-            ;; either still deciding (so assume #f) or
-            ;; already decided that no escape is needed
-            #f]
-           [else
+           [(pair? obj)
+            (start-compound! obj)
+            (end-compound!
+             obj
+             (and (orf (loop (car obj) mode)
+                       (loop (cdr obj) mode))
+                  (escapes! obj mode)))]
+           [(mpair? obj)
+            (start-compound! obj)
+            (loop (mcar obj) mode)
+            (loop (mcdr obj) mode)
+            (end-compound!
+             obj
+             ;; always unquoted:
+             #t)]
+           [(and (box? obj) print-box?) 
+            (start-compound! obj)
+            (end-compound!
+             obj
+             (and (loop (unbox obj) mode)
+                  (escapes! obj mode)))]
+           [(and (custom-write? obj)
+                 (not (struct-type? obj)))
+            (start-compound! obj)
+            (define kind (custom-print-quotable-accessor obj 'self))
+            (define escapes? (eq? kind 'never))
+            (define (sub o p mode)
+              (define esc? (loop o mode))
+              (unless (or escapes?
+                          (not esc?)
+                          (boolean? mode)
+                          (eq? kind 'self)
+                          (eq? kind 'always))
+                (set! escapes? #t)))
+            (let ([p (open-output-nowhere 'null (port-writes-special? pport))])
+              (port-write-handler p (lambda (o p) (sub o p #t)))
+              (port-display-handler p (lambda (o p) (sub o p #f)))
+              (port-print-handler p (lambda (o p [mode 0]) (sub o p mode)))
+              (parameterize ([pretty-printing #f])
+                ((custom-write-accessor obj) obj p (if (and (eqv? mode 0) ; => unquoted
+                                                            (eq? kind 'always))
+                                                       1 ; sub parts always quoted
+                                                       mode))))
+            (end-compound!
+             obj
+             (and escapes?
+                  (escapes! obj mode)))]
+           [(struct? obj)
+            (start-compound! obj)
+            (end-compound!
+             obj
+             (and (or (loop (struct->vector obj) mode)
+                      (not (prefab-struct-key obj)))
+                  (escapes! obj mode)))]
+           [(hash? obj)
             (cond
-             [(vector? obj)
-              (is-compound! obj)
-              (let ([len (vector-length obj)])
-                (let vloop ([esc? #f][i 0])
-                  (if (= i len)
-                      (and esc? 
-                           (escapes! obj))
-                      (vloop (or (loop (vector-ref obj i)) esc?) 
-                             (add1 i)))))]
-             [(flvector? obj)
-              (is-compound! obj)
-              ;; always unquoted:
-              #t]
-             [(fxvector? obj)
-              (is-compound! obj)
-              ;; always unquoted:
-              #t]
-             [(pair? obj)
-              (is-compound! obj)
-              (and (orf (loop (car obj))
-                        (loop (cdr obj)))
-                   (escapes! obj))]
-             [(mpair? obj)
-              (is-compound! obj)
-              (loop (mcar obj))
-              (loop (mcdr obj))
-              ;; always unquoted:
-              #t]
-             [(and (box? obj) print-box?) 
-              (is-compound! obj)
-              (and (loop (unbox obj))
-                   (escapes! obj))]
-             [(and (custom-write? obj)
-                   (not (struct-type? obj)))
-              (is-compound! obj)
-              (let ([kind (if (custom-print-quotable? obj)
-                              (custom-print-quotable-accessor obj)
-                              'self)])
-                (and (or (and (loop (extract-sub-objects obj pport))
-                              (not (memq kind '(self always))))
-                         (memq kind '(never)))
-                     (escapes! obj)))]
-             [(struct? obj)
-              (is-compound! obj)
-              (and (or (loop (struct->vector obj))
-                       (not (prefab-struct-key obj)))
-                   (escapes! obj))]
-             [(hash? obj)
-              (unless (and (zero? (hash-count obj))
-                           (immutable? obj))
-                (is-compound! obj))
-              (and (for/fold ([esc? #f]) ([(k v) (in-hash obj)])
-                     (or (orf (loop v) 
-                              (loop k))
-                         esc?))
-                   (escapes! obj))]
-             [else #f])])))
-      table))
+              [(and (zero? (hash-count obj))
+                    (immutable? obj))
+               #f]
+              [else
+               (start-compound! obj)
+               (end-compound!
+                obj
+                (and (for/fold ([esc? #f]) ([(k v) (in-hash obj)])
+                       (or (orf (loop v mode) 
+                                (loop k mode))
+                           esc?))
+                     (escapes! obj mode)))])]
+           [(stencil-vector? obj)
+            (start-compound! obj)
+            (let stencil-loop ([i 0])
+              (unless (= i (stencil-vector-length obj))
+                (loop (stencil-vector-ref obj i) (and mode #t))
+                (stencil-loop (add1 i))))
+            (end-compound!
+             obj
+             ;; always quoted:
+             #f)]
+           [else #f])]))
+    (when (or found-cycle? print-graph?)
+      ;; Remove unwanted table entries:
+      (for ([k (in-list (hash-keys table))])
+        (unless (mark? (hash-ref table k #f))
+          (hash-remove! table k)))))
 
   (define cycle-counter 0)
 
-  (define found (if found-cycle
-                    table 
-                    #f))
+  (define found (and (or found-cycle? print-graph?)
+                     table))
 
   (define dsub1 (lambda (d)
                   (if d
@@ -756,10 +702,23 @@
                      'hasheq
                      (if (hash-eqv? obj)
                          'hasheqv
-                         'hash)))
+                         (if (hash-equal-always? obj)
+                             'hashalw
+                             'hash))))
                 (apply append l))
           l)))
-  
+
+  (define (convert-stencil-vector obj)
+    (let loop ([i 0])
+      (if (= i (stencil-vector-length obj))
+          '()
+          (cons (stencil-vector-ref obj i)
+                (loop (add1 i))))))
+
+  (define (stencil-opener obj)
+    (define mask (stencil-vector-mask obj))
+    (format "#<stencil ~a~a" mask (if (zero? mask) "" ": ")))
+
   ;; ------------------------------------------------------------
   ;; wr: write on a single line
   (define (wr* pport obj depth display? qd)
@@ -820,7 +779,8 @@
                    (lambda ()
                      (cond 
                       [(pair? l) 
-                       (if (and (eq? (do-remap (car l)) 'unquote)
+                       (if (and check?
+                                (eq? (do-remap (car l)) 'unquote)
                                 (not (equal? qd 1))
                                 (pair? (cdr l))
                                 (null? (cdr (cdr l))))
@@ -870,8 +830,8 @@
            #f #f
            (lambda ()
              (if (and qd (zero? qd))
-                 (wr-expr (list (make-unquoted 'mcons) (mcar obj) (mcdr obj))
-                          depth pair? car cdr "(" ")" qd)
+                 (wr-lst (list (make-unquoted 'mcons) (mcar obj) (mcdr obj))
+                         #f depth pair? car cdr "(" ")" qd)
                  (wr-expr obj depth mpair? mcar mcdr mpair-open mpair-close qd))))]
          [(null? obj)
           (let ([qd (to-quoted out qd obj)])
@@ -939,9 +899,7 @@
            #f #f
            (lambda ()
              (parameterize ([pretty-print-columns 'infinity])
-               (let ([qd (let ([kind (if (custom-print-quotable? obj)
-                                         (custom-print-quotable-accessor obj)
-                                         'self)])
+               (let ([qd (let ([kind (custom-print-quotable-accessor obj 'self)])
                            (if (memq kind '(self never))
                                qd
                                (to-quoted out qd obj)))])
@@ -998,12 +956,22 @@
                               "#hasheq"
                               (if (hash-eqv? obj)
                                   "#hasheqv"
-                                  "#hash"))))
+                                  (if (hash-equal-always? obj)
+                                      "#hashalw"
+                                      "#hash")))))
                    (wr-lst (convert-hash obj expr?)
                            #f depth
                            pair? car cdr "(" ")" qd))))
               (parameterize ([print-hash-table #f])
                 ((if display? orig-display orig-write) obj pport)))]
+         [(stencil-vector? obj)
+          (check-expr-found
+           obj pport #t
+           #f #f
+           (lambda ()
+             (wr-lst (convert-stencil-vector obj)
+                     #f depth
+                     pair? car cdr (stencil-opener obj) ">" (and qd 1))))]
          [(boolean? obj)
           (out (if long-bools?
                    (if obj "#true" "#false")
@@ -1046,13 +1014,15 @@
       (let-values ([(l col p) (port-next-location pport)])
         col))
 
-    (define (indent to)
+    (define (indent to #:need-space? [need-space? #t])
       (let ([col (ccol)])
-        (if (< to col)
+        (if (if need-space?
+                (<= to col)
+                (< to col))
             (begin
               (let ([col ((printing-port-print-line pport) #t col width)])
                 (spaces (- to col))))
-            (spaces (max 0 (- to col))))))
+            (spaces (- to col)))))
 
     (define (pr obj extra pp-pair depth qd)
       ;; may have to split on multiple lines
@@ -1068,7 +1038,8 @@
                                  (and (custom-write? obj)
                                       (not (struct-type? obj)))
                                  (and (struct? obj) print-struct?)
-                                 (and (hash? obj) print-hash-table?)))]
+                                 (and (hash? obj) print-hash-table?)
+                                 (stencil-vector? obj)))]
              [graph-ref (if can-multi
                             (and found (hash-ref found obj #f))
                             #f)]
@@ -1112,8 +1083,8 @@
                                    qd))]
                        [(mpair? obj)
                         (if (and qd (zero? qd))
-                            (pp-pair (list (make-unquoted 'mcons) (mcar obj) (mcdr obj))
-                                     extra depth
+                            (pp-list (list (make-unquoted 'mcons) (mcar obj) (mcdr obj))
+                                     extra pp-expr #f depth
                                      pair? car cdr "(" ")"
                                      qd)
                             (pp-pair obj extra depth 
@@ -1122,8 +1093,8 @@
                        [(vector? obj)
                         (let ([qd (to-quoted out qd obj)])
                           (if (and qd (zero? qd))
-                              (pp-pair (cons (make-unquoted 'vector) (vector->list obj))
-                                       extra depth
+                              (pp-list (cons (make-unquoted 'vector) (vector->list obj))
+                                       extra pp-expr #f depth
                                        pair? car cdr pair-open pair-close
                                        qd)
                               (begin
@@ -1204,10 +1175,16 @@
                                      "#hasheq"
                                      (if (hash-eqv? obj)
                                          "#hasheqv"
-                                         "#hash"))))
+                                         (if (hash-equal-always? obj)
+                                             "#hashalw"
+                                             "#hash")))))
                           (pp-list (convert-hash obj expr?) extra pp-expr #f depth
                                    pair? car cdr pair-open pair-close
                                    qd))]
+                       [(stencil-vector? obj)
+                        (pp-list (convert-stencil-vector obj) extra pp-expr #f depth
+                                 pair? car cdr (stencil-opener obj) ">"
+                                 (and qd 1))]
                        [(and (box? obj) print-box?)
                         (let ([qd (to-quoted out qd obj)])
                           (if (and qd (zero? qd))
@@ -1321,12 +1298,15 @@
       (let ([col (ccol)])
         (pp-down close l col col extra pp-item #f check? depth
                  apair? acar acdr open close
-                 qd)))
+                 qd
+                 ;; No extra space needed before the first thing:
+                 #:need-space? #f)))
 
     (define (pp-down closer l col1 col2 extra pp-item check-first? check-rest? depth
                      apair? acar acdr open close 
-                     qd)
-      (let loop ([l l] [icol col1] [check? check-first?])
+                     qd
+                     #:need-space? [need-space? #t])
+      (let loop ([l l] [icol col1] [check? check-first?] [need-space? need-space?])
         (check-expr-found
          l pport (and check? (apair? l))
          (lambda (s) 
@@ -1346,9 +1326,9 @@
             [(apair? l)
              (let ([rest (acdr l)])
                (let ([extra (if (null? rest) (+ extra 1) 0)])
-                 (indent icol)
+                 (indent icol #:need-space? need-space?)
                  (pr (acar l) extra pp-item (dsub1 depth) qd)
-                 (loop rest col2 check-rest?)))]
+                 (loop rest col2 check-rest? #t)))]
             [(null? l)
              (out closer)]
             [else
@@ -1542,10 +1522,10 @@
         ((do letrec-syntaxes+values)
          (and (no-sharing? expr 2 apair? acdr)
               pp-do))
-        ((module)
+        ((module send)
          (and (no-sharing? expr 2 apair? acdr)
               pp-module))
-        ((send syntax-case instantiate)
+        ((syntax-case instantiate)
          (and (no-sharing? expr 2 apair? acdr)
               pp-syntax-case))
         ((make-object)
@@ -1557,7 +1537,7 @@
     (pr obj 0 pp-expr depth qd))
 
   (define (to-quoted out qd obj)
-    (and qd
+     (and qd
          (if (zero? qd)
              (if (hash-ref escapes-table obj #f)
                  qd
@@ -1684,7 +1664,3 @@
          [else (raise-argument-error 'pretty-format "(or/c 'print 'write 'display)" mode)])
        t op #:newline? #f)
       (get-output-string op))))
-
-
-
-

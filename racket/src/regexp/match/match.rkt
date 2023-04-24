@@ -89,7 +89,8 @@
 ;; An iterator performs a single match as many times as possible, up
 ;; to a specified max number of times, and it returns the position
 ;; and the number of items; this mode is used only when each match
-;; has a fixed size
+;; has a fixed size, and `ls-tst` must incrementally check for available
+;; lazy bytes if `size` is greater than 1.
 (define-syntax-rule (define-iterate (op-matcher* arg ...)
                       outer-defn ... 
                       (lambda (s pos2 start limit end state)
@@ -116,7 +117,7 @@
             (let loop ([pos2 pos] [n 0])
               (cond
                [(or (and limit ((+ pos2 size) . > . limit))
-                    (not (lazy-bytes-before-end? s (+ pos2 (sub1 size)) limit))
+                    (not (lazy-bytes-before-end? s pos2 limit)) ; only checks for 1 byte
                     (not ls-tst))
                 (values pos2 n size)]
                [else
@@ -172,11 +173,12 @@
              (for/and ([c1 (in-bytes bstr 0 len)]
                        [c2 (in-bytes s pos (+ pos len))])
                (= c1 c2)))
-        (and (lazy-bytes-before-end? s (sub1 (+ pos len)) limit)
-             (for/and ([c1 (in-bytes bstr 0 len)]
-                       [i (in-naturals pos)])
-               (define c2 (lazy-bytes-ref s i))
-               (= c1 c2))))
+        (for/and ([c1 (in-bytes bstr 0 len)]
+                  [i (in-naturals pos)])
+          (and (lazy-bytes-before-end? s i limit)
+               (let ()
+                 (define c2 (lazy-bytes-ref s i))
+                 (= c1 c2)))))
     (+ pos len)))
 
 (define-iterate (bytes-matcher* bstr)
@@ -188,8 +190,9 @@
                (= c1 c2))
     #:ls-test (for/and ([c1 (in-bytes bstr 0 len)]
                         [i (in-naturals pos)])
-                (define c2 (lazy-bytes-ref s i))
-                (= c1 c2))))
+                (and (lazy-bytes-before-end? s i limit)
+                     (let ([c2 (lazy-bytes-ref s i)])
+                       (= c1 c2))))))
 
 ;; ----------------------------------------
 ;; An always-fail pattern
@@ -279,10 +282,12 @@
 (define-zero-width (line-start-matcher next-m)
   (lambda (s pos start limit end)
     (or (= pos start)
-        (= (char->integer #\newline)
-           (if (bytes? s)
-               (bytes-ref s (sub1 pos))
-               (lazy-bytes-ref s (sub1 pos)))))))
+        (if (bytes? s)
+            (= (char->integer #\newline)
+               (bytes-ref s (sub1 pos)))
+            (and (lazy-bytes-before-end? s (sub1 pos) limit)
+                 (= (char->integer #\newline)
+                    (lazy-bytes-ref s (sub1 pos))))))))
 
 (define-zero-width (line-end-matcher next-m)
   (lambda (s pos start limit end)
@@ -303,9 +308,10 @@
 
 (define (word-boundary? s pos start limit end)
   (not (eq? (or (= pos start)
-                (not (word-byte? (if (bytes? s)
-                                     (bytes-ref s (sub1 pos))
-                                     (lazy-bytes-ref s (sub1 pos))))))
+                (not (if (bytes? s)
+                         (word-byte? (bytes-ref s (sub1 pos)))
+                         (and (lazy-bytes-before-end? s (sub1 pos) end)
+                              (word-byte? (lazy-bytes-ref s (sub1 pos)))))))
             (or (if (bytes? s)
                     (= pos end)
                     (not (lazy-bytes-before-end? s pos end)))
@@ -456,12 +462,13 @@
                    (for/and ([c1 (in-bytes s (car p) (cdr p))]
                              [c2 (in-bytes s pos (+ pos len))])
                      (chyte=? c1 c2)))
-              (and (lazy-bytes-before-end? s (sub1 (+ pos len)) limit)
-                   (for/and ([j (in-range (car p) (cdr p))]
-                             [i (in-naturals pos)])
-                     (define c1 (lazy-bytes-ref s j))
-                     (define c2 (lazy-bytes-ref s i))
-                     (chyte=? c1 c2)))))
+              (for/and ([j (in-range (car p) (cdr p))]
+                        [i (in-naturals pos)])
+                (and (lazy-bytes-before-end? s i limit)
+                     (let ()
+                       (define c1 (lazy-bytes-ref s j))
+                       (define c2 (lazy-bytes-ref s i))
+                       (chyte=? c1 c2))))))
         (and matches?
              (next-m s (+ pos len) start limit end state stack))]))))
 

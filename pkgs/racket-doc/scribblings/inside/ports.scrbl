@@ -1,7 +1,7 @@
 #lang scribble/doc
 @(require "utils.rkt")
 
-@title{Ports and the Filesystem}
+@bc-title[#:tag "Ports and the Filesystem"]{Ports and the Filesystem}
 
 Ports are represented as Racket values with the types
 @cppi{scheme_input_port_type} and @cppi{scheme_output_port_type}.  The
@@ -335,7 +335,7 @@ Closes the given output port.}
 Fills @cpp{*@var{fd}} with a file-descriptor value for @var{port} if
 one is available (i.e., the port is a file-stream port and it is not
 closed). The result is non-zero if the file-descriptor value is
-available, zero otherwise. On Windows, a ``file dscriptor'' is a
+available, zero otherwise. On Windows, a ``file descriptor'' is a
 file @cpp{HANDLE}.}
 
 @function[(intptr_t scheme_get_port_fd

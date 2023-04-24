@@ -53,6 +53,9 @@
     [pattern (#:str name:id default:expr)
              #:attr (arg-val 1) (list #'name)
              #:attr fun #'identity]
+    [pattern (#:strs name:id ... default:expr)
+             #:attr (arg-val 1) (syntax->list #'(name ...))
+             #:attr fun #'list]
     [pattern (#:num name:id default:expr)
              #:attr (arg-val 1) (list #'name)
              #:attr fun #'(string->num 'name)])
@@ -80,7 +83,10 @@
                [(alias ... #,arg-str)
                 k.arg-val ...
                 doc
-                (set! #,arg-var (k.fun k.arg-val ...))
+                (set! #,arg-var #,(let ([one #'(k.fun k.arg-val ...)])
+                                    (if (eq? (syntax-e #'k) '#:multi)
+                                        #`(append (or #,arg-var '()) (list #,one))
+                                        one)))
                 body ...])])
 
   (define-syntax-class group-kind

@@ -15,6 +15,8 @@
 (path->string (current-directory))
 (set-string->number?! string->number)
 
+(get-machine-info)
+
 (let ()
   (define-values (i o) (make-pipe 4096))
 
@@ -129,16 +131,47 @@
 (fprintf (current-output-port) "*~v*" '!!!)
 (newline)
 
+(parameterize ([error-print-width 5])
+  (test "abc" (format "~.a" "abc"))
+  (test "abcde" (format "~.a" "abcde"))
+  (test "ab..." (format "~.a" "abcdef"))
+  (test "abc" (format "~.a" #"abc"))
+  (test "abcde" (format "~.a" #"abcde"))
+  (test "ab..." (format "~.a" #"abcdef"))
+  (test "ab..." (format "~.a" 'abcdef))
+  (test "\"ab\"" (format "~.s" "ab"))
+  (test "\"abc\"" (format "~.s" "abc"))
+  (test "\"a..." (format "~.s" "abcde"))
+  (test "#\"a\"" (format "~.s" #"a"))
+  (test "#\"ab\"" (format "~.s" #"ab"))
+  (test "#\"..." (format "~.s" #"abc"))
+  (test "#\"..." (format "~.s" #"abcdef"))
+  (test "|a b|" (format "~.s" '|a b|))
+  (test "|a..." (format "~.s" '|a bx|))
+  (test "(1 2)" (format "~.a" '(1 2)))
+  (test "(1..." (format "~.a" '(10 2))))
+
 (test "no: hi 10"
       (with-handlers ([exn:fail? exn-message])
         (error 'no "hi ~s" 10)))
 
-(test "error: format string requires 1 arguments, given 3"
+(test "error: format string requires 1 arguments, given 3; arguments were: 1 2 3"
       (with-handlers ([exn:fail? exn-message])
         (error 'no "hi ~s" 1 2 3)))
-(test "error: format string requires 2 arguments, given 1"
+(test "error: format string requires 2 arguments, given 1; arguments were: 8"
       (with-handlers ([exn:fail? exn-message])
         (error 'no "hi ~s ~s" 8)))
+(test "error: format string requires 2 arguments, given 100"
+      (with-handlers ([exn:fail? exn-message])
+        (apply error 'no "hi ~s ~s" (for/list ([i 100]) i))))
+(test "error: format string requires 2 arguments, given 51"
+      (with-handlers ([exn:fail? exn-message])
+        (apply error 'no "hi ~s ~s" (for/list ([i 51]) i))))
+(test (apply string-append
+             "error: format string requires 2 arguments, given 50; arguments were:"
+             (for/list ([i 50]) (string-append " " (number->string i))))
+      (with-handlers ([exn:fail? exn-message])
+        (apply error 'no "hi ~s ~s" (for/list ([i 50]) i))))
 
 (define infinite-ones 
   (make-input-port 'ones
@@ -416,7 +449,6 @@
   (test (void) (file-position out 10))
   (test #"hola!!\0\0\0\0" (get-output-bytes out)))
 
-(log-error "start")
 (let ()
   (define-values (i o) (make-pipe))
   (port-count-lines! i)
@@ -444,7 +476,6 @@
   (write-bytes #"!" o)
   (test '(3 1 8) (next-location o))
 
-(log-error "here")
   (test #"x\r" (read-bytes 2 i))
   (test '(3 0 7) (next-location i))
   (test #"\n!" (read-bytes 2 i))
@@ -545,25 +576,31 @@
         (call-with-values (lambda () (bytes-convert c #"\360\220\220\200")) list))
   (test (void) (bytes-close-converter c)))
 
-(let ([c (bytes-open-converter "UTF-8-ish" "UTF-16-ish")])
+(let ([c (bytes-open-converter "WTF-8" "WTF-16")])
   (test `(,(reorder #"A\0\200\0") 3 complete)
         (call-with-values (lambda () (bytes-convert c #"A\302\200")) list))
   (test `(,(reorder #"A\0") 1 error)
         (call-with-values (lambda () (bytes-convert c #"A\200")) list))
-  ;; unpaired high surrogate
-  (test `(,(reorder #"\0\330") 3 complete)
+  ;; unpaired high surrogate - incomplete because we have to watch for a low surrogate after
+  (test `(,(reorder #"") 0 aborts)
         (call-with-values (lambda () (bytes-convert c #"\355\240\200")) list))
   ;; unpaired low surrogate
   (test `(,(reorder #"\1\334") 3 complete)
         (call-with-values (lambda () (bytes-convert c #"\355\260\201")) list))
-  ;; surrogate pair where each is separately encoded
-  (test `(,(reorder #"\0\330\1\334") 6 complete)
+  ;; surrogate pair where each is separately encoded, high before low
+  (test `(,(reorder #"") 0 error)
         (call-with-values (lambda () (bytes-convert c #"\355\240\200\355\260\201")) list))
+  ;; surrogate pair where each is separately encoded, low before high
+  (test `(,(reorder #"\1\334") 3 aborts)
+        (call-with-values (lambda () (bytes-convert c #"\355\260\201\355\240\200")) list))
+  (test `(,(reorder #"\1\334\0\330x\0") 7 complete)
+        (call-with-values (lambda () (bytes-convert c #"\355\260\201\355\240\200x")) list))
+  ;; correctly encoded surrogate pair
   (test `(,(reorder #"\1\330\0\334") 4 complete)
         (call-with-values (lambda () (bytes-convert c #"\360\220\220\200")) list))
   (test (void) (bytes-close-converter c)))
 
-(let ([c (bytes-open-converter "UTF-16-ish" "UTF-8-ish")])
+(let ([c (bytes-open-converter "WTF-16" "WTF-8")])
   (test `(#"A\302\200" 4 complete)
         (call-with-values (lambda () (bytes-convert c (reorder #"A\0\200\0"))) list))
   ;; unpaired high surrogate
@@ -618,6 +655,8 @@
   (parameterize ([current-locale "en_US.ISO8859-1"])
     (test "Éric" (string-locale-downcase "Éric"))))
 
+(when (eq? 'macosx (system-type))
+  (test "\U1F600" (string-locale-downcase "\U1F600")))
 
 ;; ----------------------------------------
 
@@ -702,6 +741,10 @@
 (print-test '#:1.0 "'#:1.0")
 (print-test 1.0 "1.0")
 
+(print-test (stencil-vector 3 "a" 'b) "#<stencil 3: \"a\" b>")
+(print-test (stencil-vector 3 "a" 'b) "#<stencil 3: a b>" #:print display)
+(print-test (stencil-vector 3 "a" 'b) "#<stencil 3: \"a\" b>" #:print write)
+
 ;; ----------------------------------------
 
 (define l (tcp-listen 59078 5 #t))
@@ -712,8 +755,8 @@
 (test l (sync l))
 (define-values (tai tao) (tcp-accept l))
 
-(test #f (file-stream-port? i))
-(test #f (file-stream-port? o))
+(test #f (file-stream-port? ti))
+(test #f (file-stream-port? to))
 
 (test 6 (write-string "hello\n" to))
 (flush-output to)
@@ -799,7 +842,7 @@
  (let loop ([j 10])
    (unless (zero? j)
      (let ()
-       (define p (open-input-file "compiled/io.rktl"))
+       (define p (open-input-file "../cs/schemified/io.scm"))
        (port-count-lines! p)
        (let loop ()
          (define s (read-string 100 p))
@@ -816,7 +859,7 @@
  (let loop ([j 10])
    (unless (zero? j)
      (let ()
-       (define p (host:open-input-file "compiled/io.rktl"))
+       (define p (host:open-input-file "../cs/schemified/io.scm"))
        (host:file-stream-buffer-mode p read-byte-buffer-mode)
        (when count-lines? (host:port-count-lines! p))
        (let loop ()
@@ -830,7 +873,7 @@
  (let loop ([j 10])
    (unless (zero? j)
      (let ()
-       (define p (open-input-file "compiled/io.rktl"))
+       (define p (open-input-file "../cs/schemified/io.scm"))
        (file-stream-buffer-mode p read-byte-buffer-mode)
        (when count-lines? (port-count-lines! p))
        (let loop ()
@@ -844,7 +887,7 @@
  (let loop ([j 10])
    (unless (zero? j)
      (let ()
-       (define p (host:open-input-file "compiled/io.rktl"))
+       (define p (host:open-input-file "../cs/schemified/io.scm"))
        (let loop ()
          (unless (eof-object? (host:read-line p))
            (loop)))
@@ -856,7 +899,7 @@
  (let loop ([j 10])
    (unless (zero? j)
      (let ()
-       (define p (open-input-file "compiled/io.rktl"))
+       (define p (open-input-file "../cs/schemified/io.scm"))
        (let loop ()
          (unless (eof-object? (read-line p))
            (loop)))
@@ -884,3 +927,24 @@
 
 (test 3 (bytes-utf-8-index #"apple" 3))
 (test 4 (bytes-utf-8-index (string->bytes/utf-8 "apλple") 3))
+
+(test 1969 (date-year (seconds->date (- (* 24 60 60)))))
+
+(let* ([s (current-seconds)]
+       [d1 (seconds->date s)]
+       [d2 (seconds->date (+ s 1/100000000))])
+  (test 0 (date*-nanosecond d1))
+  (test 10 (date*-nanosecond d2))
+  (test (date*-time-zone-name d1) (date*-time-zone-name d2))
+  (test (struct-copy date d1) (struct-copy date d2)))
+
+(test (seconds->date 0 #f)
+      (seconds->date 0.1e-16 #f))
+(test (date* 59 59 23 31 12 1969 3 364 #f 0 999999999 "UTC")
+      (seconds->date -0.1e-16 #f))
+
+(let ([out-of-range (lambda (exn) (regexp-match? #rx"out-of-range" (exn-message exn)))])
+  (test #t (with-handlers ([exn:fail? out-of-range])
+             (seconds->date (expt 2 60))))
+  (test #t (with-handlers ([exn:fail? out-of-range])
+             (seconds->date (expt 2 80)))))

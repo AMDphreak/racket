@@ -10,6 +10,7 @@
          "full-binding.rkt"
          "module-binding.rkt"
          "local-binding.rkt"
+         "like-ambiguous-binding.rkt"
          "datum-map.rkt"
          "../expand/rename-trans.rkt"
          "../common/module-path.rkt"
@@ -26,6 +27,8 @@
  same-binding-nominals?
  identifier-binding
  identifier-binding-symbol
+ identifier-distinct-binding
+ identifier-binding-uses-scope?
  
  maybe-install-free=id!
  binding-set-free=id
@@ -82,8 +85,8 @@
 (define (same-binding-nominals? ab bb)
   (and (eq? (module-path-index-resolve (module-binding-nominal-module ab))
             (module-path-index-resolve (module-binding-nominal-module bb)))
-       (eqv? (module-binding-nominal-require-phase ab)
-             (module-binding-nominal-require-phase bb))
+       (eqv? (module-binding-nominal-require-phase+space-shift ab)
+             (module-binding-nominal-require-phase+space-shift bb))
        (eqv? (module-binding-nominal-sym ab)
              (module-binding-nominal-sym bb))))
 
@@ -97,8 +100,9 @@
     (local-binding-key b)]
    [else (syntax-e id)]))
 
-(define (identifier-binding id phase [top-level-symbol? #f])
-  (define b (resolve+shift id phase))
+(define (identifier-binding id phase [top-level-symbol? #f]
+                            #:exactly? [exactly? #f])
+  (define b (resolve+shift id phase #:exactly? exactly?))
   (cond
    [(module-binding? b)
     (if (top-level-module-path-index? (module-binding-module b))
@@ -110,11 +114,24 @@
               (module-binding-nominal-module b)
               (module-binding-nominal-sym b)
               (module-binding-phase b)
-              (module-binding-nominal-require-phase b)
-              (module-binding-nominal-phase b)))]
+              (module-binding-nominal-require-phase+space-shift b)
+              (module-binding-nominal-phase+space b)))]
    [(local-binding? b)
     'lexical]
    [else #f]))
+
+(define (identifier-distinct-binding id other-id phase [top-level-symbol? #f])
+  (define scs (resolve id phase #:get-scopes? #t))
+  (cond
+    [(not scs) #f]
+    [else
+     (define other-scs (syntax-scope-set other-id phase))
+     (and (not (subset? scs other-scs))
+          (identifier-binding id phase top-level-symbol?))]))
+
+(define (identifier-binding-uses-scope? id scope phase)
+  (define scs (resolve id phase #:get-scopes? #t))
+  (and scs (set-member? scs scope)))
 
 ;; ----------------------------------------
 
@@ -158,18 +175,25 @@
     (define shift (if non-source?
                       (non-source-shift from-mpi to-mpi)
                       (cons from-mpi to-mpi)))
+    (define content* (syntax-content* s))
+    (define content (if (modified-content? content*)
+                        (modified-content-content content*)
+                        content*))
     (struct-copy syntax s
                  [mpi-shifts (shift-cons shift (syntax-mpi-shifts s))]
                  [inspector (or (syntax-inspector s)
                                 inspector)]
-                 [scope-propagations+tamper (if (datum-has-elements? (syntax-content s))
-                                                (propagation-mpi-shift (syntax-scope-propagations+tamper s)
-                                                                       (lambda (s) (shift-cons shift s))
-                                                                       inspector
-                                                                       (syntax-scopes s)
-                                                                       (syntax-shifted-multi-scopes s)
-                                                                       (syntax-mpi-shifts s))
-                                                (syntax-scope-propagations+tamper s))])]))
+                 [content* (if (datum-has-elements? content)
+                               (modified-content
+                                content
+                                (propagation-mpi-shift (and (modified-content? content*)
+                                                            (modified-content-scope-propagations+taint content*))
+                                                       (lambda (s) (shift-cons shift s))
+                                                       inspector
+                                                       (syntax-scopes s)
+                                                       (syntax-shifted-multi-scopes s)
+                                                       (syntax-mpi-shifts s)))
+                               content*)])]))
 
 (define (shift-cons shift shifts)
   (cond
@@ -181,7 +205,7 @@
 
 ;; Use `resolve+shift` instead of `resolve` when the module of a
 ;; module binding is relevant or when `free-identifier=?` equivalences
-;; (as installed by a binding to a rename transfomer) are relevant;
+;; (as installed by a binding to a rename transformer) are relevant;
 ;; module path index shifts attached to `s` are taken into account in
 ;; the result
 (define (resolve+shift s phase
@@ -243,6 +267,9 @@
            (when can-cache?
              (resolve+shift-cache-set! s phase result-b))
            result-b])]
+       [(like-ambiguous-binding? b) (if unbound-sym?
+                                        (syntax-content s)
+                                        ambiguous-value)]
        [else
         (when can-cache?
           (resolve+shift-cache-set! s phase (or b '#:none)))
@@ -303,17 +330,24 @@
 
 (define (syntax-set-inspector s insp)
   ;; This inspector merging is also implemented via propagations in "scope.rkt"
+  (define content* (syntax-content* s))
+  (define content (if (modified-content? content*)
+                      (modified-content-content content*)
+                      content*))
   (struct-copy syntax s
                [inspector (or (syntax-inspector s)
                               insp)]
-               [scope-propagations+tamper (if (datum-has-elements? (syntax-content s))
-                                              (propagation-mpi-shift (syntax-scope-propagations+tamper s)
-                                                                     #f
-                                                                     insp
-                                                                     (syntax-scopes s)
-                                                                     (syntax-shifted-multi-scopes s)
-                                                                     (syntax-mpi-shifts s))
-                                              (syntax-scope-propagations+tamper s))]))
+               [content* (if (datum-has-elements? content)
+                             (modified-content
+                              content
+                              (propagation-mpi-shift (and (modified-content? content*)
+                                                          (modified-content-scope-propagations+taint content*))
+                                                     #f
+                                                     insp
+                                                     (syntax-scopes s)
+                                                     (syntax-shifted-multi-scopes s)
+                                                     (syntax-mpi-shifts s)))
+                             content*)]))
 
 ;; ----------------------------------------
 

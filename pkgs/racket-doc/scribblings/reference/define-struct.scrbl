@@ -25,20 +25,19 @@
                               (code:line #:property prop-expr val-expr)
                               (code:line #:transparent)
                               (code:line #:prefab)
+                              (code:line #:sealed)
                               (code:line #:authentic)
                               (code:line #:name name-id)
                               (code:line #:extra-name name-id)
                               (code:line #:constructor-name constructor-id)
                               (code:line #:extra-constructor-name constructor-id)
                               (code:line #:reflection-name symbol-expr)
-                              (code:line #:methods gen:name method-defs)
+                              (code:line #:methods gen:name-id method-defs)
                               #:omit-define-syntaxes
                               #:omit-define-values]
                [field-option #:mutable
                              #:auto]
-               [method-defs (definition ...)])
-               #:contracts
-               ([gen:name identifier?])]{
+               [method-defs (definition ...)])]{
 
 Creates a new @techlink{structure type} (or uses a pre-existing
 structure type if @racket[#:prefab] is specified), and binds
@@ -132,7 +131,7 @@ The @racket[#:inspector], @racket[#:auto-value], and @racket[#:guard]
 options specify an inspector, value for automatic fields, and guard
 procedure, respectively. See @racket[make-struct-type] for more
 information on these attributes of a structure type.  The
-@racket[#:property] option, which is the only one that can be supplied
+@racket[#:property] option, which can be supplied
 multiple times, attaches a property value to the structure type; see
 @secref["structprops"] for more information on properties. The
 @racket[#:transparent] option is a shorthand for @racket[#:inspector
@@ -157,9 +156,10 @@ so on. By convention, property names start with @racketidfont{prop:}.}
 The @racket[#:prefab] option obtains a @techlink{prefab} (pre-defined,
 globally shared) structure type, as opposed to creating a new
 structure type. Such a structure type is inherently transparent and
-cannot have a guard or properties, so using @racket[#:prefab] with
+non-sealed, and it cannot have a guard or properties, so using @racket[#:prefab] with
 @racket[#:transparent], @racket[#:inspector], @racket[#:guard],
-@racket[#:property], @racket[#:authentic], or @racket[#:methods] is a syntax error.
+@racket[#:property], @racket[#:sealed], @racket[#:authentic],
+or @racket[#:methods] is a syntax error.
 If a supertype is specified, it must also be a @tech{prefab} structure type.
 
 @examples[#:eval posn-eval
@@ -167,6 +167,11 @@ If a supertype is specified, it must also be a @tech{prefab} structure type.
   (prefab-point 1 2)
   (prefab-point? #s(prefab-point 1 2))
 ]
+
+The @racket[#:sealed] option is a shorthand for @racket[#:property
+prop:sealed #t], which prevents the structure type from being
+used as the supertype of another structure type. See
+@racket[prop:sealed] for more information.
 
 The @racket[#:authentic] option is a shorthand for @racket[#:property
 prop:authentic #t], which prevents instances of the structure type
@@ -224,10 +229,10 @@ name, as do the various procedures that are bound by @racket[struct].
   (eval:error (circle-radius "bad"))
 ]
 
-If @racket[#:methods gen:name method-defs] is provided, then
-@racket[gen:name] must be a transformer binding for the static
+If @racket[#:methods gen:name-id method-defs] is provided (potentially multiple times), then
+@racket[gen:name-id] must be a transformer binding for the static
 information about a generic interface produced by @racket[define-generics].
-The @racket[method-defs] define the methods of the @racket[gen:name]
+The @racket[method-defs] define the methods of the @racket[gen:name-id]
 interface. A @racket[define/generic] form or auxiliary definitions
 and expressions may also appear in @racket[method-defs].
 
@@ -301,7 +306,8 @@ cp
 
 For serialization, see @racket[define-serializable-struct].
 
-@history[#:changed "6.9.0.4" @elem{Added @racket[#:authentic].}]}
+@history[#:changed "6.9.0.4" @elem{Added @racket[#:authentic].}
+         #:changed "8.0.0.7" @elem{Added @racket[#:sealed].}]}
 
 
 @defform[(struct-field-index field-id)]{
@@ -351,15 +357,45 @@ preferred.
 (posn-y (make-posn 1 2))
 ]}
 
+@defform*[((struct/derived (id . rest-form) 
+           id (field ...) struct-option ...)
+           (struct/derived (id . rest-form)
+           id super-id (field ...) struct-option ...))]{
+
+The same as @racket[struct], but with an extra @racket[(id
+. rest-form)] sub-form that is treated as the overall form for
+syntax-error reporting and otherwise ignored.  The only constraint on
+the sub-form for error reporting is that it starts with @racket[id].
+The @racket[struct/derived] form is intended for use by macros
+that expand to @racket[struct].
+
+@examples[
+#:eval posn-eval
+(eval:no-prompt
+ (define-syntax (fruit-struct stx)
+   (syntax-case stx ()
+    [(ds name . rest) 
+     (with-syntax ([orig stx])
+       #'(struct/derived orig name (seeds color) . rest))])))
+
+(fruit-struct apple)
+(apple-seeds (apple 12 "red"))
+(fruit-struct apple #:mutable)
+(set-apple-seeds! (apple 12 "red") 8)
+(code:comment "this next line will cause an error due to a bad keyword")
+(eval:error (fruit-struct apple #:bad-option))
+]
+@history[#:added "7.5.0.16"]}
 
 @defform[(define-struct/derived (id . rest-form) 
            id-maybe-super (field ...) struct-option ...)]{
 
-The same as @racket[define-struct], but with an extra @racket[(id
-. rest-form)] sub-form that is treated as the overall form for
-syntax-error reporting and otherwise ignored.  The only constraint on
-the sub-form for error reporting is that it starts with @racket[id].
-The @racket[define-struct/derived] form is intended for use by macros
+Like @racket[struct/derived], except that the syntax for supplying a
+@racket[super-id] is different, and a @racket[_constructor-id] that
+has a @racketidfont{make-} prefix on @racket[id] is implicitly
+supplied via @racket[#:extra-constructor-name] if neither
+@racket[#:extra-constructor-name] nor @racket[#:constructor-name] is
+provided. The @racket[define-struct/derived] form is intended for use by macros
 that expand to @racket[define-struct].
 
 @examples[
@@ -377,7 +413,9 @@ that expand to @racket[define-struct].
 (set-posn-x! (make-posn 1 2) 0)
 (code:comment "this next line will cause an error due to a bad keyword")
 (eval:error (define-xy-struct posn #:bad-option))
-]}
+]
+@history[#:changed "7.5.0.16" @elem{Moved main description to @racket[struct/derived]
+                                    and replaced with differences.}]}
 
 @; ----------------------------------------
 

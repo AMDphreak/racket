@@ -91,9 +91,10 @@ compiled, as are all such files within subdirectories; the set of such suffixes
 is extensible globally as described in @racket[get-module-suffixes], and
 @racket[compile-collection-zos] recognizes suffixes from the @racket['libs] group. However,
 any file or directory whose path starts with @racket[skip-path] or an element of @racket[skip-paths] is
-skipped. (``Starts with'' means that the simplified path @racket[_p]'s
-byte-string form after @racket[(simplify-path _p #f)]starts with the
-byte-string form of @racket[(simplify-path skip-path #f)].)
+skipped. (``Starts with'' means that the simplified complete path @racket[_p]'s
+byte-string form after @racket[(simplify-path _p #f)] starts with the
+byte-string form of @racket[(simplify-path skip-path #f)]; not that each
+@racket[skip-path] should normally be a complete path.)
 
 The collection compiler reads the collection's @filepath{info.rkt} file
 (see @secref["info.rkt"]) to obtain further instructions for compiling the
@@ -104,19 +105,30 @@ collection.  The following fields are used:
  @item{@indexed-racket[name] : The name of the collection as a string, used
        only for status and error reporting.}
 
- @item{@indexed-racket[compile-omit-paths] : A list of immediate file
-       and directory paths that should not be compiled. Alternatively,
-       this field's value is @racket['all], which is equivalent to
-       specifying all files and directories in the collection (to
-       effectively ignore the collection for
+ @item{@indexed-racket[compile-omit-paths] : Either a list of paths
+       and @tech[#:doc reference-doc]{regexp values} or @racket['all].
+       In a list, a path is treated as a file that should not be
+       compiled or a directory whose files should not be compiled and
+       whose @filepath{info.rkt} files should be ignored by @exec{raco
+       setup}; the paths are relative to the collection (i.e.,
+       directory containing the @filepath{info.rkt} file) and can
+       refer to files and directories in subcollections that are that
+       are represented by subdirectories. A regexp in the list is
+       matched against file and directory paths relative to the
+       collection (so, for example, start a regexp with @litchar{^} to
+       match only paths in the immediate collection and not in
+       subcollections) to exclude those files and directories from
+       compilation and @exec{raco setup}. The value @racket['all] is
+       equivalent to specifying all files and directories in the
+       collection (to effectively ignore the collection for
        compilation). Automatically omitted files and directories are
        @filepath{compiled}, @filepath{doc}, and those whose names
        start with @litchar{.}.
 
-       Files that are required by other files, however, are always
-       compiled in the process of compiling the requiring file---even
-       when the required file is listed with this field or when the
-       field's value is @racket['all].}
+       Files that are required by other files are always compiled in
+       the process of compiling the requiring file---even when the
+       required file is listed with this field or when the field's
+       value is @racket['all].}
 
  @item{@indexed-racket[compile-omit-files] : A list of filenames (without
        directory paths) that are not compiled, in addition to the
@@ -139,7 +151,9 @@ collection.  The following fields are used:
 
 ]
 
-@history[#:changed "6.3" @elem{Added support for @racket[compile-include-files].}]}
+@history[#:changed "6.3" @elem{Added support for @racket[compile-include-files].}
+         #:changed "7.8.0.8" @elem{Changed ``starts with'' for @racket[skip-path] to include an exact match.}
+         #:changed "8.1.0.5" @elem{Added support for regexps in @racket[compile-omit-paths].}]}
 
 
 @defproc[(compile-directory-zos [path path-string?]
@@ -156,7 +170,13 @@ collection.  The following fields are used:
 Like @racket[compile-collection-zos], but compiles the given directory
 rather than a collection. The @racket[info] function behaves like the
 result of @racket[get-info] to supply @filepath{info.rkt} fields,
-instead of using an @filepath{info.rkt} file (if any) in the directory.}
+instead of using an @filepath{info.rkt} file (if any) in the directory.
+
+@history[#:changed "7.8.0.8" @elem{Changed @racket[info] handling to use @racket[info]
+                                   for @racket['compile-omit-paths], ignoring
+                                   any @filepath{info.rkt} files in parent and
+                                   child directories.}]}
+
 
 @; ----------------------------------------------------------------------
 

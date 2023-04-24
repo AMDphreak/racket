@@ -38,9 +38,21 @@
     (raise-argument-error 'string-join "string?" sep))
   (unless (or (string? after-last) (eq? after-last none))
     (raise-argument-error 'string-join "string?" after-last))
-  (let* ([r (if (or (null? strs) (null? (cdr strs)))
-              strs
-              (add-between strs sep #:before-last before-last))]
+
+  (let* ([r (cond
+              [(or (null? strs) (null? (cdr strs))) strs]
+              ;; below here, strs definitely has at least two elements
+              [(equal? sep "")
+               (cond
+                 [(equal? before-last "") strs]
+                 [else
+                  (define rev-strs (reverse strs))
+                  (define rev-assembled
+                    (cons (car rev-strs)
+                          (cons before-last
+                                (cdr rev-strs))))
+                  (reverse rev-assembled)])]
+              [else (add-between strs sep #:before-last before-last)])]
          [r (if (eq? after-last   none) r (append r (list after-last)))]
          [r (if (eq? before-first none) r (cons before-first r))])
     (apply string-append r)))
@@ -124,8 +136,35 @@
   ;; don't do that for all nulls).)
   (if (equal? strs '("")) '() strs))
 
+;; A faster split implementation when splitting on whitespace. The
+;; string will also be trimmed.
+(define (internal-split-whitespace str)
+  (define (is-whitespace? c)
+    (or (eq? c #\space)
+        (eq? c #\tab)
+        (eq? c #\newline)
+        (eq? c #\return)
+        (eq? c #\page)))
+  (define len (string-length str))
+  (let loop ([beg 0] [end 0])
+    (cond [(= end len)
+           (if (= beg end)
+               '()
+               (list (substring str beg end)))]
+          [(is-whitespace? (string-ref str end))
+           (let ([pos (add1 end)])
+             (if (= beg end)
+                 (loop pos pos)
+                 (cons (substring str beg end)
+                       (loop pos pos))))]
+          [else (loop beg (add1 end))])))
+
 (define (string-split str [sep none] #:trim? [trim? #t] #:repeat? [+? #f])
-  (internal-split 'string-split str sep trim? +?))
+  (if (and (string? str)
+           (or (eq? sep none) (eq? sep #px"\\s+"))
+           trim?)
+      (internal-split-whitespace str)
+      (internal-split 'string-split str sep trim? +?)))
 
 (define (string-normalize-spaces str [sep none] [space " "]
                                  #:trim? [trim? #t] #:repeat? [+? #f])
@@ -181,7 +220,7 @@
 ;; string-contains? uses a variant of the Knuth-Morris-Pratt string search
 ;; algorithm. It start with a direct search without the KMP table, until
 ;; it finds a partial match that long enough (currently 4 characters).
-;; The table is also skiped when there are only a few characters left
+;; The table is also skipped when there are only a few characters left
 ;; to test (currently 4 characters).
 ;; The first time a partial match is found, it buils a small partial table
 ;; and if it is necesay it builds the complete table.

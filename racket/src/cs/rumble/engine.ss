@@ -32,7 +32,7 @@
 (define (currently-in-engine?)
   (current-engine-complete-or-expire))
 
-;; An engine is repesented by a procedure that takes three arguments, where the
+;; An engine is represented by a procedure that takes three arguments, where the
 ;; procedure must be tail-called either within `call-with-engine-completion` or
 ;; in an engine call's `complete-or-expire` callback:
 ;;   * ticks: number of ticks to run before exire
@@ -77,10 +77,10 @@
                     init-break-enabled-cell))))
 
 ;; Internal: creates an engine procedure to be called within `call-with-engine-completion`
-;; or from an enginer procedure's `complete-or-expire` callback
+;; or from an engine procedure's `complete-or-expire` callback
 (define (create-engine to-saves proc cell-state)
   (case-lambda
-   ;; For `continuation-marks`:
+   ;; For `continuation-marks` and `engine-roots`:
    [() to-saves]
    ;; Normal engine case:
    [(ticks prefix complete-or-expire)
@@ -99,8 +99,10 @@
 ;; with a procedure to be tail-called from an engine procedure's `complete-or-expire`
 ;; callback to return to the metacontinuation
 (define (call-with-engine-completion proc)
+  (start-implicit-uninterrupted 'call-with-engine-completion)
   (call-with-current-metacontinuation
    (lambda (saves)
+     (end-implicit-uninterrupted 'call-with-engine-completion)
      (let ([rh (reset-handler)]
            [ws (#%$current-winders)]
            [exns (current-exception-state)])
@@ -122,7 +124,7 @@
   (end-uninterrupted 'reset)
   (if (currently-in-engine?)
       (engine-return (void))
-      (chez:exit)))
+      (#%exit 1)))
 
 (define (engine-block-via-timer)
   (cond
@@ -134,19 +136,18 @@
 (define engine-block
   (case-lambda
    [(timeout?)
-    (assert-not-in-uninterrupted)
+    (assert-not-in-uninterrupted 'engine-block)
     (timer-interrupt-handler void)
     (let ([complete-or-expire (current-engine-complete-or-expire)]
           [cell-state (current-engine-cell-state)]
-          [remain-ticks (if timeout?
-                            0
-                            (set-timer 0))])
+          [remain-ticks (let ([n (set-timer 0)])
+                          (if timeout? 0 n))])
       (unless complete-or-expire
         (error 'engine-block "not currently running an engine"))
-      (start-implicit-uninterrupted 'block)
+      (start-implicit-uninterrupted 'engine-block)
       (call-with-current-metacontinuation
        (lambda (saves)
-         (end-implicit-uninterrupted 'block)
+         (end-implicit-uninterrupted 'engine-block)
          (current-engine-complete-or-expire #f)
          (current-engine-cell-state empty-engine-cell-state)
          (complete-or-expire (create-engine saves
@@ -171,7 +172,7 @@
       (set-timer 1)])))
 
 (define (engine-return . results)
-  (assert-not-in-uninterrupted)
+  (assert-not-in-uninterrupted 'engine-return)
   (timer-interrupt-handler void)
   (let ([complete-or-expire (current-engine-complete-or-expire)])
     (unless complete-or-expire
@@ -184,6 +185,10 @@
          (current-engine-complete-or-expire #f)
          (current-engine-cell-state empty-engine-cell-state)
          (complete-or-expire #f results remain-ticks))))))
+
+(define (engine-roots e)
+  (let ([mc (e)])
+    (cons e mc)))
 
 (define (make-empty-thread-cell-values)
   (make-ephemeron-eq-hashtable))

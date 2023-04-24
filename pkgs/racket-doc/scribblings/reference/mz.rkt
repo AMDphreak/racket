@@ -6,17 +6,18 @@
          scribble/decode
          racket/contract
          racket/contract/collapsible
-         "../icons.rkt")
+         "../icons.rkt"
+         (for-label racket
+                    racket/contract/collapsible
+                    racket/mutability))
 
 (provide (all-from-out scribble/manual)
          (all-from-out scribble/examples)
          (all-from-out racket/contract)
-         (all-from-out racket/contract/collapsible))
-
-(require (for-label racket))
-(provide (for-label (all-from-out racket)))
-(require (for-label racket/contract/collapsible))
-(provide (for-label (all-from-out racket/contract/collapsible)))
+         (all-from-out racket/contract/collapsible)
+         (for-label (all-from-out racket
+                                  racket/contract/collapsible
+                                  racket/mutability)))
 
 (provide mz-examples)
 (define mz-eval (make-base-eval))
@@ -33,23 +34,33 @@
 (provide note-lib)
 (define-syntax note-lib
   (syntax-rules ()
-    [(_ lib #:use-sources (src ...) . more)
+    [(_ lib #:more-libs (lib+ ...) #:use-sources (src ...) . more)
      (begin
-       (declare-exporting lib racket #:use-sources (src ...))
-       (defmodule*/no-declare (lib)
+       (declare-exporting lib lib+ ... racket #:use-sources (src ...))
+       (defmodule*/no-declare (lib lib+ ...)
          (t (make-collect-element
              #f null
              (lambda (ci)
                (collect-put! ci `(racket-extra-lib ,'lib) (racketmodname lib))))
             "The bindings documented in this section are provided by the "
-            (racketmodname lib)
-            " and "
+            (combine-library-names (racketmodname lib) (racketmodname lib+) ...) ; includes trailing space
+            "and "
             (racketmodname racket)
             " libraries, but not " (racketmodname racket/base)
             "."
             . more)))]
+    [(_ lib #:more-libs (lib+ ...) . more)
+     (note-lib lib #:more-libs (lib+ ...) #:use-sources () . more)]
+    [(_ lib #:use-sources (src ...) . more)
+     (note-lib lib #:more-libs () #:use-sources (src ...) . more)]
     [(_ lib . more)
-     (note-lib lib #:use-sources () . more)]))
+     (note-lib lib #:more-libs () #:use-sources () . more)]))
+
+(define (combine-library-names lib . lib+s)
+  (if (null? lib+s)
+      (list lib " ")
+      (for/list ([lib (in-list (cons lib lib+s))])
+        (list lib ", "))))
 
 (provide note-init-lib)
 (define-syntax note-init-lib
@@ -162,3 +173,13 @@
   (history #:changed "7.0.0.13" @elem{Allow one argument, in addition to allowing two or more.}
            arg ...))
 
+(provide envvar-indexed)
+(define (envvar-indexed s)
+  (as-index (envvar s)))
+
+(provide concurrency-caveat
+         mutable-key-caveat)
+@(define (concurrency-caveat)
+  @elemref['(caveat "concurrency")]{caveats concerning concurrent modification})
+@(define (mutable-key-caveat)
+  @elemref['(caveat "mutable-keys")]{caveat concerning mutable keys})

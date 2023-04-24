@@ -16,7 +16,8 @@
          "future-object.rkt"
          "future-id.rkt"
          "future-lock.rkt"
-         "future-logging.rkt")
+         "future-logging.rkt"
+         "error.rkt")
 
 ;; See "README.txt" for some general information about this
 ;; implementation of futures.
@@ -43,7 +44,8 @@
   (provide future*-lock
            set-future*-state!
            future-suspend
-           future-notify-dependent))
+           future-notify-dependent
+           wakeup-this-place))
 
 (define (init-future-place!)
   (init-future-logging-place!))
@@ -230,7 +232,9 @@
      (apply values (future*-results f))]
     [(eq? s 'aborted)
      (lock-release-both f)
-     (raise (exn:fail "touch: future previously aborted"
+     (raise (exn:fail (error-message->string
+                       'touch
+                       "future previously aborted")
                       (current-continuation-marks)))]
     [(eq? s 'blocked)
      (cond
@@ -287,7 +291,7 @@
         (lock-release (future*-lock f))
         (touch s)
         (touch f)])]
-    [(box? s) ; => dependent on fsemaphore
+    [(or (box? s) (eq? s 'fsema)) ; => dependent on fsemaphore
      (cond
        [(current-future)
         ;; Lots to wait on, so give up on the current future for now
@@ -652,7 +656,10 @@
 
 ;; lock-free synchronization to check whether the box content is #f
 (define (worker-pinged? w)
-  (box-cas! (worker-ping w) #t #t))
+  (cond
+    [(box-cas! (worker-ping w) #t #t) #t]
+    [(box-cas! (worker-ping w) #f #f) #f]
+    [else (worker-pinged? w)]))
 
 ;; called with scheduler lock
 (define (check-in w)

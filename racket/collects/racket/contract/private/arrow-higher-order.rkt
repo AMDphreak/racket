@@ -96,8 +96,8 @@
                         #:missing-party (cdr blame+neg-party)
                         val "#:post condition"))))
 
-(define (check-pre-cond/desc post blame+neg-party val)
-  (handle-pre-post/desc-string #t post blame+neg-party val))
+(define (check-pre-cond/desc pre blame+neg-party val)
+  (handle-pre-post/desc-string #t pre blame+neg-party val))
 (define (check-post-cond/desc post blame+neg-party val)
   (handle-pre-post/desc-string #f post blame+neg-party val))
 (define (handle-pre-post/desc-string pre? thunk blame+neg-party val)
@@ -570,7 +570,7 @@
          (not post?)
          (null? kwd-infos)
          (not rngs)
-         (andmap any/c? doms)
+         (andmap prop:any/c? doms)
          (= optionals-length 0)))
   (λ (orig-blame)
     (define-values (partial-doms

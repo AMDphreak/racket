@@ -13,7 +13,6 @@
 
 (require setup/main-collects
          racket/struct-info
-         (only-in racket/private/list-predicates empty? cons?)
          (for-template racket/base
                        (only-in racket/private/list-predicates
                                 empty? cons?)))
@@ -21,7 +20,7 @@
 (define (update-loc stx loc)
   (datum->syntax stx (syntax-e stx) loc))
 
-;; lookup-struct-info : syntax -> (union #f struct-info?)
+;; lookup-struct-info : syntax -> struct-info?
 (define (lookup-struct-info stx provide-stx)
   (define id (syntax-case stx ()
                [(a b) (syntax a)]
@@ -281,6 +280,7 @@
          (flonum? . #t)
          (handle-evt? . #t)
          (hash-eq? . #t)
+         (hash-equal-always? . #t)
          (hash-equal? . #t)
          (hash-eqv? . #t)
          (hash-placeholder? . #t)

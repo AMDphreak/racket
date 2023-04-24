@@ -1,6 +1,6 @@
 
 unixstyle=no
-if test "${enable_useprefix}" = "yes" -a "${prefix}" != "NONE" ; then
+if test "${enable_origtree}" != "yes" -a "${enable_useprefix}" != "no" ; then
   if test "${prefix}" != "NONE" ; then
     unixstyle=yes
   fi
@@ -43,6 +43,9 @@ if test "${enable_useprefix}" = "yes" -a "${prefix}" != "NONE" ; then
   if test "${collectsdir}" != '${exec_prefix}/share/${PACKAGE}/collects' ; then
     unixstyle=yes
   fi
+  if test "${pkgsdir}" != '${datarootdir}/${PACKAGE}/pkgs' ; then
+    unixstyle=yes
+  fi
   if test "${appsdir}" != '${exec_prefix}/share/applications' ; then
     unixstyle=yes
   fi
@@ -65,12 +68,17 @@ if test "${unixstyle}" = "no" ; then
   docdir='${prefix}/doc'
   mandir='${prefix}/man'
   collectsdir='${prefix}/collects'
+  pkgsdir='${prefix}/share/pkgs'
   appsdir='${prefix}/share/applications'
   COLLECTS_PATH="../collects"
   CONFIG_PATH="../etc"
   GR_APP_COLLECTS_PATH="../../../../collects"
   GR_APP_CONFIG_PATH="../../../../etc"
   INSTALL_ORIG_TREE=yes
+  if test "${enable_sharezo}" = "yes" ; then
+    echo WARNING: --enable-sharezo is ignored for an origtree installation
+  fi
+  INSTALL_LIBZO=no
 else
   if test "${prefix}" = "NONE" ; then
     # Set prefix explicitly so we can use it during configure
@@ -92,12 +100,15 @@ else
   GR_APP_COLLECTS_PATH="${COLLECTS_PATH}"
   GR_APP_CONFIG_PATH="${CONFIG_PATH}"
   INSTALL_ORIG_TREE=no
+  if test "${enable_sharezo}" = "yes" ; then
+    INSTALL_LIBZO=no
+  else
+    INSTALL_LIBZO=libzo
+  fi
 fi
 
 GUI_COLLECTS_PATH="${COLLECTS_PATH}"
 GUI_CONFIG_PATH="${CONFIG_PATH}"
-
-CS_BOOTSTRAP_HELP="no-3m"
 
 ########################################
 
@@ -109,6 +120,7 @@ AC_SUBST(sharepltdir)
 AC_SUBST(etcpltdir)
 AC_SUBST(includepltdir)
 AC_SUBST(docdir)
+AC_SUBST(pkgsdir)
 
 AC_SUBST(COLLECTS_PATH)
 AC_SUBST(GUI_COLLECTS_PATH)
@@ -121,6 +133,7 @@ AC_SUBST(MAKE_COPYTREE)
 AC_SUBST(MAKE_GRACKET)
 AC_SUBST(LIBFINISH)
 AC_SUBST(INSTALL_ORIG_TREE)
+AC_SUBST(INSTALL_LIBZO)
 
 AC_SUBST(MMM)
 AC_SUBST(MMM_INSTALLED)
@@ -130,7 +143,6 @@ AC_SUBST(CGC_INSTALLED)
 AC_SUBST(CGC_CAP_INSTALLED)
 AC_SUBST(MAIN_VARIANT)
 AC_SUBST(MAIN_MAKE_TARGET)
-AC_SUBST(CS_BOOTSTRAP_HELP)
 
 AC_SUBST(MAKE_LOCAL_RACKET)
 
@@ -160,6 +172,7 @@ show_path_results()
     echo " platform libraries : ${libpltdir}/..."
     echo " common libraries   : ${sharepltdir}/..."
     echo " base collections   : ${collectsdir}/..."
+    echo " installed pkgs     : ${pkgsdir}/..."
     echo " configuration      : ${etcpltdir}/..."
     echo " .desktop files     : ${appsdir}/..."
     echo " man pages          : ${mandir}/..."

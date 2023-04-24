@@ -36,14 +36,38 @@
                        (#3%fxsra x max-fx-shift)
                        (#3%fxsra x (#3%fx- n)))
                    (if (#3%fx> n max-fx-shift)
-                       (#3%bitwise-arithmetic-shift x n)
+                       (general-arithmetic-shift x n)
                        (let ([m (#3%fxsll x n)])
                          (if (#3%fx= (#3%fxsra m n) x)
                              m
                              (#3%bitwise-arithmetic-shift x n))))))
-             (#2%bitwise-arithmetic-shift x n)))]
-    [(_ expr ...) #'(#2%bitwise-arithmetic-shift expr ...)]
-    [_ #'#2%bitwise-arithmetic-shift]))
+             (general-arithmetic-shift x n)))]
+    [(_ expr ...) #'(general-arithmetic-shift expr ...)]
+    [_ #'general-arithmetic-shift]))
+
+(define general-arithmetic-shift
+  (|#%name|
+   arithmetic-shift
+   (lambda (x n)
+     (cond
+      [(not (exact-integer? x))
+       (#2%bitwise-arithmetic-shift x n)]
+      [(fixnum? n)
+       (unless (or (eqv? x 0) (fx< n 1000))
+         (guard-large-allocation 'arithmetic-shift 'number n 1))
+       (#2%bitwise-arithmetic-shift x n)]
+      [(and (not (eqv? x 0))
+            (bignum? n)
+            (positive? n))
+       (raise (|#%app|
+               exn:fail:out-of-memory
+               (error-message->adjusted-string
+                'arithmetic-shift primitive-realm
+                "out of memory"
+                primitive-realm)
+               (current-continuation-marks)))]
+      [else
+       (#2%bitwise-arithmetic-shift x n)]))))
 
 (define-syntax-rule (define-bitwise op fxop)
   (...
@@ -87,15 +111,21 @@
   (let ([m (integer-sqrt n)])
     (values m (- n (* m m)))))
 
-(define fx->fl #2%fixnum->flonum)
-(define fxrshift #2%fxarithmetic-shift-right)
-(define fxlshift #2%fxarithmetic-shift-left)
+(define (fx->fl x) (#2%fixnum->flonum x))
+(define (fxrshift x y) (#2%fxarithmetic-shift-right x y))
+(define (fxlshift x y) (#2%fxarithmetic-shift-left x y))
+(define (fxlshift/wraparound x y) (#2%fxsll/wraparound x y))
+(define (fxrshift/logical x y) (#2%fxsrl x y))
 
-(define fl->fx #2%flonum->fixnum)
-(define ->fl #2%real->flonum)
+(define (fl->fx x) (#2%flonum->fixnum x))
+(define/who (->fl x)
+  (cond
+    [(fixnum? x) (fixnum->flonum x)]
+    [(bignum? x) (real->flonum x)]
+    [else (#%$app/no-inline raise-argument-error who "exact-integer?" x)]))
 (define/who (fl->exact-integer fl)
-  (check who flonum? fl)
-  (inexact->exact (flfloor fl)))
+  (check who (lambda (x) (and (flonum? x) (flinteger? x))) :contract "(and/c flonum? integer?)" fl)
+  (inexact->exact fl))
 
 (define/who (flreal-part a)
   (or (and
@@ -134,6 +164,7 @@
 (define/who integer->integer-bytes
   (case-lambda
    [(num size signed? big-endian? bstr start)
+    (check who exact-integer? num)
     (let ([check (lambda (n lo hi)
                    (check who bytes? bstr)
                    (check who exact-nonnegative-integer? start)
@@ -179,7 +210,7 @@
         [(4)
          (if signed? 
              (check 4 -2147483648 2147483647)
-             (check 4 0 8589934591))
+             (check 4 0 4294967295))
          (if signed?
              (bytevector-s32-set! bstr start num (if big-endian?
                                                      (endianness big)
@@ -217,8 +248,13 @@
     (check who bytes? bstr)
     (check who exact-nonnegative-integer? start)
     (check who exact-nonnegative-integer? end)
+    (unless (memq (- end start) '(1 2 4 8))
+      (raise-arguments-error who
+                             "length is not 1, 2, 4, or 8 bytes"
+                             "length" (- end start)))
+    (check-range who "index" bstr start end (bytes-length bstr))
     (case (- end start)
-      [(1)
+      [(1)       
        (if signed?
            (bytevector-s8-ref bstr start)
            (bytevector-u8-ref bstr start))]
@@ -238,18 +274,14 @@
            (bytevector-u32-ref bstr start (if big-endian?
                                               (endianness big)
                                               (endianness little))))]
-      [(8)
+      [else
        (if signed?
            (bytevector-s64-ref bstr start (if big-endian?
                                               (endianness big)
                                               (endianness little)))
            (bytevector-u64-ref bstr start (if big-endian?
                                               (endianness big)
-                                              (endianness little))))]
-      [else
-       (raise-arguments-error 'integer-bytes->integer
-                              "length is not 1, 2, 4, or 8 bytes"
-                              "length" (- end start))])]
+                                              (endianness little))))])]
    [(bstr signed?)
     (integer-bytes->integer bstr signed? (system-big-endian?) 0 (and (bytes? bstr) (bytes-length bstr)))]
    [(bstr signed? big-endian?)
@@ -260,19 +292,26 @@
 (define/who real->floating-point-bytes
   (case-lambda
    [(num size big-endian? bstr start)
-    (check who bytes? bstr)
-    (case size
-      [(4)
+    (check who real? num)
+    (check who (lambda (v) (or (eq? v 4) (eq? v 8))) :contract "(or/c 4 8)" size)
+    (check who mutable-bytevector? :contract "(and/c bytes? (not/c immutable?))" bstr)
+    (check who exact-nonnegative-integer? start)
+    (check-range who "index" bstr start #f (bytes-length bstr))
+    (unless (>= (bytevector-length bstr) (+ start size))
+      (raise-arguments-error who
+                             "byte string length is shorter than starting position plus size"
+                             "byte string length" (bytevector-length bstr)
+                             "starting position" start
+                             "size" size))
+    (cond
+      [(eq? size 4)
        (bytevector-ieee-single-set! bstr start num (if big-endian?
                                                        (endianness big)
                                                        (endianness little)))]
-      [(8)
+      [else
        (bytevector-ieee-double-set! bstr start num (if big-endian?
                                                        (endianness big)
-                                                       (endianness little)))]
-      [else
-       (raise-argument-error 'real->floating-point-bytes
-                             "(or/c 4 8)" size)])
+                                                       (endianness little)))])
     bstr]
    [(num size)
     (real->floating-point-bytes num size (system-big-endian?)
@@ -289,19 +328,20 @@
     (check who bytes? bstr)
     (check who exact-nonnegative-integer? start)
     (check who exact-nonnegative-integer? end)
+    (check-range who "index" bstr start end (bytes-length bstr))
+    (unless (memq (- end start) '(4 8))
+      (raise-arguments-error who
+                             "length is not 4 or 8 bytes"
+                             "length" (- end start)))
     (case (- end start)
       [(4)
        (bytevector-ieee-single-ref bstr start (if big-endian?
                                                   (endianness big)
                                                   (endianness little)))]
-      [(8)
+      [else
        (bytevector-ieee-double-ref bstr start (if big-endian?
                                                   (endianness big)
-                                                  (endianness little)))]
-      [else
-       (raise-arguments-error who
-                              "length is not 4 or 8 bytes"
-                              "length" (- end start))])]
+                                                  (endianness little)))])]
    [(bstr)
     (floating-point-bytes->real bstr (system-big-endian?) 0 (and (bytes? bstr) (bytes-length bstr)))]
    [(bstr big-endian?)
@@ -372,6 +412,13 @@
       result)]
    [else
     (cond
+     [(and (eq? radix 10)
+           (number? n))
+      ;; `number->string` goes through `format` to get to an implementation
+      ;; like this, so take a shortcut:
+      (let ([op (#%open-output-string)])
+        (#%display n op)
+        (#%get-output-string op))]
      [(eq? radix 16)
       ;; Host generates uppercase letters, Racket generates lowercase
       (string-downcase (#2%number->string n radix))]
@@ -381,7 +428,10 @@
 (define/who (quotient/remainder n m)
   (check who integer? n)
   (check who integer? m)
-  (values (quotient n m) (remainder n m)))
+  (if (and (exact? n) (exact? m))
+      (let ([q+r (#%$quotient-remainder n m)])
+        (values (car q+r) (cdr q+r)))
+      (values (quotient n m) (remainder n m))))
 
 (define/who gcd
   (case-lambda
@@ -432,3 +482,19 @@
       (cond
        [(null? ms) n]
        [else (loop (lcm n (car ms)) (cdr ms))]))]))
+
+(define (fllog n) (#2%fllog n))
+(define (flatan n) (#2%flatan n))
+
+(define (fxquotient n d) (#2%fxquotient n d))
+
+(define (init-flonum-printing!)
+  (print-subnormal-precision #f)
+  (print-positive-exponent-sign #t)
+  (print-select-flonum-exponential-format
+   (lambda (r e n-digits)
+     (not (or (fx> r 10)
+              (cond
+                [(fx< e -4) #f]
+                [(fx< e 14) #t]
+                [else (fx< (fx- e n-digits) 3)]))))))

@@ -3,7 +3,7 @@
 ;; #%stxcase-scheme: adds let-syntax, letrec-syntax, etc.
 
 (module letstx-scheme '#%kernel
-  (#%require "small-scheme.rkt"
+  (#%require "define-et-al.rkt" "qq-and-or.rkt" "cond.rkt"
              (for-syntax '#%kernel "stxcase.rkt" 
                          "with-stx.rkt" "stxloc.rkt"))
   
@@ -32,14 +32,18 @@
 	 (with-syntax ([((tmp ...) ...) 
 			(map
 			 generate-temporaries 
-			 (syntax->list (syntax ((id ...) ...))))])
-	   (syntax/loc stx
-	       (letrec-syntaxes+values ([(tmp ...) expr] ...) ()
-		 (letrec-syntaxes+values ([(id ...) (values
-						     (make-rename-transformer (quote-syntax tmp))
-						     ...)] ...)
-					 ()
-		   body1 body ...))))])))
+                         (syntax->list (syntax ((id ...) ...))))])
+           (with-syntax ([let-syntaxes-body/loc
+                          (syntax/loc stx
+                            (letrec-syntaxes+values ([(id ...)
+                                                      (values
+                                                       (make-rename-transformer (quote-syntax tmp))
+                                                       ...)] ...)
+                                                    ()
+                              body1 body ...))])
+             (syntax/loc stx
+               (letrec-syntaxes+values ([(tmp ...) expr] ...) ()
+                 let-syntaxes-body/loc))))])))
 
   (-define-syntax let-syntax
     (lambda (stx)
@@ -49,5 +53,5 @@
 	     (let-syntaxes ([(id) expr] ...)
 	       body1 body ...))])))
 
-  (#%provide (all-from "small-scheme.rkt")
+  (#%provide (all-from "define-et-al.rkt") (all-from "qq-and-or.rkt") (all-from "cond.rkt")
              letrec-syntaxes letrec-syntax let-syntaxes let-syntax))

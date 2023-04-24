@@ -3,7 +3,7 @@
 (define collection 'multi)
 
 (define deps '("base"
-               "scribble-lib"))
+               ["scribble-lib" #:version "1.46"]))
 (define build-deps '("scheme-lib"
                      "at-exp-lib"))
 
@@ -11,7 +11,7 @@
 
 (define pkg-authors '(eli jay matthias mflatt robby ryanc samth))
 
-(define version "1.2")
+(define version "1.3")
 
 ;; We need to be able to re-render this documentation even in
 ;; binary mode, since that's how we list new documentation:
@@ -26,3 +26,6 @@
                             "scribblings/main/user/compiled/release_scrbl.zo"
                             "scribblings/main/user/compiled/search_scrbl.zo"
                             "scribblings/main/user/compiled/start_scrbl.zo"))
+
+(define license
+  '(Apache-2.0 OR MIT))

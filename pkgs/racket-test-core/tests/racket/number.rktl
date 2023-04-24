@@ -179,6 +179,8 @@
 (test "+nan.0" number->string +nan.0)
 (test "+nan.0" number->string +nan.0)
 
+(test "1589935744527.254" number->string 1589935744527.254)
+
 #reader "maybe-single.rkt"
 (begin
   (test (if has-single-flonum? "+inf.f" "+inf.0") number->string +inf.f)
@@ -343,6 +345,39 @@
 (test-trans #t <= > 3713820117856140824697372668/3 1.2379400392853803e+27 3713820117856140824697372676/3)
 (test-trans #f >= < 1237940039285380274899124223 1.2379400392853803e+27 1237940039285380274899124225)
 (test-trans #f >= < 3713820117856140824697372668/3 1.2379400392853803e+27 3713820117856140824697372676/3)
+
+(test #t = 9007199254740992 (exact->inexact 9007199254740993))
+
+(test #f < 9007199254740992 9007199254740992.0)
+(test #f < 9007199254740993 9007199254740992.0)
+
+(test #t <= 9007199254740992 9007199254740992.0)
+(test #f <= 9007199254740993 9007199254740992.0)
+
+(test #t = 9007199254740992 9007199254740992.0)
+(test #f = 9007199254740993 9007199254740992.0)
+
+(test #t >= 9007199254740992 9007199254740992.0)
+(test #t >= 9007199254740993 9007199254740992.0)
+
+(test #f > 9007199254740992 9007199254740992.0)
+(test #t > 9007199254740993 9007199254740992.0)
+
+
+(test #f < 9007199254740992.0 9007199254740992)
+(test #t < 9007199254740992.0 9007199254740993)
+
+(test #t <= 9007199254740992.0 9007199254740992)
+(test #t <= 9007199254740992.0 9007199254740993)
+
+(test #t = 9007199254740992.0 9007199254740992)
+(test #f = 9007199254740992.0 9007199254740993)
+
+(test #t >= 9007199254740992.0 9007199254740992)
+(test #f >= 9007199254740992.0 9007199254740993)
+
+(test #f > 9007199254740992.0 9007199254740992)
+(test #f > 9007199254740992.0 9007199254740993)
 
 (define (test-nan.0 f . args)
   (apply test +nan.0 f args))
@@ -603,6 +638,23 @@
 (when has-single-flonum?
   (test +inf.f expt -4.0f0 (lcm (exact-round -1.7976931348623151e+308)))
   (test -inf.f expt -4.0f0 (add1 (lcm (exact-round -1.7976931348623151e+308)))))
+
+(test  5.540619075645279e+34 expt   1.000000000000001 (expt 2 56))
+(test  5.540619075645279e+34 expt  -1.000000000000001 (expt 2 56))
+(test -5.5406190756452855e+34 expt -1.000000000000001 (add1 (expt 2 56)))
+
+(let ()
+  (define nrs (list -inf.0 -2.0 -1.0 -0.5 -0.0 0.0 0.5 1.0 2.0 +inf.0))
+  (define (neg-even nr) (- (- nr) 1))
+  (define (neg-odd nr) (- nr))
+  (define (pos-even nr) (+ nr 1))
+  (define (pos-odd nr) nr)
+  (for ([base (in-list nrs)])
+    (for ([make-exponent (in-list (list neg-even neg-odd pos-even pos-odd))])
+      (define L
+        (for/list ([i (in-list '(14 150 350))])
+          (expt base (make-exponent (string->number (build-string i (λ (i) #\1)))))))
+      (test #t `(,base ,L) (apply = L)))))
 
 (define (inf-non-real? x)
   (and (not (real? x))
@@ -1091,6 +1143,19 @@
 (err/rt-test (modulo 6 -0.0) exn:fail:contract:divide-by-zero?)
 (err/rt-test (remainder 6 -0.0) exn:fail:contract:divide-by-zero?)
 
+(let ()
+  (define (check-rem-mod a b rem mod)
+    (test rem remainder a b)
+    (test rem remainder (inexact->exact a) b)
+    (test rem remainder a (inexact->exact b))
+    (test mod modulo a b)
+    (test mod modulo (inexact->exact a) b)
+    (test mod modulo a (inexact->exact b)))
+  (check-rem-mod 5.842423430828094e+60 10.0 4.0 4.0)
+  (check-rem-mod 5.842423430828094e+60 -10.0 4.0 -6.0)
+  (check-rem-mod -5.842423430828094e+60 10.0 -4.0 6.0)
+  (check-rem-mod -5.842423430828094e+60 -10.0 -4.0 -4.0))
+
 (define (test-qrm-inf v)
   (define iv (exact->inexact v))
 
@@ -1289,14 +1354,22 @@
   (test 0 arithmetic-shift 42 (+ i (- (expt 2 31))))
   (test 0 arithmetic-shift 42 (+ i (- (expt 2 63)))))
 
+(test 0 arithmetic-shift 0 (expt 2 100))
+(test 0 arithmetic-shift 0 (- (expt 2 100)))
+(test 0 arithmetic-shift 1 (- (expt 2 100)))
+(test 0 arithmetic-shift (expt 2 100) (- (expt 2 100)))
+(test -1 arithmetic-shift -1 (- (expt 2 100)))
+(test -1 arithmetic-shift (- (expt 2 100)) (- (expt 2 100)))
+
+(test (- (expt 16 232)) arithmetic-shift (- 307 (expt 16 240)) -32)
+
 (arity-test arithmetic-shift 2 2)
 (err/rt-test (arithmetic-shift "a" 1))
 (err/rt-test (arithmetic-shift 1 "a"))
 (err/rt-test (arithmetic-shift 1.0 1))
 (err/rt-test (arithmetic-shift 1 1.0))
 (err/rt-test (arithmetic-shift 1 1.0+0.0i))
-(unless (eq? 'chez-scheme (system-type 'vm))
-  (err/rt-test (eval '(arithmetic-shift 1 (expt 2 80))) exn:fail:out-of-memory?))
+(err/rt-test (eval '(arithmetic-shift 1 (expt 2 80))) exn:fail:out-of-memory?)
 
 (test #f bitwise-bit-set? 13 1)
 (test #t bitwise-bit-set? 13 2)
@@ -1404,6 +1477,7 @@
 (test (expt 3 37) gcd (expt 9 35) (- (expt 6 37)))
 (test (expt 3 75) gcd (expt 3 75))
 (test (expt 3 75) gcd (- (expt 3 75)))
+(test 1152921504606846976 gcd 5880287055120467478183936 1152921504606846976)
 (test 201 gcd (* 67 (expt 3 20)) (* 67 3))
 (test 201 gcd (* 67 3) (* 67 (expt 3 20)))
 (test 6 gcd (* 3 (expt 2 100)) 66)
@@ -1432,6 +1506,14 @@
 (test (* (expt 2 37) (expt 9 35)) lcm (- (expt 9 35)) (expt 6 37))
 (test (* (expt 2 37) (expt 9 35)) lcm (expt 9 35) (- (expt 6 37)))
 
+(test #t
+      'gcd-shifts
+      (for*/and ([i (in-range (* 64 3))]
+                 [j (in-range i)])
+        (let ([x (arithmetic-shift 2 i)]
+              [y (arithmetic-shift 2 j)])
+          (= y (gcd x y)))))
+
 (test 1/2 gcd 1/2)
 (test 1/2 gcd 3 1/2)
 (test 1/2 gcd 1/2 3)
@@ -1445,6 +1527,10 @@
 (test 6 lcm 1/3 2/5 3/7)
 (test 3.0 lcm 0.5 3)
 (test 3.0 lcm 1/2 3.0)
+
+(test 4611686018427387904 gcd -4611686018427387904)
+(test 4611686018427387904 gcd -4611686018427387904 -4611686018427387904)
+(test 4611686018427387904 gcd -4611686018427387904 0)
 
 (err/rt-test (gcd +nan.0))
 (err/rt-test (gcd +inf.0))
@@ -2235,6 +2321,14 @@
 (test 1.0 exp -0.0)
 (test 272.0 round (* 100 (exp 1)))
 
+;; should not be NaN
+(test +inf.0+0.0i exp 10000000.0+0.0i)
+(test +inf.0-0.0i exp 10000000.0-0.0i)
+#reader "maybe-single.rkt"
+(when has-single-flonum?
+  (test +inf.f+0.0f0i exp +100000.0f0+0.0f0i)
+  (test +inf.f-0.0f0i exp +100000.0f0-0.0f0i))
+
 (test 0 log 1)
 (test 0.0 log 1.0)
 (test -inf.0 log 0.0)
@@ -2390,15 +2484,15 @@
 (err/rt-test (rationalize .3+0.0i 1/10))
 
 (define (test-rat-inf v)
-  (define zero (if (exact? v) 0 0.0))
-
   (test +inf.0 rationalize +inf.0 v)
   (test -inf.0 rationalize -inf.0 v)
   (test-nan.0 rationalize +nan.0 v)
 
-  (test zero rationalize v +inf.0)
-  (test zero rationalize v -inf.0)
+  (test 0.0 rationalize v +inf.0)
+  (test 0.0 rationalize v -inf.0)
   (test-nan.0 rationalize v +nan.0))
+
+(test-rat-inf 1/3)
 
 (let loop ([i 100])
   (unless (= i -100)
@@ -2602,6 +2696,9 @@
 (test 10.0 string->number (string-append "1" (make-string 8000 #\0) "/" "1" (make-string 7998 #\0) "#@0"))
 (test #f zero? (string->number "7.4109846876187e-323"))
 
+;; Regression test to make sure prevision isn't lost by multiplying 10.0 times 1e44:
+(test (exact->inexact #e1e45) string->number "1.0e45")
+
 (test #t andmap (lambda (x) (and (>= x 0) (< x 10))) (map random '(10 10 10 10)))
 (test (void) random-seed 5)
 (test (begin (random-seed 23) (list (random 10) (random 20) (random 30)))
@@ -2673,12 +2770,27 @@
 (err/rt-test (vector->pseudo-random-generator #()))
 (err/rt-test (vector->pseudo-random-generator #(0 0 0 1 2 3)))
 ;; Known state should produce known values:
-(parameterize ([current-pseudo-random-generator
-                (vector->pseudo-random-generator
-                 #(3620087466 1904163406 3177592043 1406334318 257151704 3090455638))])
-  (test 5353 random 10000)
-  (test 8571 random 10000)
-  (test 9729 random 10000))
+(let* ([check-known
+        (lambda (vector->pseudo-random-generator wrap)
+          (parameterize ([current-pseudo-random-generator
+                          (vector->pseudo-random-generator
+                           (wrap #(3620087466 1904163406 3177592043 1406334318 257151704 3090455638)))])
+            (test 5353 random 10000)
+            (test 8571 random 10000)
+            (test 9729 random 10000)))]
+       [hits 0]
+       [chaperone-it (lambda (vec) (chaperone-vector vec
+                                                     (lambda (vec i v) (set! hits (add1 hits)) v)
+                                                     (lambda (vec i v) (error "should not mutate"))))]
+       [make (lambda (vec)
+               (define p (vector->pseudo-random-generator '#(1 2 3 4 5 6)))
+               (vector->pseudo-random-generator! p vec)
+               p)])
+  (check-known vector->pseudo-random-generator values)
+  (check-known vector->pseudo-random-generator chaperone-it)
+  (check-known make values)
+  (check-known make chaperone-it)
+  (test 12 values hits))
 (parameterize ([current-pseudo-random-generator
                 (vector->pseudo-random-generator
                  #(3620087466 1904163406 3177592043 1406334318 257151704 3090455638))])
@@ -2698,10 +2810,15 @@
                               (apply append (for/list ([i 10000])
                                               (random-sample (range 10) 100)))))))
 
+
 (parameterize ([current-pseudo-random-generator (make-pseudo-random-generator)])
   (random-seed 2)
   (test '#(1062645402 3593208522 3838676319 2291995347 179540564 3081399108)
         pseudo-random-generator->vector (current-pseudo-random-generator)))
+
+(test 1110944503
+      random 4294967087 (vector->pseudo-random-generator
+                         '#(2182378604 1199273501 1921976687 2184096762 3398188531 1221198170)))
 
 (test #t = 0 0)
 (test #f = 0 (expt 2 32))
@@ -2899,16 +3016,20 @@
 (test 121 integer-length (+ (expt 2 120) 1))
 
 (define (avoid-big-allocation?)
-  ;; A Raspberry Pi running Linux is a likely too-small device,
-  ;; so at least detect that one:
-  (and (file-exists? "/proc/meminfo")
-       (call-with-input-file*
-        "/proc/meminfo"
-        (lambda (i)
-          (define m (regexp-match #rx"MemTotal: +([0-9]+) kB" i))
-          (and m
-               (< (string->number (bytes->string/utf-8 (cadr m)))
-                  (* 1.5 1024 1024)))))))
+  (or
+   ;; A Raspberry Pi running Linux is a likely too-small device,
+   ;; so at least detect that one:
+   (and (file-exists? "/proc/meminfo")
+        (call-with-input-file*
+         "/proc/meminfo"
+         (lambda (i)
+           (define m (regexp-match #rx"MemTotal: +([0-9]+) kB" i))
+           (and m
+                (< (string->number (bytes->string/utf-8 (cadr m)))
+                   (* 1.5 1024 1024))))))
+   ;; If (sub1 (expt 2 31)) is a bignum, then `expt` will likely give
+   ;; up
+   (not (fixnum? (sub1 (expt 2 31))))))
 
 (unless (avoid-big-allocation?)
   ; don't attempt to print numbers that are billions of bits long
@@ -3252,28 +3373,30 @@
                                  (test (make-bytes (- 11 3 sz) (char->integer #\x)) subbytes bstr (+ 3 sz))
                                  (subbytes bstr 3 (+ 3 sz)))))
 
+(define rx:out-of-bounds #rx"number is out of bounds for size in bytes|integer does not fit into requested")
+
 (arity-test integer->integer-bytes 3 6)
-(err/rt-test (integer->integer-bytes 'ack 2 #t))
-(err/rt-test (integer->integer-bytes 10 'ack #t))
-(err/rt-test (integer->integer-bytes 10 20 #t))
-(err/rt-test (integer->integer-bytes 10 2 #t #t 'ack))
-(err/rt-test (integer->integer-bytes 10 2 #t #t #"ack")) ; <-- immutable string
-(err/rt-test (integer->integer-bytes 256 1 #t) exn:application:mismatch?)
-(err/rt-test (integer->integer-bytes -129 1 #t) exn:application:mismatch?)
-(err/rt-test (integer->integer-bytes 257 1 #f) exn:application:mismatch?)
-(err/rt-test (integer->integer-bytes -1 1 #f) exn:application:mismatch?)
-(err/rt-test (integer->integer-bytes 100000 2 #t) exn:application:mismatch?)
-(err/rt-test (integer->integer-bytes 65536 2 #f) exn:application:mismatch?)
-(err/rt-test (integer->integer-bytes 32768 2 #t) exn:application:mismatch?)
-(err/rt-test (integer->integer-bytes -32769 2 #t) exn:application:mismatch?)
-(err/rt-test (integer->integer-bytes (expt 2 32) 4 #f) exn:application:mismatch?)
-(err/rt-test (integer->integer-bytes (expt 2 31) 4 #t) exn:application:mismatch?)
-(err/rt-test (integer->integer-bytes (sub1 (- (expt 2 31))) 4 #t) exn:application:mismatch?)
-(err/rt-test (integer->integer-bytes (expt 2 64) 8 #f) exn:application:mismatch?)
-(err/rt-test (integer->integer-bytes (expt 2 63) 4 #t) exn:application:mismatch?)
-(err/rt-test (integer->integer-bytes (sub1 (- (expt 2 63))) 8 #t) exn:application:mismatch?)
-(err/rt-test (integer->integer-bytes 100 4 #t #t (make-bytes 3)) exn:application:mismatch?)
-(err/rt-test (integer->integer-bytes 100 2 #t #t (make-bytes 3) 2) exn:application:mismatch?)
+(err/rt-test (integer->integer-bytes 'ack 2 #t) exn:fail:contract? #rx"exact-integer")
+(err/rt-test (integer->integer-bytes 10 'ack #t) exn:fail:contract? #rx"(or/c 1 2 4 8)")
+(err/rt-test (integer->integer-bytes 10 20 #t) exn:fail:contract? #rx"(or/c 1 2 4 8)")
+(err/rt-test (integer->integer-bytes 10 2 #t #t 'ack) exn:fail:contract? #rx"bytes[?]")
+(err/rt-test (integer->integer-bytes 10 2 #t #t #"ack") exn:fail:contract? #rx"mutable")
+(err/rt-test (integer->integer-bytes 256 1 #t) exn:application:mismatch? rx:out-of-bounds)
+(err/rt-test (integer->integer-bytes -129 1 #t) exn:application:mismatch? rx:out-of-bounds)
+(err/rt-test (integer->integer-bytes 257 1 #f) exn:application:mismatch? rx:out-of-bounds)
+(err/rt-test (integer->integer-bytes -1 1 #f) exn:application:mismatch? rx:out-of-bounds)
+(err/rt-test (integer->integer-bytes 100000 2 #t) exn:application:mismatch? rx:out-of-bounds)
+(err/rt-test (integer->integer-bytes 65536 2 #f) exn:application:mismatch? rx:out-of-bounds)
+(err/rt-test (integer->integer-bytes 32768 2 #t) exn:application:mismatch? rx:out-of-bounds)
+(err/rt-test (integer->integer-bytes -32769 2 #t) exn:application:mismatch? rx:out-of-bounds)
+(err/rt-test (integer->integer-bytes (expt 2 32) 4 #f) exn:application:mismatch? rx:out-of-bounds)
+(err/rt-test (integer->integer-bytes (expt 2 31) 4 #t) exn:application:mismatch? rx:out-of-bounds)
+(err/rt-test (integer->integer-bytes (sub1 (- (expt 2 31))) 4 #t) exn:application:mismatch? rx:out-of-bounds)
+(err/rt-test (integer->integer-bytes (expt 2 64) 8 #f) exn:application:mismatch? rx:out-of-bounds)
+(err/rt-test (integer->integer-bytes (expt 2 63) 4 #t) exn:application:mismatch? rx:out-of-bounds)
+(err/rt-test (integer->integer-bytes (sub1 (- (expt 2 63))) 8 #t) exn:application:mismatch? rx:out-of-bounds)
+(err/rt-test (integer->integer-bytes 100 4 #t #t (make-bytes 3)) exn:application:mismatch? #rx"byte string length is shorter|byte string is too small")
+(err/rt-test (integer->integer-bytes 100 2 #t #t (make-bytes 3) 2) exn:application:mismatch? #rx"byte string length is shorter|starting position too large")
 
 (map (lambda (v)
        (let-values ([(n size signed?) (apply values v)])
@@ -3298,6 +3421,16 @@
       [n (random 10000)])
   (test s integer->integer-bytes n 4 #f #f s)
   (test s integer->integer-bytes n 4 #f #f))
+
+(err/rt-test (integer-bytes->integer #f #f) exn:fail:contract? #rx"bytes[?]")
+(err/rt-test (integer-bytes->integer #"" #f) exn:fail:contract? #rx"1, 2, 4, or 8")
+(err/rt-test (integer-bytes->integer #"1234" #f #f -1) exn:fail:contract? #rx"exact-nonnegative-integer[?]")
+(err/rt-test (integer-bytes->integer #"1234" #f #f 'oops) exn:fail:contract? #rx"exact-nonnegative-integer[?]")
+(err/rt-test (integer-bytes->integer #"1234" #f #f 2 'oops) exn:fail:contract? #rx"exact-nonnegative-integer[?]")
+(err/rt-test (integer-bytes->integer #"1234" #f #f 1) exn:fail:contract? #rx"1, 2, 4, or 8")
+(err/rt-test (integer-bytes->integer #"1234" #f #f 1 4) exn:fail:contract? #rx"1, 2, 4, or 8")
+(err/rt-test (integer-bytes->integer #"1234" #f #f 6 8) exn:fail:contract? #rx"starting index is out of range")
+(err/rt-test (integer-bytes->integer #"1234" #f #f 0 8) exn:fail:contract? #rx"ending index is out of range")
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -3348,12 +3481,23 @@
   (test s real->floating-point-bytes n 8 #f s)
   (test s real->floating-point-bytes n 8 #f))
 
-(err/rt-test (real->floating-point-bytes 1 -4))
+(err/rt-test (real->floating-point-bytes 1 -4) exn:fail:contract? #rx"[(]or/c 4 8[)]")
 (err/rt-test (real->floating-point-bytes 1 7))
 (err/rt-test (real->floating-point-bytes 1 7000000000000000000000000))
 (err/rt-test (real->floating-point-bytes 1+2i 8))
 (err/rt-test (real->floating-point-bytes 1.0+2.0i 8))
-(err/rt-test (real->floating-point-bytes 1.0 8 #f (make-bytes 7)) exn:application:mismatch?)
+(err/rt-test (real->floating-point-bytes 1.0 8 #f (make-bytes 7)) exn:application:mismatch?
+             #rx"byte string length is shorter than starting position plus size")
+
+(err/rt-test (floating-point-bytes->real #f) exn:fail:contract? "bytes")
+(err/rt-test (floating-point-bytes->real #f #t) exn:fail:contract? "bytes")
+(err/rt-test (floating-point-bytes->real #f #t 0) exn:fail:contract? "bytes")
+(err/rt-test (floating-point-bytes->real #f #t 0 2) exn:fail:contract? "bytes")
+(err/rt-test (floating-point-bytes->real #"12") exn:fail:contract? "4 or 8")
+(err/rt-test (floating-point-bytes->real #"12" #t 3) exn:fail:contract? "starting index is out of range")
+(err/rt-test (floating-point-bytes->real #"12" #t 0 2) exn:fail:contract? "4 or 8")
+(err/rt-test (floating-point-bytes->real #"12" #t 1 5) exn:fail:contract? "ending index is out of range")
+(err/rt-test (floating-point-bytes->real #"1234" #t 1 4) exn:fail:contract? "4 or 8")
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Check single-flonum coercisons:
@@ -3494,7 +3638,7 @@
                 extra-p))
     (define n3 (inexact->exact (exact->inexact n2)))
     (unless (= n3 (arithmetic-shift 53-bit-number (+ num-zeros 1 extra-p)))
-      (error 'random-exact->inexact "truncating round failed ~s" n2)))
+      (error 'random-exact->inexact "truncating round failed ~s ~s ~s" n2 53-bit-number (+ num-zeros 1 extra-p))))
   (check-random-pairs check-shift-plus-bits-to-truncate)
   
   ;; If we add a one bit and then a non-zero bit anywhere later,
@@ -3621,5 +3765,8 @@
           (test x exact->inexact (inexact->exact x)))))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+
+(load-relative "gambit-numeric.rktl")
 
 (report-errs)

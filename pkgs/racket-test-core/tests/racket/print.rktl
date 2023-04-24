@@ -20,7 +20,7 @@
                (test s to-pretty-string v)
                (test (format "~s" v) to-string/not-expression v))])
   (define-struct a (x y))
-  (define-struct b (x y) #:transparent)
+  (define-struct b (x y) #:transparent #:mutable)
   (define-struct c (x y) #:prefab)
   (define (custom-printer get-xy)
     (lambda (v port mode)
@@ -62,10 +62,22 @@
   (ptest "1/2" 1/2)
   (ptest "#f" #f)
   (ptest "#\\x" #\x)
+  (ptest "\"apple\"" "apple")
+  (ptest "\"\U1f3f4\u200d\u2620\ufe0f\"" "\U1f3f4\u200d\u2620\ufe0f") ; pirate flag
+
   (ptest "'apple" 'apple)
   (ptest "'|apple banana|" '|apple banana|)
   (ptest "'||" '||)
+  (ptest "'|;|" '|;|)
+  (ptest "'|`|" '|`|)
+  (ptest "'|\uFEFF_|" (string->symbol "\uFEFF_"))
   (ptest "'#:apple" '#:apple)
+  (ptest "'#:|apple pie|" '#:|apple pie|)
+  (ptest "'#:|.|" '#:|.|)
+  (ptest "'#:|#|" '#:|#|)
+  (ptest "'#:|#q|" '#:|#q|)
+  (ptest "'#:#%" '#:#%)
+  (ptest "'#:101" '#:101)
   (ptest "'#%apple" '#%apple)
   (ptest "\"apple\"" "apple")
   (ptest "#\"apple\"" #"apple")
@@ -91,6 +103,11 @@
   (ptest "'#hasheq((1 . 2))" (make-hasheq (list (cons 1 2))))
   (ptest "'#hasheqv((1 . 2))" (hasheqv 1 2))
   (ptest "'#hasheqv((1 . 2))" (make-hasheqv (list (cons 1 2))))
+  (ptest "'#hashalw((1 . 2))" (hashalw 1 2))
+  (ptest "'#hashalw((1 . 2))" (make-hashalw (list (cons 1 2))))
+
+  (ptest "#<stencil 5: \"a\" b>" (stencil-vector 5 "a" 'b))
+  (ptest "#<stencil 1: #0=(#0#)>" (stencil-vector 1 (read (open-input-string "#0=(#0#)"))))
 
   (ptest "(mcons 1 2)" (mcons 1 2))
   (ptest "(mcons 1 '())" (mcons 1 null))
@@ -98,6 +115,12 @@
   (ptest "#<a>" (a 1 2))
   (ptest "(b 1 2)" (b 1 2))
   (ptest "'#s(c 1 2)" (c 1 2))
+  (test "#s(c 1 2)" 'prefab
+        (parameterize ([print-unreadable #f])
+          (format "~s" (c 1 2))))
+
+  (let ([s (b 1 2)])
+    (ptest "(list (cons (b 1 2) 0) (cons (b 1 2) 0))" (list (cons s 0) (cons s 0))))
 
   (ptest "'<1 1 2>" (d 1 2))
   (ptest "'<1 1 #<a>>" (d 1 (a 1 2)))
@@ -302,9 +325,35 @@
         (loop super)))))
 
 ;; ----------------------------------------
-;; make sure +inf.0 is ok for `print-syntax-width':
+;; make sure the minimum value (3) is ok for `error-print-width':
+(parameterize ([error-print-width 3])
+  (test "..." format "~.a" "abcd")
+  (test "abc" format "~.a" "abc")
+  (test "ab" format "~.a" "ab")
+  (test 3 error-print-width))
+
+(parameterize ([error-print-width 3])
+  (struct show-a ()
+    #:property prop:custom-write
+    (lambda (self port mode)
+      (fprintf port "a")))
+  (struct show-nothing ()
+    #:property prop:custom-write
+    (lambda (self port mode)
+      (void)))
+  (test "a" format "~e" (show-a))
+  (test "..." format "~e" (list (show-a)))
+  (test "" format "~e" (show-nothing))
+  (test "'()" format "~e" (list (show-nothing))))
+
+;; ----------------------------------------
+;; make sure +inf.0, 3, and 0 are ok for `print-syntax-width':
 (parameterize ([print-syntax-width +inf.0])
   (test +inf.0 print-syntax-width))
+(parameterize ([print-syntax-width 0])
+  (test 0 print-syntax-width))
+(parameterize ([print-syntax-width 3])
+  (test 3 print-syntax-width))
 
 ;; ----------------------------------------
 ;; Try to provoke a stack overflow during printing of truncated
@@ -399,7 +448,12 @@
 ;; Test print parameters
 
 (let ()
-  (define (test-print/all x wri dis prn prx pr1)
+  (define (test-print/all x wri dis prn prx pr1
+                          #:pretty-write [pp-wri wri]
+                          #:pretty-display [pp-dis dis]
+                          #:pretty-print/not-expr [pp-prn prn]
+                          #:pretty-print/expr [pp-prx prx]
+                          #:pretty-print/1 [pp-pr1 pr1])
     (define (in-string f v)
       (let ([o (open-output-bytes)])
         (f v o)
@@ -415,16 +469,21 @@
     (define (pretty-print/depth-1 v [o (current-output-port)])
       (pretty-print v o 1))
 
+    (define pretty-non-exp-ok?
+      (and
+       ;; not consulted by `pretty-print`:
+       (print-reader-abbreviations)))
+
     (test wri in-string write x)
-    (test (string-append wri "\n") in-string pretty-write x)
+    (test (string-append pp-wri "\n") in-string pretty-write x)
     (test dis in-string display x)
-    (test (string-append dis "\n") in-string pretty-display x)
+    (test (string-append pp-dis "\n") in-string pretty-display x)
     (test prn in-string print/not-expr x)
-    (test (string-append prn "\n") in-string pretty-print/not-expr x)
+    (test (string-append pp-prn "\n") in-string pretty-print/not-expr x)
     (test prx in-string print x)
-    (test (string-append prx "\n") in-string pretty-print x)
+    (test (string-append pp-prx "\n") in-string pretty-print x)
     (test pr1 in-string print/depth-1 x)
-    (test (string-append pr1 "\n") in-string pretty-print/depth-1 x))
+    (test (string-append pp-pr1 "\n") in-string pretty-print/depth-1 x))
 
   (define-syntax (for*/parameterize stx)
     (syntax-case stx ()
@@ -436,11 +495,20 @@
        #'(let () body ...)]))
 
   (define-struct a (x y))
-  (define-struct b (x y) #:transparent)
+  (define-struct b (x y) #:transparent #:mutable)
   (define-struct c (x y) #:prefab)
 
   (struct s () #:transparent)
   (define x (s)) ; a shared value to use in the test
+
+  (struct s+ (v) #:transparent)
+  (struct sub s+ ())
+  (test-print/all (sub '(x))
+                  "#(struct:sub (x) ...)"
+                  "#(struct:sub (x) ...)"
+                  "#(struct:sub (x) ...)"
+                  "(sub '(x) ...)"
+                  "#(struct:sub (x) ...)")
 
   (parameterize ([print-graph #t])
   (for*/parameterize ([print-pair-curly-braces (in-list '(#t #f))]
@@ -508,6 +576,18 @@
       (test-print/all (c 1 2)
                       "#s(c 1 2)" "#s(c 1 2)" "#s(c 1 2)" "'#s(c 1 2)" "#s(c 1 2)"))
 
+    (parameterize ([print-pair-curly-braces #f])
+      (let ([s (b 1 2)])
+        (test-print/all (list (cons s 0) (cons s 2))
+                        "((#0=#(struct:b 1 2) . 0) (#0# . 2))" "((#0=#(struct:b 1 2) . 0) (#0# . 2))" "((#0=#(struct:b 1 2) . 0) (#0# . 2))"
+                        "(list (cons #0=(b 1 2) 0) (cons #0# 2))" "((#0=#(struct:b 1 2) . 0) (#0# . 2))"))
+      (let ([s (b 1 2)])
+        (set-b-x! s s)
+        (test-print/all (list s)
+                        "(#0=#(struct:b #0# 2))" "(#0=#(struct:b #0# 2))" "(#0=#(struct:b #0# 2))"
+                        "(list #0=(b #0# 2))"
+                        "(#0=#(struct:b #0# 2))")))
+
     (parameterize ([print-vector-length #t])
       (test-print/all (b 1 1)
                       "#3(struct:b 1)" "#(struct:b 1 1)" "#3(struct:b 1)" "(b 1 1)" "#3(struct:b 1)")
@@ -515,6 +595,7 @@
                       "#3(struct:b 1 2)" "#(struct:b 1 2)" "#3(struct:b 1 2)" "(b 1 2)" "#3(struct:b 1 2)")
       (test-print/all (b 'b 'b)
                       "#3(struct:b b)" "#(struct:b b b)" "#3(struct:b b)" "(b 'b 'b)" "#3(struct:b b)")
+
       (test-print/all (b 'struct:b 'struct:b)
                       "#3(struct:b)" "#(struct:b struct:b struct:b)" "#3(struct:b)" "(b 'struct:b 'struct:b)" "#3(struct:b)")
       (test-print/all (c x x)
@@ -582,7 +663,254 @@
                       "#fl(1.0 2.0 3.0 3.0 3.0)" "#fl(1.0 2.0 3.0 3.0 3.0)" "#fl(1.0 2.0 3.0 3.0 3.0)" "(flvector 1.0 2.0 3.0 3.0 3.0)" "#fl(1.0 2.0 3.0 3.0 3.0)")
       (test-print/all (flvector)
                       "#fl()" "#fl()" "#fl()" "(flvector)" "#fl()"))
-    (void))))
+
+    (void))
+
+  (parameterize ([print-reader-abbreviations #f])
+    (test-print/all (list ''a ',a '`a ',@a '#'a '#,a '#`a '#,@a)
+                    "((quote a) (unquote a) (quasiquote a) (unquote-splicing a) (syntax a) (unsyntax a) (quasisyntax a) (unsyntax-splicing a))"
+                    #:pretty-write "('a ,a `a ,@a #'a #,a #`a #,@a)"
+                    "((quote a) (unquote a) (quasiquote a) (unquote-splicing a) (syntax a) (unsyntax a) (quasisyntax a) (unsyntax-splicing a))"
+                    #:pretty-display "('a ,a `a ,@a #'a #,a #`a #,@a)"
+                    "((quote a) (unquote a) (quasiquote a) (unquote-splicing a) (syntax a) (unsyntax a) (quasisyntax a) (unsyntax-splicing a))"
+                    #:pretty-print/not-expr "('a ,a `a ,@a #'a #,a #`a #,@a)"
+                    "'('a ,a `a ,@a #'a #,a #`a #,@a)"
+                    "('a ,a `a ,@a #'a #,a #`a #,@a)"))
+
+  (parameterize ([print-reader-abbreviations #t])
+    (test-print/all (list ''a ',a '`a ',@a '#'a '#,a '#`a '#,@a)
+                    "('a ,a `a ,@a #'a #,a #`a #,@a)"
+                    "((quote a) (unquote a) (quasiquote a) (unquote-splicing a) (syntax a) (unsyntax a) (quasisyntax a) (unsyntax-splicing a))"
+                    #:pretty-display "('a ,a `a ,@a #'a #,a #`a #,@a)"
+                    "('a ,a `a ,@a #'a #,a #`a #,@a)"
+                    "'('a ,a `a ,@a #'a #,a #`a #,@a)"
+                    "('a ,a `a ,@a #'a #,a #`a #,@a)"))
+
+  (parameterize ([print-reader-abbreviations #t])
+    (test-print/all (list (mcons 'unquote '()) (vector (mcons 1 2) 'unquote '()))
+                    "({unquote} #({1 . 2} unquote ()))"
+                    "({unquote} #({1 . 2} unquote ()))"
+                    "({unquote} #({1 . 2} unquote ()))"
+                    "(list (mcons 'unquote '()) (vector (mcons 1 2) 'unquote '()))"
+                    "({unquote} #({1 . 2} unquote ()))"))
+
+  (test-print/all (stencil-vector 5 "a" 'b)
+                  "#<stencil 5: \"a\" b>"
+                  "#<stencil 5: a b>"
+                  "#<stencil 5: \"a\" b>"
+                  "#<stencil 5: \"a\" b>"
+                  "#<stencil 5: \"a\" b>")
+  (test-print/all (stencil-vector 5 "a" (read (open-input-string "#0=(#0#)")))
+                  "#<stencil 5: \"a\" #0=(#0#)>"
+                  "#<stencil 5: a #0=(#0#)>"
+                  "#<stencil 5: \"a\" #0=(#0#)>"
+                  "#<stencil 5: \"a\" #0=(#0#)>"
+                  "#<stencil 5: \"a\" #0=(#0#)>")
+
+  (void)))
+
+;; ----------------------------------------
+;; More `prop:custom-write` and `prop:custom-print-quotable` checking.
+;; Make sure the `prop:custom-write` callback gets an approrpriate
+;; printing mode, even when looking for quoting modes and cycles, and
+;; check behavior when the callback synthesizes a new lists. The
+;; `ptest` tests above already do a lot of that, but this test covers
+;; some additional corners.
+;; Based on an example by Ryan Kramer.
+
+(let ()
+  (struct my-struct (item) #:transparent)
+
+  (define modes '())
+
+  (define (check-saw-mode . alts)
+    (define ms (reverse modes))
+    (set! modes '())
+    (test #t ms (and (member ms alts) #t)))
+
+  (define-syntax-rule (expect e output)
+    (let ([o (open-output-bytes)])
+      (parameterize ([current-output-port o])
+        e)
+      (test output get-output-string o)))
+
+  (define (go port mode val)
+    (set! modes (cons mode modes))
+    (case mode
+      [(#f #t 1)
+       (display "#<mine: " port)
+       (if mode
+           (write val port) 
+           (display val port))
+       (display ">" port)]
+      [else
+       (display "(mine " port)
+       (print val port mode)
+       (display ")" port)]))
+
+  (struct mine (content)
+    #:property
+    prop:custom-write
+    (lambda (v port mode)
+      (go port mode (mine-content v))))
+
+  (struct mine/copy (content)
+    #:property
+    prop:custom-write
+    (lambda (v port mode)
+      (go port mode (apply list (mine/copy-content v)))))
+
+  (struct mine/always (content)
+    #:property
+    prop:custom-print-quotable 'always
+    #:property
+    prop:custom-write
+    (lambda (v port mode)
+      (go port mode (mine/always-content v))))
+
+  (struct mine/maybe (content)
+    #:property
+    prop:custom-print-quotable 'maybe
+    #:property
+    prop:custom-write
+    (lambda (v port mode)
+      (go port mode (mine/maybe-content v))))
+
+  (struct mine/copy/always (content)
+    #:property
+    prop:custom-print-quotable 'always
+    #:property
+    prop:custom-write
+    (lambda (v port mode)
+      (go port mode (apply list (mine/copy/always-content v)))))
+
+  (define (show println writeln displayln)
+    (define b (box 'CONTENT))
+    (define x (list b (my-struct '(1 a))))
+
+    (printf "List\n")
+    (expect (println x) "(list '#&CONTENT (my-struct '(1 a)))\n")
+    (expect (writeln x) "(#&CONTENT #(struct:my-struct (1 a)))\n")
+    (expect (displayln x) "(#&CONTENT #(struct:my-struct (1 a)))\n")
+
+    (printf "Wrapped list\n")
+    (define y (mine x))
+    (expect (println y) "(mine (list '#&CONTENT (my-struct '(1 a))))\n")
+    (check-saw-mode '(0 0))
+    (expect (writeln y) "#<mine: (#&CONTENT #(struct:my-struct (1 a)))>\n")
+    (check-saw-mode '(#t #t))
+    (expect (displayln y) "#<mine: (#&CONTENT #(struct:my-struct (1 a)))>\n")
+    (check-saw-mode '(#f #f))
+
+    (printf "Wrapped list 'always\n")
+    (define z (mine/always x))
+    (expect (println z) "'#<mine: (#&CONTENT #(struct:my-struct (1 a)))>\n")
+    (check-saw-mode '(1 1))
+    (expect (writeln z) "#<mine: (#&CONTENT #(struct:my-struct (1 a)))>\n")
+    (check-saw-mode '(#t #t))
+    (expect (displayln z) "#<mine: (#&CONTENT #(struct:my-struct (1 a)))>\n")
+    (check-saw-mode '(#f #f))
+
+    (printf "Wrapped list copied on print\n")
+    (define y/c (mine/copy x))
+    (expect (println y/c) "(mine '(#&CONTENT #(struct:my-struct (1 a))))\n")
+    (check-saw-mode '(0 0))
+    (expect (writeln y/c) "#<mine: (#&CONTENT #(struct:my-struct (1 a)))>\n")
+    (check-saw-mode '(#t #t))
+    (expect (displayln y/c) "#<mine: (#&CONTENT #(struct:my-struct (1 a)))>\n")
+    (check-saw-mode '(#f #f))
+
+    (printf "Wrapped list copied on print 'always\n")
+    (define z/c (mine/copy/always x))
+    (expect (println z/c) "'#<mine: (#&CONTENT #(struct:my-struct (1 a)))>\n")
+    (check-saw-mode '(1 1))
+    (expect (writeln z/c) "#<mine: (#&CONTENT #(struct:my-struct (1 a)))>\n")
+    (check-saw-mode '(#t #t))
+    (expect (displayln z/c) "#<mine: (#&CONTENT #(struct:my-struct (1 a)))>\n")
+    (check-saw-mode '(#f #f))
+    
+    (printf "Wrapped cycle list\n")
+    (set-box! b x)
+    ;; The printer may need two passes to sort out cycles
+    (expect (println y) "(mine #0=(list '#&#0# (my-struct '(1 a))))\n")
+    (check-saw-mode '(0 0) '(0 0 0))
+    (expect (writeln y) "#<mine: #0=(#&#0# #(struct:my-struct (1 a)))>\n")
+    (check-saw-mode '(#t #t) '(#t #t #t))
+    (expect (displayln y) "#<mine: #0=(#&#0# #(struct:my-struct (1 a)))>\n")
+    (check-saw-mode '(#f #f) '(#f #f #f))
+
+    (printf "Wrapped quotable list\n")
+    (define yq (mine '(#&CONTENT)))
+    (expect (println yq) "(mine '(#&CONTENT))\n")
+    (check-saw-mode '(0 0))
+    (expect (writeln yq) "#<mine: (#&CONTENT)>\n")
+    (check-saw-mode '(#t #t))
+    (expect (displayln yq) "#<mine: (#&CONTENT)>\n")
+    (check-saw-mode '(#f #f))
+
+    (printf "Wrapped quotable list 'maybe\n")
+    (define yqm (mine/maybe '(#&CONTENT)))
+    (expect (println yqm) "'#<mine: (#&CONTENT)>\n")
+    (check-saw-mode '(0 1)) ; guess unquoted, discovered to be quoted
+    (expect (writeln yqm) "#<mine: (#&CONTENT)>\n")
+    (check-saw-mode '(#t #t))
+    (expect (displayln yqm) "#<mine: (#&CONTENT)>\n")
+    (check-saw-mode '(#f #f))
+
+    (void))
+
+  (show println writeln displayln)
+  (show pretty-print pretty-write pretty-display))
+
+;; ----------------------------------------
+
+(let ()
+  (struct named-procedure (procedure name)
+    #:property prop:procedure (struct-field-index procedure)
+    #:property prop:object-name (struct-field-index name))
+
+  (define f (named-procedure (lambda (x) x) "string name"))
+  (test "#<procedure:string name>" format "~s" f)
+  (test "string name" object-name f)
+
+  (define f2 (named-procedure (lambda (x) x) '("string name")))
+  (test "#<procedure>" format "~s" f2)
+  (test '("string name") object-name f2)
+
+  (define f3 (procedure-rename f 'other-name))
+  (test "#<procedure:other-name>" format "~a" f3)
+  (test 'other-name object-name f3))
+
+(let ()
+  (struct named-procedure (procedure name)
+    #:property prop:procedure (struct-field-index procedure)
+    #:property prop:object-name (struct-field-index name)
+    #:transparent)
+
+  (define f (named-procedure (procedure-rename (lambda (x) x) 'inner) "string name"))
+  (test "(named-procedure #<procedure:inner> \"string name\")" format "~v" f)
+  (test "string name" object-name f)
+
+  (define f2 (named-procedure (procedure-rename (lambda (x) x) 'inner) '("string name")))
+  (test "(named-procedure #<procedure:inner> '(\"string name\"))" format "~v" f2)
+  (test '("string name") object-name f2)
+
+  (define f3 (procedure-rename f 'other-name))
+  (test "#<procedure:other-name>" format "~a" f3)
+  (test 'other-name object-name f3))
+
+;; ----------------------------------------
+
+(parameterize ([global-port-print-handler
+                (lambda (v o [depth 0])
+                  (display "<redacted>" o))])
+  (let ([o (open-output-string)])
+    (print '(hello) o)
+    (test "<redacted>" get-output-string o)
+    (default-global-port-print-handler '(hello) o)
+    (test "<redacted>'(hello)" get-output-string o)
+    (default-global-port-print-handler '(hello) o 1)
+    (test "<redacted>'(hello)(hello)" get-output-string o)))
 
 ;; ----------------------------------------
 

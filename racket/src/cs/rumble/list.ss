@@ -1,38 +1,6 @@
 
-;; Make `list?` an amoritized constant-time operation, which is
-;; possible because `set-cdr!` is not exposed. Make it constant-time
-;; by caching the result for an N-item list at the N/2-tail pair,
-;; where a second request will cache at the N/4-tail pair, etc.
-;; Detect cycles using the same `slow` tortoise that is used for
-;; caching.
-
-(define-thread-local lists (make-weak-eq-hashtable))
-
-(define (list? v)
-  (let loop ([v v] [depth 0])
-    (cond
-     [(null? v) #t]
-     [(not (pair? v)) #f]
-     [(pair? v)
-      (cond
-       [(fx<= depth 32)
-        (loop (cdr v) (fx+ depth 1))]
-       [else
-        (let loop ([fast (cdr v)] [slow v] [slow-step? #f])
-          (let ([return (lambda (result)
-                          (hashtable-set! lists slow result)
-                          result)])
-            (cond
-             [(null? fast) (return #t)]
-             [(not (pair? fast)) (return #f)]
-             [(eq? fast slow) (return #f)] ; cycle
-             [else
-              (let ([is-list? (hashtable-ref lists fast none)])
-                (cond
-                 [(eq? is-list? none)
-                  (loop (cdr fast) (if slow-step? (cdr slow) slow) (not slow-step?))]
-                 [else
-                  (return is-list?)]))])))])])))
+;; `list?` an amoritized constant-time operation:
+(define (list? v) (list-assuming-immutable? v))
 
 (define (append-n l n l2)
   (cond
@@ -54,7 +22,7 @@
 ;; compatilation approach
 
 (define-syntax-rule (define-list-proc |#%name| name base combine)
-  (define/no-lift |#%name|
+  (define |#%name|
     (case-lambda
      [(f l)
       (if (list? l)

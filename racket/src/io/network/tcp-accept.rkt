@@ -36,18 +36,19 @@
           (raise-network-error who fd "accept from listener failed")]
          [else
           (begin0
-            (open-input-output-accetped-tcp fd)
+            (open-input-output-accepted-tcp fd)
             (end-atomic))])]
       [else
        (end-atomic)
-       (sync (rktio-evt
-              ;; in atomic mode
-              (lambda ()
-                (or (tcp-listener-closed? listener)
-                    (accept-ready? listener)))
-              ;; in atomic mode
-              (lambda (ps)
-                (rktio_poll_add_accept rktio (tcp-listener-lnr listener) ps))))
+       ((if enable-break? sync/enable-break sync)
+        (rktio-evt
+         ;; in atomic mode
+         (lambda ()
+           (or (tcp-listener-closed? listener)
+               (accept-ready? listener)))
+         ;; in atomic mode
+         (lambda (ps)
+           (rktio_poll_add_accept rktio (tcp-listener-lnr listener) ps))))
        (loop)])))
 
 (define/who (tcp-accept-ready? listener)
@@ -56,7 +57,10 @@
   (cond
     [(tcp-listener-closed? listener)
      (closed-error who listener)]
-    [else (accept-ready? listener)]))
+    [else
+     (begin0
+       (accept-ready? listener)
+       (end-atomic))]))
 
 ;; ----------------------------------------
 
@@ -90,7 +94,7 @@
            (error-result (lambda ()
                            (raise-network-error 'tcp-accept-evt fd "accept from listener failed")))]
           [else
-           (values (list (call-with-values (lambda () (open-input-output-accetped-tcp fd))
+           (values (list (call-with-values (lambda () (open-input-output-accepted-tcp fd))
                            list))
                    #f)])]
        [else
@@ -124,5 +128,6 @@
                          "listener" listener))
 
 ;; in atomic mode
-(define (open-input-output-accetped-tcp fd)
+(define (open-input-output-accepted-tcp fd)
+  (rktio_tcp_nodelay rktio fd #t) ; initially block buffered
   (open-input-output-tcp fd "tcp-accepted"))

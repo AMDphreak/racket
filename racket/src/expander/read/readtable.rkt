@@ -28,7 +28,7 @@
                    char-ht
                    ;; The dispatch table maps character for `#` dispatch
                    dispatch-ht
-                   ;; The delimter table maps a character to 'delimit,
+                   ;; The delimiter table maps a character to 'delimit,
                    ;; 'no-delimit, or a character whose default to use;
                    ;; absence of a mapping is the default for that character
                    delimiter-ht)
@@ -78,10 +78,11 @@
       ;; Target is what the key is mapped to
       (when (null? (cddr args))
         (raise-arguments-error 'make-readtable
-                               (if key
+                               (if (char? mode)
                                    "expected readtable or #f argument after character argument"
                                    "expected procedure argument after symbol argument")
-                               "given" mode))
+                               (if (char? mode) "character" "symbol")
+                               mode))
       (define target (caddr args))
       
       ;; Update the readtable
@@ -125,17 +126,17 @@
 ;; Map a character to another character (if any) whose default
 ;; treatment should be used; be sure to map non-characters like
 ;; EOF to themselves.
-(define-inline (readtable-effective-char rt c)
+(define-inline (readtable-effective-char rt c [handler #\x]) ; `handler` default is a non-special character
   (cond
    [(or (not rt) (not (char? c))) c]
-   [else (*readtable-effective-char rt c)]))
+   [else (*readtable-effective-char rt c handler)]))
 
-(define (*readtable-effective-char rt c)
+(define (*readtable-effective-char rt c handler)
   (define target (hash-ref (readtable-char-ht rt) c #f))
   (cond
    [(not target) c]
    [(char? target) target]
-   [else #\x])) ; return some non-special character
+   [else handler]))
 
 ;; Similar to `readtable-effective-char`, but for a character after
 ;; `#` to detect whether it has the usual meaning

@@ -9,7 +9,7 @@
 (require (for-label racket/base))
 (provide (for-label (all-from-out racket/base)))
 
-(provide Quick Racket HtDP inside-doc
+(provide Racket HtDP inside-doc
          tool
          moreguide
          guideother
@@ -20,11 +20,8 @@
          ext-refsecref
          r5rs r6rs)
 
-(define Quick
-  (other-manual '(lib "scribblings/quick/quick.scrbl")))
-
 (define HtDP
-  (italic (link "http://www.htdp.org" "How to Design Programs")))
+  (italic (link "https://htdp.org" "How to Design Programs")))
 
 (define (tool name . desc)
   (apply item (bold name) ", " desc))

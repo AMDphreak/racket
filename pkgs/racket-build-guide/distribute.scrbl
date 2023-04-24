@@ -24,10 +24,6 @@ installers on some number of client machines, each of which contacts
 the server machine to obtain pre-built packages. The server can act as
 a client, naturally, to create an installer for the server's platform.
 
-GNU @exec{make} is required on the server machine, @exec{nmake} is
-required on Windows client machines, and any @exec{make} should work
-on other client machines.
-
 The distribution-build process is a collaboration between the Racket
 Git repository's top-level makefile and @|distro-build-package|.
 
@@ -37,7 +33,8 @@ Git repository's top-level makefile and @|distro-build-package|.
 The @exec{installers} target of the makefile will do everything to
 generate installers: build a server on the current machine, run
 clients on hosts specified via @exec{CONFIG}, and start/stop
-VirtualBox virtual machines that act as client machines.
+VirtualBox virtual machines or Docker containers that act as client
+machines.
 
 If the server is already built, the @exec{installers-from-built}
 target will drive the client builds without re-building the server.
@@ -60,7 +57,8 @@ some Racket build (not the one for building installers), you can use
 @commandline{make describe-clients CONFIG=my-site-config.rkt}
 
 to see, without building anything, the effect of the configuration in
-@filepath{my-site-config.rkt} and the planned build steps.
+@filepath{my-site-config.rkt} and the planned build steps. See also the
+@racket[#:fake-installers?] site-configuration option.
 
 The default @exec{CONFIG} path is @filepath{build/site.rkt}, so you
 could put your configuration file there and omit the @exec{CONFIG}
@@ -184,10 +182,6 @@ Roughly, the steps are as follows
  
        @commandline{make client SERVER=@nonterm{address} PKGS="@nonterm{pkgs}"}
 
-       or
-
-       @commandline{nmake win32-client SERVER=@nonterm{address} PKGS="@nonterm{pkgs}"}
-
       See 4 in the detailed steps below for more information on
       variables other than @exec{SERVER} and @exec{PKGS} that you can
       provide with @exec{make}.}
@@ -265,7 +259,7 @@ In more detail, the steps are as follows:
 
  @item{On each client, create an installer.
 
-      The @exec{client} (or @exec{win32-client}) target of the
+      The @exec{client} target of the
       makefile will do that.
 
       Provide @exec{SERVER} as the hostname of the server machine, but
@@ -383,7 +377,8 @@ If you (or someone else) previously created an installer site with
 repository creates an installer for the current platform drawing
 packages from the site.
 
-At a minimum, provide @exec{SERVER}, @exec{SERVER_PORT} (usually 80),
+At a minimum, provide @exec{SERVER}, @exec{SERVER_PORT} (usually 80 or 443),
+@exec{SERVER_URL_SCHEME} (if @litchar{https} instead of @litchar{http})
 and @exec{SITE_PATH} (if not empty, include a trailing @litchar{/})
 makefile variables to access a site at
 

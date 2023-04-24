@@ -55,9 +55,13 @@
 #endif
 
 #ifdef _WIN64
-#define HOST_MACHINE IMAGE_FILE_MACHINE_AMD64
+# if defined(_M_ARM64)
+#  define HOST_MACHINE IMAGE_FILE_MACHINE_ARM64
+# else
+#  define HOST_MACHINE IMAGE_FILE_MACHINE_AMD64
+# endif
 #else
-#define HOST_MACHINE IMAGE_FILE_MACHINE_I386
+# define HOST_MACHINE IMAGE_FILE_MACHINE_I386
 #endif
 
 #include "MemoryModule.h"
@@ -108,6 +112,8 @@ typedef struct {
 } SECTIONFINALIZEDATA, *PSECTIONFINALIZEDATA;
 
 #define GET_HEADER_DICTIONARY(module, idx)  &(module)->headers->OptionalHeader.DataDirectory[idx]
+
+static BOOL WINAPI GetModuleHandleExW_redirect(DWORD dwFlags, LPCWSTR lpModuleName, HMODULE *phModule);
 
 static inline uintptr_t
 AlignValueDown(uintptr_t value, uintptr_t alignment) {
@@ -260,7 +266,7 @@ GetRealSectionSize(PMEMORYMODULE module, PIMAGE_SECTION_HEADER section) {
 }
 
 static BOOL
-FinalizeSection(PMEMORYMODULE module, PSECTIONFINALIZEDATA sectionData) {
+FinalizeSection(PMEMORYMODULE module, PSECTIONFINALIZEDATA sectionData, BOOL pre_entry) {
     DWORD protect, oldProtect;
     BOOL executable;
     BOOL readable;
@@ -271,6 +277,7 @@ FinalizeSection(PMEMORYMODULE module, PSECTIONFINALIZEDATA sectionData) {
     }
 
     if (sectionData->characteristics & IMAGE_SCN_MEM_DISCARDABLE) {
+        if (pre_entry) return TRUE;
         // section is not needed any more and can safely be freed
         if (sectionData->address == sectionData->alignedAddress &&
             (sectionData->last ||
@@ -287,6 +294,7 @@ FinalizeSection(PMEMORYMODULE module, PSECTIONFINALIZEDATA sectionData) {
     executable = (sectionData->characteristics & IMAGE_SCN_MEM_EXECUTE) != 0;
     readable =   (sectionData->characteristics & IMAGE_SCN_MEM_READ) != 0;
     writeable =  (sectionData->characteristics & IMAGE_SCN_MEM_WRITE) != 0;
+    if (pre_entry && !executable) writeable = 1;
     protect = ProtectionFlags[executable][readable][writeable];
     if (sectionData->characteristics & IMAGE_SCN_MEM_NOT_CACHED) {
         protect |= PAGE_NOCACHE;
@@ -302,7 +310,7 @@ FinalizeSection(PMEMORYMODULE module, PSECTIONFINALIZEDATA sectionData) {
 }
 
 static BOOL
-FinalizeSections(PMEMORYMODULE module)
+FinalizeSections(PMEMORYMODULE module, BOOL pre_entry)
 {
     int i;
     PIMAGE_SECTION_HEADER section = IMAGE_FIRST_SECTION(module->headers);
@@ -340,7 +348,7 @@ FinalizeSections(PMEMORYMODULE module)
             continue;
         }
 
-        if (!FinalizeSection(module, &sectionData)) {
+        if (!FinalizeSection(module, &sectionData, pre_entry)) {
             return FALSE;
         }
         sectionData.address = sectionAddress;
@@ -349,7 +357,7 @@ FinalizeSections(PMEMORYMODULE module)
         sectionData.characteristics = section->Characteristics;
     }
     sectionData.last = TRUE;
-    if (!FinalizeSection(module, &sectionData)) {
+    if (!FinalizeSection(module, &sectionData, pre_entry)) {
         return FALSE;
     }
     return TRUE;
@@ -434,6 +442,17 @@ PerformBaseRelocation(PMEMORYMODULE module, ptrdiff_t delta)
     }
     return TRUE;
 }
+
+#ifdef _WIN64
+static BOOL
+RegisterExceptionHandling(PMEMORYMODULE module)
+{
+    PIMAGE_DATA_DIRECTORY pDir = GET_HEADER_DICTIONARY(module, IMAGE_DIRECTORY_ENTRY_EXCEPTION);
+    PIMAGE_RUNTIME_FUNCTION_ENTRY pEntry = (PIMAGE_RUNTIME_FUNCTION_ENTRY)(module->codeBase + pDir->VirtualAddress);
+    UINT count = (pDir->Size / sizeof(IMAGE_RUNTIME_FUNCTION_ENTRY)) - 1;
+    return RtlAddFunctionTable(pEntry, count, (DWORD64)module->codeBase);
+}
+#endif
 
 static BOOL
 BuildImportTable(PMEMORYMODULE module)
@@ -527,7 +546,13 @@ HCUSTOMMODULE MemoryDefaultLoadLibrary(LPCSTR filename, void *userdata)
 FARPROC MemoryDefaultGetProcAddress(HCUSTOMMODULE module, LPCSTR name, void *userdata)
 {
     UNREFERENCED_PARAMETER(userdata);
-    return (FARPROC) GetProcAddress((HMODULE) module, name);
+
+    FARPROC result = GetProcAddress((HMODULE) module, name);
+
+    if (result == &GetModuleHandleExW)
+      return GetModuleHandleExW_redirect;
+
+    return result;
 }
 
 void MemoryDefaultFreeLibrary(HCUSTOMMODULE module, void *userdata)
@@ -725,9 +750,18 @@ HMEMORYMODULE MemoryLoadLibraryEx(const void *data, size_t size,
         goto error;
     }
 
-    // mark memory pages depending on section headers and release
-    // sections that are marked as "discardable"
-    if (!FinalizeSections(result)) {
+#ifdef _WIN64
+    if (!RegisterExceptionHandling(result)) {
+        goto error;
+    }
+#endif
+
+    // RACKET: mark memory pages depending on section headers, but
+    // allow writing to non-executable pages as a workaround for MinGW
+    // pseudo relocation as performed by the entry; it's not clear why
+    // a workaround is needed, but maybe it has to do with faking the
+    // instance handle
+    if (!FinalizeSections(result, TRUE)) {
         goto error;
     }
 
@@ -757,6 +791,12 @@ HMEMORYMODULE MemoryLoadLibraryEx(const void *data, size_t size,
         }
     } else {
         result->exeEntry = NULL;
+    }
+
+    // mark memory pages depending on section headers (inclduing read-only) and release
+    // sections that are marked as "discardable"
+    if (!FinalizeSections(result, FALSE)) {
+        goto error;
     }
 
     return (HMEMORYMODULE)result;
@@ -1141,6 +1181,17 @@ MemoryLoadStringEx(HMEMORYMODULE module, UINT id, LPTSTR buffer, int maxsize, WO
     wcstombs(buffer, data->NameString, size);
 #endif
     return size;
+}
+
+/* Based on https://github.com/py2exe/py2exe/pull/67 by @leejeonghun
+   to make embedding OpenSSL work.
+   (MIT/X11 License) */
+BOOL WINAPI GetModuleHandleExW_redirect(DWORD dwFlags, LPCWSTR lpModuleName, HMODULE *phModule) {
+  if ((dwFlags & GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS) && (phModule != NULL)) {
+    *phModule = GetModuleHandle(NULL);
+    return TRUE;
+  }
+  return GetModuleHandleExW(dwFlags, lpModuleName, phModule);
 }
 
 #ifdef TESTSUITE

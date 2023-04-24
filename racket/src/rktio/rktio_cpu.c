@@ -1,26 +1,27 @@
 #include "rktio.h"
 #include "rktio_private.h"
 
-#if defined(__linux__) || defined(__QNX__)
-# include <unistd.h>
-#elif defined(OS_X)
+#if defined(OS_X) && defined(__POWERPC__)
 # include <sys/param.h>
 # include <sys/sysctl.h>
+#elif defined(__linux__) || defined(__QNX__) || defined(OS_X) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(sun)
+# include <unistd.h>
+# define USE_SYSCONF_NPROCESSORS_ONLN
 #elif defined(RKTIO_SYSTEM_WINDOWS)
 # include <windows.h>
-#endif 
+#endif
 
 void rktio_init_cpu(rktio_t *rktio)
 {
   int processor_count;
-  
-#if defined(__linux__) || defined(__QNX__)
-  processor_count = sysconf(_SC_NPROCESSORS_ONLN);
-#elif defined(OS_X)
-  size_t size = sizeof(processor_count);
 
+#if defined(OS_X) && defined(__POWERPC__)
+  size_t size = sizeof(processor_count);
+ 
   if (sysctlbyname("hw.ncpu", &processor_count, &size, NULL, 0))
     processor_count = 2;
+#elif defined(USE_SYSCONF_NPROCESSORS_ONLN)
+  processor_count = sysconf(_SC_NPROCESSORS_ONLN);
 #elif defined(RKTIO_SYSTEM_WINDOWS)
   SYSTEM_INFO sysinfo;
   GetSystemInfo(&sysinfo);

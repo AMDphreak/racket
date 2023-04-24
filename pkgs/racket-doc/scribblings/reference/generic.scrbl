@@ -22,7 +22,8 @@ a structure type are defined using the @racket[#:methods] keyword
                 (code:line #:fallbacks [fallback-impl ...])
                 (code:line #:defined-predicate defined-pred-id)
                 (code:line #:defined-table defined-table-id)
-                (code:line #:derive-property prop-expr prop-value-expr)]
+                (code:line #:derive-property prop-expr prop-value-expr)
+                (code:line #:requires [required-method-id ...])]
                [kw-formals* (arg* ...)
                             (arg* ...+ . rest-id)
                             rest-id]
@@ -109,6 +110,11 @@ automatically implement this structure type property using the provided values.
 When @racket[prop-value-expr] is executed, each @racket[method-id] is bound to
 its specific implementation for the @tech{structure type}.
 
+The @racket[#:requires] option may be provided at most once.
+When it is provided, any instance of the generic interface
+@emph{must} supply an implementation of the specified @racket[required-method-id]s.
+Otherwise, a compile-time error is raised.
+
 If a value @racket[v] satisfies @racket[id]@racketidfont{?}, then @racket[v] is
 a @deftech{generic instance} of @racketidfont{gen:}@racket[id].
 
@@ -122,6 +128,9 @@ If @racket[method-id] is not an implemented generic method of a generic
 instance @racket[v], and @racket[method-id] has a fallback implementation that
 does not raise an @racket[exn:fail:support] exception when given @racket[v],
 then @racket[method-id] is a @deftech{supported generic method} of @racket[v].
+
+@history[#:changed "8.7.0.5"
+         @elem{Added the @racket[#:requires] option.}]
 
 }
 
@@ -144,20 +153,24 @@ Raised for @techlink{generic methods} that do not support the given
 
 }
 
-@defform[(define/generic local-id method-id)
-         #:contracts
-         ([local-id identifier?]
-          [method-id identifier?])]{
+@defform[(define/generic local-id method-id)]{
 
-When used inside the method definitions associated with the
-@racket[#:methods] keyword, binds @racket[local-id] to the generic for
-@racket[method-id]. This form is useful for method specializations to
-use generic methods (as opposed to the local specialization) on other
-values.
+When used inside the method definitions associated with the @racket[#:methods],
+@racket[#:fallbacks], @racket[#:defaults] or @racket[#:fast-defaults] keywords,
+binds @racket[local-id] to the generic for @racket[method-id]. This form is
+useful for method specializations to use generic methods (as opposed to the
+local specialization) on other values.
 
-Using the @racket[define/generic] form outside a @racket[#:methods]
-specification in @racket[struct] (or @racket[define-struct]) is an
-syntax error.}
+The @racket[define/generic] form is only allowed inside:
+@itemlist[
+ @item{a @racket[#:methods] specification in @racket[struct] (or @racket[define-struct])}
+
+ @item{the specification of @racket[#:fallbacks], @racket[#:defaults] or
+       @racket[#:fast-defaults] in @racket[define-generics]}
+]
+
+Using @racket[define/generic] elsewhere is a syntax error.
+}
 
 
 @; Examples
@@ -181,43 +194,47 @@ syntax error.}
                (define (gen-print s [port (current-output-port)])
                  (fprintf port "String: ~a" s))
                (define (gen-port-print port s)
+                 @code:comment{we can call gen-print alternatively}
                  (super-print s port))
                (define (gen-print* s [port (current-output-port)]
                                    #:width w #:height [h 0])
                  (fprintf port "String (~ax~a): ~a" w h s))]))
 
-(define-struct num (v)
+(struct num (v)
   #:methods gen:printable
-  [(define/generic super-print gen-print)
-   (define (gen-print n [port (current-output-port)])
+  [(define (gen-print n [port (current-output-port)])
      (fprintf port "Num: ~a" (num-v n)))
    (define (gen-port-print port n)
-     (super-print n port))
+     (gen-print n port))
    (define (gen-print* n [port (current-output-port)]
                        #:width w #:height [h 0])
      (fprintf port "Num (~ax~a): ~a" w h (num-v n)))])
 
-(define-struct bool (v)
+(struct string+num (v n)
   #:methods gen:printable
   [(define/generic super-print gen-print)
+   (define/generic super-print* gen-print*)
    (define (gen-print b [port (current-output-port)])
-     (fprintf port "Bool: ~a"
-              (if (bool-v b) "Yes" "No")))
+     (super-print (string+num-v b) port)
+     (fprintf port " ")
+     (super-print (string+num-n b) port))
    (define (gen-port-print port b)
-     (super-print b port))
+     (gen-print b port))
    (define (gen-print* b [port (current-output-port)]
                        #:width w #:height [h 0])
-     (fprintf port "Bool (~ax~a): ~a" w h
-              (if (bool-v b) "Yes" "No")))])
+     (super-print* (string+num-v b) #:width w #:height h)
+     (fprintf port " ")
+     (super-print* (string+num-n b) #:width w #:height h))])
 
-(define x (make-num 10))
+(define x (num 10))
 (gen-print x)
 (gen-port-print (current-output-port) x)
 (gen-print* x #:width 100 #:height 90)
 
-(gen-print "Strings are printable too!")
+(define str "Strings are printable too!")
+(gen-print str)
 
-(define y (make-bool #t))
+(define y (string+num str x))
 (gen-print y)
 (gen-port-print (current-output-port) y)
 (gen-print* y #:width 100 #:height 90)
@@ -230,7 +247,7 @@ syntax error.}
         [gen-print* (->* (printable? #:width exact-nonnegative-integer?)
                          (output-port? #:height exact-nonnegative-integer?)
                          void?)]))
-   make-num)
+   num)
 
 (define z (make-num-contracted 10))
 (eval:error (gen-print* z #:width "not a number" #:height 5))
@@ -289,6 +306,58 @@ creates an @tech{impersonator} of @racket[val-expr]
 if @racket[mode] evaluates to @racket[#f], or creates
 a @tech{chaperone} of @racket[val-expr] otherwise.
 
+}
+
+@defform[(make-struct-type-property/generic
+           name-expr
+           maybe-guard-expr
+           maybe-supers-expr
+           maybe-can-impersonate?-expr
+           property-option
+           ...)
+  #:grammar
+  ([maybe-guard-expr (code:line) guard-expr]
+   [maybe-supers-expr (code:line) supers-expr]
+   [maybe-can-impersonate?-expr (code:line) can-impersonate?-expr]
+   [property-option (code:line #:property prop-expr val-expr)
+                    (code:line #:methods gen:name-id method-defs)]
+   [method-defs (definition ...)])
+  #:contracts
+  ([name-expr symbol?]
+   [guard-expr (or/c procedure? #f 'can-impersonate)]
+   [supers-expr (listof (cons/c struct-type-property? (-> any/c any/c)))]
+   [can-impersonate?-expr any/c]
+   [prop-expr struct-type-property?]
+   [val-expr any/c])]{
+Creates a new structure type property and returns three
+values, just like @racket[make-struct-type-property] would:
+
+@itemize[
+ @item{a @tech{structure type property descriptor}}
+ @item{a @tech{property predicate} procedure}
+ @item{a @tech{property accessor} procedure}
+]
+
+Any struct that implements this property will also implement
+the properties and @tech{generic interfaces} given in the
+@racket[#:property] and @racket[#:methods] declarations.
+The property @racket[val-expr]s and @racket[method-def]s are
+evaluated eagerly when the property is created, not when
+it is attached to a structure type.
+}
+
+@defform[(make-generic-struct-type-property
+            gen:name-id
+            method-def
+            ...)]{
+Creates a new structure type property and returns the
+@tech{structure type property descriptor}.
+
+Any struct that implements this property will also implement
+the @tech{generic interface} given by @racket[gen:name-id]
+with the given @racket[method-def]s. The @racket[method-def]s
+are evaluated eagerly when the property is created, not when
+it is attached to a structure type.
 }
 
 @close-eval[evaluator]

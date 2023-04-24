@@ -4,9 +4,9 @@
 
 @(define cgc-v-3m "CGC versus 3m")
 
-@title[#:tag "embedding"]{Embedding into a Program}
+@bc-title[#:tag "embedding"]{Embedding into a Program}
 
-@section-index["embedding Racket"]
+@section-index["embedding Racket BC"]
 
 The Racket run-time system can be embedded into a larger program.  The
 embedding process for Racket CGC or Racket 3m (see @secref[cgc-v-3m])
@@ -20,36 +20,33 @@ To embed Racket CGC in a program, follow these steps:
 
 @itemize[
 
- @item{Locate or build the Racket CGC libraries. Since the
+ @item{Locate or @seclink["src-build"]{build}
+  the Racket CGC libraries. Since the
   standard distribution provides 3m libraries, only, you will most
-  likely have to build from source.
+  likely have to @seclink["src-build"]{build from source}.
 
-  On Unix, the libraries are @as-index{@filepath{libracket.a}}
+  On Unix, the libraries are @as-index{@filepath{libracket.a}},
+  @as-index{@filepath{librktio.a}},
   and @as-index{@filepath{libmzgc.a}} (or
-  @as-index{@filepath{libracket.so}} and
+  @as-index{@filepath{libracket.so}},
+  @as-index{@filepath{librrktio.so}}, and
   @as-index{@filepath{libmzgc.so}} for a dynamic-library build, with
-  @as-index{@filepath{libracket.la}} and
+  @as-index{@filepath{libracket.la}},
+  @as-index{@filepath{librktio.la}}, and
   @as-index{@filepath{libmzgc.la}} files for use with
   @exec{libtool}). Building from source and installing places the
   libraries into the installation's @filepath{lib} directory. Be sure
   to build the CGC variant, since the default is 3m.
 
-  On Windows, stub libraries for use with Microsoft tools are
-  @filepath{libracket@italic{x}.lib} and
-  @filepath{libmzgc@italic{x}.lib} (where @italic{x} represents the
-  version number) are in a compiler-specific directory in
-  @filepath{racket\lib}. These libraries identify the bindings that are
-  provided by @filepath{libracket@italic{x}.dll} and
-  @filepath{libmzgc@italic{x}.dll} --- which are typically installed
-  in @filepath{racket\lib}. When linking with Cygwin, link to
-  @filepath{libracket@italic{x}.dll} and
-  @filepath{libmzgc@italic{x}.dll} directly.  At run time, either
+  On Windows, link to @filepath{libracket@italic{x}.dll} and
+  @filepath{libmzgc@italic{x}.dll} (where @italic{x} represents the
+  version number). At run time, either
   @filepath{libracket@italic{x}.dll} and
   @filepath{libmzgc@italic{x}.dll} must be moved to a location in the
   standard DLL search path, or your embedding application must
-  ``delayload'' link the DLLs and explicitly load them before
-  use. (@filepath{Racket.exe} and @filepath{GRacket.exe} use the latter
-  strategy.)
+  ``delayload'' link the DLLs and explicitly load them before use.
+  (@filepath{Racket.exe} uses the latter strategy.) See also
+  @secref["link-dll"].
 
   On Mac OS, dynamic libraries are provided by the
   @filepath{Racket} framework, which is typically installed in
@@ -66,7 +63,7 @@ To embed Racket CGC in a program, follow these steps:
   an executable-relative path using the Mach-O @tt["@executable_path"]
   prefix).}
 
- @item{For each C/C++ file that uses Racket library functions,
+ @item{For each C file that uses Racket library functions,
   @cpp{#include} the file @as-index{@filepath{scheme.h}}.
 
   The C preprocessor symbol @cppi{SCHEME_DIRECT_EMBEDDED} is defined
@@ -122,7 +119,7 @@ To embed Racket CGC in a program, follow these steps:
   that contains modules in bytecode form as encapsulated in a static
   array. The generated C file defines a @cppi{declare_modules}
   function that takes a @cpp{Scheme_Env*}, installs the modules into
-  the environment, and adjusts the module name resolver to access the
+  the environment, and it adjusts the module name resolver to access the
   embedded declarations. If embedded modules refer to runtime files
   that need to be carried along, supply @DFlag{runtime} to
   @exec{raco ctool --c-mods} to collect the runtime files into a
@@ -309,18 +306,15 @@ In addition, some library details are different:
 
 @itemize[
 
- @item{On Unix, the library is just
-  @as-index{@filepath{libracket3m.a}} (or
-  @as-index{@filepath{libracket3m.so}} for a dynamic-library build,
-  with @as-index{@filepath{libracket3m.la}} for use with
+ @item{On Unix, the libraries are just
+  @as-index{@filepath{libracket3m.a}} and @as-index{@filepath{librrktio.a}} (or
+  @as-index{@filepath{libracket3m.so}} and @as-index{@filepath{librktio.so}} for a dynamic-library build,
+  with @as-index{@filepath{libracket3m.la}} and @as-index{@filepath{librktio.la}} for use with
   @exec{libtool}). There is no separate library for 3m analogous to
   CGC's @filepath{libmzgc.a}.}
 
- @item{On Windows, the stub library for use with Microsoft tools is
-  @filepath{libracket3m@italic{x}.lib} (where @italic{x} represents the
-  version number). This library identifies the bindings that are
-  provided by @filepath{libracket3m@italic{x}.dll}.  There is no
-  separate library for 3m analogous to CGC's
+ @item{On Windows, link to @filepath{libracket3m@italic{x}.dll}. There
+  is no separate library for 3m analogous to CGC's
   @filepath{libmzgc@italic{x}.lib}.}
 
   @item{On Mac OS, 3m dynamic libraries are provided by the
@@ -345,12 +339,12 @@ extended to work with either CGC or 3m depending on whether
 
 static int run(Scheme_Env *e, int argc, char *argv[])
 {
-  Scheme_Object *l;
-  Scheme_Object *a[2];
+  Scheme_Object *l = NULL;
+  Scheme_Object *a[2] = { NULL, NULL };
 
-  MZ_GC_DECL_REG(6);
+  MZ_GC_DECL_REG(5);
   MZ_GC_VAR_IN_REG(0, e);
-  MZ_GC_VAR_IN_REG(1, l)
+  MZ_GC_VAR_IN_REG(1, l);
   MZ_GC_ARRAY_VAR_IN_REG(2, a, 2);
 
   MZ_GC_REG();
@@ -359,7 +353,7 @@ static int run(Scheme_Env *e, int argc, char *argv[])
 
   l = scheme_make_null();
   l = scheme_make_pair(scheme_intern_symbol("run"), l);
-  l = scheme_intern_symbol("quote"), l);
+  l = scheme_make_pair(scheme_intern_symbol("quote"), l);
 
   a[0] = l;
   a[1] = scheme_false;

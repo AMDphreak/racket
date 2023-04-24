@@ -24,7 +24,7 @@
 The library supports Objective-C interaction in two layers. The upper
 layer provides syntactic forms for sending messages and deriving
 subclasses. The lower layer is a thin wrapper on the
-@link["http://developer.apple.com/DOCUMENTATION/Cocoa/Reference/ObjCRuntimeRef/index.html"]{Objective-C
+@link["https://developer.apple.com/documentation/objectivec"]{Objective-C
 runtime library} functions. Even the upper layer is unsafe and
 relatively low-level compared to normal Racket libraries, because
 argument and result types must be declared in terms of FFI C types
@@ -456,11 +456,11 @@ be blocking in the sense of the @racket[#:blocking?] argument to
 @defmodule[ffi/objc]{The @racketmodname[ffi/objc] library is a
 deprecated entry point to @racketmodname[ffi/unsafe/objc]. It
 exports only safe operations directly, and unsafe operations are
-imported using @racket[objc-unsafe!].}
+imported using @racket[objc-unsafe!], analogous to @racketmodname[scheme/foreign #:indirect].}
 
 @defform[(objc-unsafe!)]{
 
-Analogous to @racket[(unsafe!)], makes unsafe bindings of
+Makes unsafe bindings of
 @racketmodname[ffi/unsafe/objc] available in the importing
 module.}
 

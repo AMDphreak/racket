@@ -20,6 +20,21 @@
 # include <CoreFoundation/CFLocale.h>
 #endif
 
+void rktio_convert_init(rktio_t *rktio) {
+#ifdef RKTIO_USE_XLOCALE
+  rktio->locale = LC_GLOBAL_LOCALE;
+#endif
+}
+
+void rktio_convert_deinit(rktio_t *rktio) {
+#ifdef RKTIO_USE_XLOCALE
+  if (rktio->locale != LC_GLOBAL_LOCALE) {
+    freelocale(rktio->locale);
+    rktio->locale = LC_GLOBAL_LOCALE;
+  }
+#endif
+}
+
 /*============================================================*/
 /* Using iconv via a DLL                                      */
 /*============================================================*/
@@ -142,10 +157,15 @@ static void init_iconv()
     else
       iconv_errno = (errno_proc_t)GetProcAddress(m, "_errno");
     if (!iconv_errno) {
-      /* The iconv.dll distributed with Racket links to msvcrt.dll.
-	 It's a slighly dangerous assumption that whatever iconv we
-	 found also uses msvcrt.dll. */
+      /* The iconv.dll distributed with Racket links to "msvcrt.dll"
+	 on x86 and x86_64, and to "API-MS-WIN-CRT-RUNTIME-L1-1-1.0.DLL"
+	 for Arm64. It's a slightly dangerous assumption that whatever
+	 iconv we found also uses that DLL. */
+# if defined(_M_ARM64)
+      m = LoadLibraryW(L"API-MS-WIN-CRT-RUNTIME-L1-1-1.0.DLL");
+# else
       m = LoadLibraryW(L"msvcrt.dll");
+# endif
       if (m) {
 	iconv_errno = (errno_proc_t)GetProcAddress(m, "_errno");
 	if (!iconv_errno) {
@@ -228,6 +248,15 @@ int rktio_convert_properties(rktio_t *rktio)
 
 void rktio_set_locale(rktio_t *rktio, const char *name)
 {
+#ifdef RKTIO_USE_XLOCALE
+  if (rktio->locale != LC_GLOBAL_LOCALE) {
+    freelocale(rktio->locale);
+    rktio->locale = LC_GLOBAL_LOCALE;
+  }
+  rktio->locale = newlocale(LC_COLLATE_MASK | LC_CTYPE_MASK, name, NULL);
+  if (rktio->locale == NULL)
+    rktio->locale = LC_GLOBAL_LOCALE;
+#else
   /* We only need CTYPE and COLLATE; two calls seem to be much
      faster than one call with ALL */
   if (name) {
@@ -239,22 +268,37 @@ void rktio_set_locale(rktio_t *rktio, const char *name)
     setlocale(LC_CTYPE, "C");
     setlocale(LC_COLLATE, "C");
   }
+#endif
 }
 
-char *rktio_push_c_numeric_locale(rktio_t *rktio)
+void rktio_set_default_locale(const char *name)
 {
+  setlocale(LC_ALL, name);
+}
+
+void *rktio_push_c_numeric_locale(rktio_t *rktio)
+{
+#ifdef RKTIO_USE_XLOCALE
+  return (void *)uselocale(newlocale(LC_NUMERIC, "C", NULL));
+#else
   char *prev;
   prev = setlocale(LC_NUMERIC, NULL);
   if (!prev || !strcmp(prev, "C"))
     return NULL;
   else
     return setlocale(LC_NUMERIC, "C");
+#endif
 }
 
-void rktio_pop_c_numeric_locale(rktio_t *rktio, char *prev)
+void rktio_pop_c_numeric_locale(rktio_t *rktio, void *prev)
 {
+#ifdef RKTIO_USE_XLOCALE
+  locale_t tmp = uselocale((locale_t)prev);
+  freelocale(tmp);
+#else
   if (prev)
     setlocale(LC_NUMERIC, prev);
+#endif
 }
 
 /*============================================================*/
@@ -263,12 +307,12 @@ void rktio_pop_c_numeric_locale(rktio_t *rktio, char *prev)
 
 #ifdef RKTIO_SYSTEM_WINDOWS
 
-static char *nl_langinfo_dup()
+static char *nl_langinfo_dup(rktio_t *rktio)
 {
   int i;
   char *current_locale_name;
 
-  current_locale_name = setlocale(LC_NUMERIC, NULL);
+  current_locale_name = setlocale(LC_CTYPE, NULL);
   if (!current_locale_name)
     current_locale_name = "";
 
@@ -318,11 +362,17 @@ static char *nl_langinfo_dup()
 
 #else
 
-static char *nl_langinfo_dup()
+static char *nl_langinfo_dup(rktio_t *rktio)
 {
   char *s;
 # if HAVE_CODESET
+#  if defined(RKTIO_USE_XLOCALE)
+  locale_t old_l = uselocale(rktio->locale);
+#  endif
   s = nl_langinfo(CODESET);
+#  if defined(RKTIO_USE_XLOCALE)
+  uselocale(old_l);
+#  endif
 # else
   /* nl_langinfo doesn't work, so just make up something */
   s = "UTF-8";
@@ -335,7 +385,7 @@ static char *nl_langinfo_dup()
 
 char *rktio_locale_encoding(rktio_t *rktio)
 {
-  return nl_langinfo_dup();
+  return nl_langinfo_dup(rktio);
 }
 
 /*============================================================*/
@@ -539,7 +589,11 @@ char *rktio_locale_recase(rktio_t *rktio,
   /* Re-case chars in "out" */
   for (i = 0; i < iilen; i++) {
     char t;
+#ifdef RKTIO_USE_XLOCALE
+    t = (to_up) ? toupper_l(out[i], rktio->locale) : tolower_l(out[i], rktio->locale);
+#else
     t = (to_up) ? toupper(out[i]) : tolower(out[i]);
+#endif
     out[i] = t;
   }
 
@@ -553,6 +607,9 @@ char *rktio_locale_recase(rktio_t *rktio,
   wchar_t *wc, *ws, wcbuf[RKTIO_WC_BUF_SIZE], cwc;
   const char *s;
   unsigned int j;
+# if defined(RKTIO_USE_XLOCALE)
+  locale_t old_l = uselocale(rktio->locale);
+# endif
   /* The "n" versions are apparently not too standard: */
 # define mz_mbsnrtowcs(t, f, fl, tl, s) mbsrtowcs(t, f, tl, s)
 # define mz_wcsnrtombs(t, f, fl, tl, s) wcsrtombs(t, f, tl, s)
@@ -584,12 +641,20 @@ char *rktio_locale_recase(rktio_t *rktio,
 
   if (to_up) {
     for (j = 0; j < wl; j++) {
+# ifdef RKTIO_USE_XLOCALE
+      cwc = towupper_l(wc[j], rktio->locale);
+# else
       cwc = towupper(wc[j]);
+#endif
       wc[j] = cwc;
     }
   } else {
     for (j = 0; j < wl; j++) {
+# ifdef RKTIO_USE_XLOCALE
+      cwc = towlower_l(wc[j], rktio->locale);
+# else
       cwc = towlower(wc[j]);
+# endif
       wc[j] = cwc;
     }
   }
@@ -614,6 +679,10 @@ char *rktio_locale_recase(rktio_t *rktio,
   out[ml] = 0;
 
   if (wc != wcbuf) free(wc);
+
+# if defined(RKTIO_USE_XLOCALE)
+  (void)uselocale(old_l);
+# endif
 
   return out;
 #endif
@@ -678,7 +747,11 @@ rktio_char16_t *rktio_recase_utf16(rktio_t *rktio, rktio_bool_t to_up, rktio_cha
 
 int rktio_locale_strcoll(rktio_t *rktio, const char *s1, const char *s2)
 {
+#ifdef RKTIO_USE_XLOCALE
+  return strcoll_l(s1, s2, rktio->locale);
+#else
   return strcoll(s1, s2);
+#endif
 }
 
 int rktio_strcoll_utf16(rktio_t *rktio,

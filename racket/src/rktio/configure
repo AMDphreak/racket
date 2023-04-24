@@ -621,9 +621,10 @@ ac_includes_default="\
 
 ac_subst_vars='LTLIBOBJS
 LIBOBJS
+HAVE_DIRENT_NAMELEN
+HAVE_DIRENT_NAMLEN
 RKTIO_NO_ICONV
-HIDE_STANDALONE
-HIDE_NOT_STANDALONE
+AS_STANDALONE
 LTA
 LTO
 LIBSFX
@@ -675,7 +676,6 @@ infodir
 docdir
 oldincludedir
 includedir
-runstatedir
 localstatedir
 sharedstatedir
 sysconfdir
@@ -751,7 +751,6 @@ datadir='${datarootdir}'
 sysconfdir='${prefix}/etc'
 sharedstatedir='${prefix}/com'
 localstatedir='${prefix}/var'
-runstatedir='${localstatedir}/run'
 includedir='${prefix}/include'
 oldincludedir='/usr/include'
 docdir='${datarootdir}/doc/${PACKAGE}'
@@ -1004,15 +1003,6 @@ do
   | -silent | --silent | --silen | --sile | --sil)
     silent=yes ;;
 
-  -runstatedir | --runstatedir | --runstatedi | --runstated \
-  | --runstate | --runstat | --runsta | --runst | --runs \
-  | --run | --ru | --r)
-    ac_prev=runstatedir ;;
-  -runstatedir=* | --runstatedir=* | --runstatedi=* | --runstated=* \
-  | --runstate=* | --runstat=* | --runsta=* | --runst=* | --runs=* \
-  | --run=* | --ru=* | --r=*)
-    runstatedir=$ac_optarg ;;
-
   -sbindir | --sbindir | --sbindi | --sbind | --sbin | --sbi | --sb)
     ac_prev=sbindir ;;
   -sbindir=* | --sbindir=* | --sbindi=* | --sbind=* | --sbin=* \
@@ -1150,7 +1140,7 @@ fi
 for ac_var in	exec_prefix prefix bindir sbindir libexecdir datarootdir \
 		datadir sysconfdir sharedstatedir localstatedir includedir \
 		oldincludedir docdir infodir htmldir dvidir pdfdir psdir \
-		libdir localedir mandir runstatedir
+		libdir localedir mandir
 do
   eval ac_val=\$$ac_var
   # Remove trailing slashes.
@@ -1303,7 +1293,6 @@ Fine tuning of the installation directories:
   --sysconfdir=DIR        read-only single-machine data [PREFIX/etc]
   --sharedstatedir=DIR    modifiable architecture-independent data [PREFIX/com]
   --localstatedir=DIR     modifiable single-machine data [PREFIX/var]
-  --runstatedir=DIR       modifiable per-process data [LOCALSTATEDIR/run]
   --libdir=DIR            object code libraries [EPREFIX/lib]
   --includedir=DIR        C header files [PREFIX/include]
   --oldincludedir=DIR     C header files for non-gcc [/usr/include]
@@ -1679,6 +1668,63 @@ $as_echo "$ac_res" >&6; }
   eval $as_lineno_stack; ${as_lineno_stack:+:} unset as_lineno
 
 } # ac_fn_c_check_header_compile
+
+# ac_fn_c_check_member LINENO AGGR MEMBER VAR INCLUDES
+# ----------------------------------------------------
+# Tries to find if the field MEMBER exists in type AGGR, after including
+# INCLUDES, setting cache variable VAR accordingly.
+ac_fn_c_check_member ()
+{
+  as_lineno=${as_lineno-"$1"} as_lineno_stack=as_lineno_stack=$as_lineno_stack
+  { $as_echo "$as_me:${as_lineno-$LINENO}: checking for $2.$3" >&5
+$as_echo_n "checking for $2.$3... " >&6; }
+if eval \${$4+:} false; then :
+  $as_echo_n "(cached) " >&6
+else
+  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+$5
+int
+main ()
+{
+static $2 ac_aggr;
+if (ac_aggr.$3)
+return 0;
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_compile "$LINENO"; then :
+  eval "$4=yes"
+else
+  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+$5
+int
+main ()
+{
+static $2 ac_aggr;
+if (sizeof ac_aggr.$3)
+return 0;
+  ;
+  return 0;
+}
+_ACEOF
+if ac_fn_c_try_compile "$LINENO"; then :
+  eval "$4=yes"
+else
+  eval "$4=no"
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
+fi
+eval ac_res=\$$4
+	       { $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_res" >&5
+$as_echo "$ac_res" >&6; }
+  eval $as_lineno_stack; ${as_lineno_stack:+:} unset as_lineno
+
+} # ac_fn_c_check_member
 
 # ac_fn_c_check_header_mongrel LINENO HEADER VAR INCLUDES
 # -------------------------------------------------------
@@ -2298,8 +2344,7 @@ use_flag_posix_pthread=no
 
 # For standalone builds:
 rktio_version=1.0
-HIDE_STANDALONE=hide_standalone_
-HIDE_NOT_STANDALONE=
+AS_STANDALONE=f
 
 ###### Autoconfigure #######
 
@@ -3375,6 +3420,9 @@ case "$host_os" in
     ;;
   *mingw*)
     skip_iconv_check=yes
+    PREFLAGS="$PREFLAGS -DWIN32"
+    # force pthread off for Windows:
+    enable_pthread=no
     ;;
   cygwin*)
     ;;
@@ -4121,6 +4169,83 @@ $as_echo "#define RKTIO_BIG_ENDIAN 1" >>confdefs.h
 
 fi
 
+# Struct dirent
+ac_fn_c_check_member "$LINENO" "struct dirent" "d_namelen" "ac_cv_member_struct_dirent_d_namelen" "#include <dirent.h>
+"
+if test "x$ac_cv_member_struct_dirent_d_namelen" = xyes; then :
+
+$as_echo "#define HAVE_DIRENT_NAMELEN 1" >>confdefs.h
+
+fi
+
+ac_fn_c_check_member "$LINENO" "struct dirent" "d_namlen" "ac_cv_member_struct_dirent_d_namlen" "#include <dirent.h>
+"
+if test "x$ac_cv_member_struct_dirent_d_namlen" = xyes; then :
+
+$as_echo "#define HAVE_DIRENT_NAMLEN 1" >>confdefs.h
+
+fi
+
+
+ msg="for xlocale.h"
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking $msg" >&5
+$as_echo_n "checking $msg... " >&6; }
+cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+   # include <xlocale.h>
+   int main() {
+      return 0;
+   }
+_ACEOF
+if ac_fn_c_try_compile "$LINENO"; then :
+
+$as_echo "#define RKTIO_USE_XLOCALE_HEADER 1" >>confdefs.h
+
+  xlocalehon=yes
+else
+  xlocalehon=no
+fi
+rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $xlocalehon" >&5
+$as_echo "$xlocalehon" >&6; }
+
+SAVE_CFLAGS="$CFLAGS"
+if test "${xlocalehon}" = "yes" ; then
+  CFLAGS="$CFLAGS -DRKTIO_USE_XLOCALE_HEADER"
+fi
+ msg="for xlocale functions"
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking $msg" >&5
+$as_echo_n "checking $msg... " >&6; }
+cat confdefs.h - <<_ACEOF >conftest.$ac_ext
+/* end confdefs.h.  */
+
+   #ifdef RKTIO_USE_XLOCALE_HEADER
+   # include <xlocale.h>
+   #endif
+   #include <locale.h>
+   int main() {
+      locale_t l = newlocale(LC_COLLATE_MASK | LC_CTYPE_MASK, "C", NULL);
+      locale_t old_l = uselocale(l);
+      uselocale(old_l);
+      freelocale(l);
+      return 0;
+   }
+_ACEOF
+if ac_fn_c_try_link "$LINENO"; then :
+
+$as_echo "#define RKTIO_USE_XLOCALE 1" >>confdefs.h
+
+  xlocaleon=yes
+else
+  xlocaleon=no
+fi
+rm -f core conftest.err conftest.$ac_objext \
+    conftest$ac_exeext conftest.$ac_ext
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $xlocaleon" >&5
+$as_echo "$xlocaleon" >&6; }
+CFLAGS="$SAVE_CFLAGS"
+
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for getaddrinfo" >&5
 $as_echo_n "checking for getaddrinfo... " >&6; }
 cat confdefs.h - <<_ACEOF >conftest.$ac_ext
@@ -4453,8 +4578,7 @@ fi
 ############## libtool ################
 
 if test "${enable_standalone}" = "yes" ; then
-   HIDE_STANDALONE=""
-   HIDE_NOT_STANDALONE=hide_not_standalone_
+   AS_STANDALONE=t
    if test "${enable_shared}" = "" ; then
      enable_shared=yes
    fi
@@ -4489,7 +4613,7 @@ if test "${enable_shared}" = "yes" ; then
   fi
 
   # Use only for standalone builds:
-  AR="${LIBTOOLPROG} --mode=link --tag=CC $CC${need_gcc_static_libgcc}${ar_libtool_no_undefined} -release ${rktio_version} -rpath ${abslibdir} \$(ARLIBFLAGS) -o"
+  AR="${LIBTOOLPROG} --mode=link --tag=CC $CC${need_gcc_static_libgcc}${ar_libtool_no_undefined} -release ${rktio_version} -rpath ${abslibdir} -o"
   # Used for a librktio convenience library:
   STATIC_AR="${LIBTOOLPROG} --mode=link --tag=CC $CC -o"
   ARFLAGS=""
@@ -4506,13 +4630,13 @@ else
   ICP=cp
   LTO="o"
   LTA="a"
-  RKTLINKER='$(CC)'
+  RKTLINKER="$CC"
   STATIC_AR="$AR"
   LIBSFX=so
   ICP_LIB=cp
   if test "${make_darwin_dylib}" = "yes" ; then
      LIBSFX="dylib"
-     AR='$(RKTLINKER) --shared -o'
+     AR="${RKTLINKER} --shared -o"
      ARFLAGS=""
      LIBS="${LIBS} -framework CoreFoundation"
      ICP_LIB=cp
@@ -4522,6 +4646,8 @@ fi
 ############## final output ################
 
 CPPFLAGS="$CPPFLAGS $PREFLAGS"
+
+
 
 
 

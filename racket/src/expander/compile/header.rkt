@@ -122,9 +122,16 @@
                                ,(add-module-path-index! mpis self)
                                ,self-id
                                ,inspector-id)])
-                  (begin
-                    (vector-cas! ,syntax-literals-id pos #f stx)
-                    (unsafe-vector*-ref ,syntax-literals-id pos))))))))))
+                  ;; loop in case of spurious CAS failure
+                  (letrec-values ([(loop)
+                                   (lambda ()
+                                     (begin
+                                       (vector-cas! ,syntax-literals-id pos #f stx)
+                                       (let-values ([(new-stx) (unsafe-vector*-ref ,syntax-literals-id pos)])
+                                         (if new-stx
+                                             new-stx
+                                             (loop)))))])
+                    (loop))))))))))
 
 ;; Generate on-demand deserialization (shared across instances); the
 ;; result defines `deserialize-syntax-id`
@@ -153,7 +160,7 @@
                ,(generate-deserialize (vector->immutable-vector
                                        (list->vector
                                         (reverse (syntax-literals-stxes sl))))
-                                      mpis)))
+                                      #:mpis mpis)))
             (set! ,deserialize-syntax-id #f)))))]))
 
 (define (generate-lazy-syntax-literal-lookup pos)
@@ -173,7 +180,7 @@
                                                       (encode-namespace-scopes ns)
                                                       (reverse
                                                        (syntax-literals-stxes sl)))
-                                                     mpis)])
+                                                     #:mpis mpis)])
       (let-values ([(ns-scope-s) (car ns+stxss)])
         (list->vector
          (map (lambda (stx)

@@ -37,7 +37,7 @@ before the merge, the identifier that triggered the macro expansion
 property so far.  The @racket['origin] property thus records (in
 reverse order) the sequence of macro expansions that produced an
 expanded expression. Usually, the @racket['origin] value is a
-list of identifiers. However, a transformer might return
+list of identifiers, but a transformer might return
 syntax that has already been expanded, in which case an
 @racket['origin] list can contain other lists after a merge. The
 @racket[syntax-track-origin] procedure implements this tracking.
@@ -82,6 +82,11 @@ Racket adds properties to expanded syntax (often using
  identifier to the expansion result as a
  @indexed-racket['disappeared-use] property.}
 
+ @item{When a @tech{rename transformer} is used to replace a
+ @racket[set!] target, @racket[syntax-track-origin] is used on the
+ target identifier (the same as when the identifier is used as an
+ expression).}
+
  @item{When a reference to an unexported or protected identifier from
  a module is discovered, the @indexed-racket['protected] property is
  added to the identifier with a @racket[#t] value.}
@@ -91,7 +96,8 @@ Racket adds properties to expanded syntax (often using
  (using a private key) to mark the object as originating from a
  read. The @racket[syntax-original?]  predicate looks for the property
  to recognize such syntax objects. (See @secref["stxops"] for more
- information.)}
+ information. The property is not transferred by the expander from
+ a macro transformer input to its output or by @racket[syntax-track-origin].)}
 
 ]
 
@@ -126,7 +132,8 @@ should be a value as described below that can be saved in marshaled bytecode.
 
 The two-argument form returns an arbitrary property value associated
 to @racket[stx] with the key @racket[key], or @racket[#f] if no value
-is associated to @racket[stx] for @racket[key].
+is associated to @racket[stx] for @racket[key]. If @racket[stx] is @tech{tainted},
+then syntax objects with the result value are tainted.
 
 To support marshaling to bytecode, a value for a preserved syntax
 property must be a non-cyclic value that is either
@@ -190,7 +197,8 @@ are not included in the result list.}
 Adds properties to @racket[new-stx] in the same way that macro
 expansion adds properties to a transformer result. In particular, it
 merges the properties of @racket[orig-stx] into @racket[new-stx],
-first adding @racket[id-stx] as an @racket['origin] property, and it
+first adding @racket[id-stx] as an @racket['origin] property and removing
+the property recognized by @racket[syntax-original?], and it
 returns the property-extended syntax object. Use the
 @racket[syntax-track-origin] procedure in a macro transformer that
 discards syntax (corresponding to @racket[orig-stx] with a keyword
@@ -217,6 +225,11 @@ which, in turn, expands to
 
 The syntax object for the final expression will have an
 @racket['origin] property whose value is @racket[(list (quote-syntax
-let) (quote-syntax or))].}
+let) (quote-syntax or))].
 
-
+@history[#:changed "7.0" @elem{Included the @racket[syntax-original?]
+                               property among the ones transferred to
+                               @racket[new-stx].}
+         #:changed "8.2.0.7" @elem{Corrected back to removing the @racket[syntax-original?]
+                                   property from the set transferred to
+                                   @racket[new-stx].}]}

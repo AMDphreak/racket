@@ -44,7 +44,8 @@
 ;; proxied-scheme
 (define (env->c-p-s-entries . envarses)
   (define (in1 proxied-scheme envvar)
-    (match (getenv envvar)
+    (match (let ([s (getenv envvar)])
+             (and s (string-trim s)))
       [#f #f]
       ["" null]
       [(app string->url*
@@ -249,12 +250,12 @@
   (define-values (in out) (make-pipe 4096))
   (define-values (status headers response-port)
     (hc:http-conn-recv! hc #:method method-bss #:close? #t #:content-decode '()))
-  (fprintf out "~a\r\n" status)
-  (for ([h (in-list headers)])
-    (fprintf out "~a\r\n" h))
-  (fprintf out "\r\n")
   (thread
    (λ ()
+     (fprintf out "~a\r\n" status)
+     (for ([h (in-list headers)])
+       (fprintf out "~a\r\n" h))
+     (fprintf out "\r\n")
      (copy-port response-port out)
      (close-output-port out)))
   in)
@@ -302,6 +303,7 @@
   (hc:http-conn-close! hc))
 
 (define (get-pure-port/headers url [strings '()]
+                               #:method [method #"GET"]
                                #:redirections [redirections 0]
                                #:status? [status? #f]
                                #:connection [conn #f])
@@ -316,11 +318,11 @@
                                     make-ports)
                                   (and conn #t)))
     (define-values (status headers response-port)
-      (hc:http-conn-recv! hc #:method #"GET" #:close? (not conn) #:content-decode '()))
+      (hc:http-conn-recv! hc #:method method #:close? (not conn) #:content-decode '()))
 
     (define new-url
       (ormap (λ (h)
-               (match (regexp-match #rx#"^Location: (.*)$" h)
+               (match (regexp-match #rx#"^(?i:Location): (.*)$" h)
                  [#f #f]
                  [(list _ m1b)
                   (define m1 (bytes->string/utf-8 m1b))
@@ -495,6 +497,7 @@
  (purify-port (input-port? . -> . string?))
  (get-pure-port/headers (->* (url?)
                              ((listof string?)
+                              #:method (or/c #"GET" #"HEAD" #"DELETE" #"OPTIONS")
                               #:redirections exact-nonnegative-integer?
                               #:status? boolean?
                               #:connection (or/c #f hc:http-conn?))
@@ -523,7 +526,7 @@
                            #:method [method-bss #"GET"]
                            #:headers [headers-bs empty]
                            #:data [data #f]
-                           #:content-decode [decodes '(gzip)])
+                           #:content-decode [decodes '(gzip deflate)])
   (unless (member (url-scheme u) '(#f "http" "https"))
     (error 'http-sendrecv/url "URL scheme ~e not supported" (url-scheme u)))
   (define ssl?

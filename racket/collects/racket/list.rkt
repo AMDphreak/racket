@@ -47,6 +47,7 @@
 
          ;; convenience
          range
+         inclusive-range
          append-map
          filter-not
          shuffle
@@ -183,7 +184,7 @@
           (cons x (loop (cdr list)))
           '()))
       ;; could return `list' here, but make it behave like `take'
-      ;; exmaple: (takef '(a b c . d) symbol?) should be similar
+      ;; example: (takef '(a b c . d) symbol?) should be similar
       ;; to (take '(a b c . d) 3)
       '())))
 
@@ -396,6 +397,7 @@
                   [(<= len 40) #f]
                   [(eq? =? eq?) (make-hasheq)]
                   [(eq? =? equal?) (make-hash)]
+                  [(eq? =? equal-always?) (make-hashalw)]
                   [else #f])])
     (case h
       [(#t) l]
@@ -404,7 +406,7 @@
        ;; and for equalities other than `eq?' or `equal?'  The length threshold
        ;; above (40) was determined by trying it out with lists of length n
        ;; holding (random n) numbers.
-       (let ([key (or key (λ(x) x))])
+       (let ([key (or key (λ (x) x))])
          (let-syntax ([loop (syntax-rules ()
                               [(_ search)
                                (let loop ([l l] [seen null])
@@ -417,6 +419,7 @@
            (cond [(eq? =? equal?) (loop member)]
                  [(eq? =? eq?)    (loop memq)]
                  [(eq? =? eqv?)   (loop memv)]
+                 [(eq? =? equal-always?) (loop memw)]
                  [else (loop (λ(x seen) (ormap (λ(y) (=? x y)) seen)))])))]
       [else
        ;; Use a hash for long lists with simple hash tables.
@@ -453,6 +456,8 @@
            (check-duplicates/t items key (make-hasheq) fail-k)]
           [(eq? same? eqv?)
            (check-duplicates/t items key (make-hasheqv) fail-k)]
+          [(eq? same? equal-always?)
+           (check-duplicates/t items key (make-hashalw) fail-k)]
           [else
            (unless (and (procedure? same?)
                         (procedure-arity-includes? same? 2))
@@ -573,6 +578,15 @@
         [(start end step) (for/list ([i (in-range start end step)]) i)]))
     range))
 
+(define inclusive-range-proc
+  (let ()
+    ; make sure range has the right runtime name
+    (define inclusive-range
+      (case-lambda
+        [(start end)      (for/list ([i (in-inclusive-range start end)])      i)]
+        [(start end step) (for/list ([i (in-inclusive-range start end step)]) i)]))
+    inclusive-range))
+
 (define-sequence-syntax range
   (λ () #'range-proc)
   (λ (stx)
@@ -580,6 +594,14 @@
       [[(n) (_ end)]            #'[(n) (in-range end)]]
       [[(n) (_ start end)]      #'[(n) (in-range start end)]]
       [[(n) (_ start end step)] #'[(n) (in-range start end step)]]
+      [[ids range-expr]         #'[ids (#%expression range-expr)]])))
+
+(define-sequence-syntax inclusive-range
+  (λ () #'inclusive-range-proc)
+  (λ (stx)
+    (syntax-case stx ()
+      [[(n) (_ start end)]      #'[(n) (in-inclusive-range start end)]]
+      [[(n) (_ start end step)] #'[(n) (in-inclusive-range start end step)]]
       [[ids range-expr]         #'[ids (#%expression range-expr)]])))
 
 (define append-map
@@ -626,43 +648,70 @@
   (define v (list->vector l))
   (define N (vector-length v))
   (define N-1 (- N 1))
-  (define (vector-ref/bits v b)
-    (for/fold ([acc '()])
-              ([i (in-range N-1 -1 -1)])
-      (if (bitwise-bit-set? b i)
-        (cons (vector-ref v i) acc)
-        acc)))
-  (define-values (first last incr)
+  (define gen-combinations
     (cond
-     [(not k)
-      ;; Enumerate all binary numbers [1..2**N].
-      (values 0 (- (expt 2 N) 1) add1)]
-     [(< N k)
-      ;; Nothing to produce
-      (values 1 0 values)]
-     [else
-      ;; Enumerate numbers with `k` ones, smallest to largest
-      (define first (- (expt 2 k) 1))
-      (define gospers-hack ;; https://en.wikipedia.org/wiki/Combinatorial_number_system#Applications
-        (if (zero? first)
-          add1
-          (lambda (n)
-            (let* ([u (bitwise-and n (- n))]
-                   [v (+ u n)])
-              (+ v (arithmetic-shift (quotient (bitwise-xor v n) u) -2))))))
-      (values first (arithmetic-shift first (- N k)) gospers-hack)]))
-  (define gen-next
-    (let ([curr-box (box first)])
-      (lambda ()
-        (let ([curr (unbox curr-box)])
-          (and (<= curr last)
-               (begin0
-                 (vector-ref/bits v curr)
-                 (set-box! curr-box (incr curr))))))))
-  (in-producer gen-next #f))
+      [(not k)
+       ;; Enumerate all binary numbers [1..2**N].
+       ;; Produce the combination with elements in `v` at the same
+       ;;  positions as the 1's in the binary number.
+       (define limit (expt 2 N))
+       (define curr-box (box 0))
+       (lambda ()
+         (let ([curr (unbox curr-box)])
+           (if (< curr limit)
+             (begin0
+               (for/fold ([acc '()])
+                         ([i (in-range N-1 -1 -1)])
+                 (if (bitwise-bit-set? curr i)
+                   (cons (vector-ref v i) acc)
+                   acc))
+               (set-box! curr-box (+ curr 1)))
+             #f)))]
+      [(< N k)
+       (lambda () #f)]
+      [else
+       (define running? #t)
+       ;; Keep a vector `k*` that contains `k` indices
+       ;; Use `k*` to generate combinations
+       ;;
+       ;; Initialize the vector `k*` to the first {0..k-1} indices
+       (define k* (build-vector k (lambda (i) i))) ; (Vectorof Index)
+       (define k-1 (- k 1))
+
+       ;; the generator produces a result and tries to increment
+       ;; positions in `k*`.
+       (λ ()
+         (cond
+           [running?
+            (begin0 (for/list ([i (in-vector k*)]) (vector-ref v i))
+              (let ([index-to-change #f])
+                ;; Find a rightmost index that could be incremented.
+                ;; E.g., if N = 10 and we have #(3 4 8 9),
+                ;; the element 4 is incrementable
+                (for ([i (in-range k-1 -1 -1)])
+                  #:break
+                  (and (not (eq? (vector-ref k* i) (+ i N (- k))))
+                       (begin (set! index-to-change i) #t))
+                  (void))
+                (cond
+                  ;; If there is an incrementable index, increase it by one
+                  ;; and reset all elements after the incrementable index
+                  ;; E.g., if N = 10 and we have #(3 4 8 9)
+                  ;; then we change it to #(3 5 6 7)
+                  [index-to-change
+                   (define val-to-change (add1 (vector-ref k* index-to-change)))
+                   (for ([i (in-range index-to-change k)]
+                         [v (in-naturals val-to-change)])
+                     (vector-set! k* i v))]
+                  ;; Otherwise, there's no incrementable index. E.g.,
+                  ;; N = 10 and we have #(6 7 8 9), so we quit enumeration
+                  [else (set! running? #f)])))]
+           [else #f]))]))
+
+      (in-producer gen-combinations #f))
 
 ;; This implements an algorithm known as "Ord-Smith".  (It is described in a
-;; paper called "Permutation Generation Methods" by Robert Sedgewlck, listed as
+;; paper called "Permutation Generation Methods" by Robert Sedgewick, listed as
 ;; Algorithm 8.)  It has a number of good properties: it is very fast, returns
 ;; a list of results that has a maximum number of shared list tails, and it
 ;; returns a list of reverses of permutations in lexical order of the input,
@@ -725,7 +774,7 @@
          (when (> N 254) (error 'permutations "input list too long: ~e" l))
          (define c (make-bytes (add1 N) 0))
          (define i 0)
-         (define cur (reverse l))
+         (define cur l)
          (define (next)
            (define r cur)
            (define ci (bytes-ref c i))

@@ -52,22 +52,23 @@
    (unsafe-place-local-set! cross-machine-compiler-cache
                             (cons a (unsafe-place-local-ref cross-machine-compiler-cache)))))
 
-(define (do-cross cmd machine v)
+(define (do-cross cmd machine v quoteds)
   (let* ([a (find-cross 'cross-compile machine)]
          [ch (cadr a)]
          [reply-ch (make-channel)])
     (channel-put ch (list cmd
                           v
+                          quoteds
                           reply-ch))
-    (begin0
-     (channel-get reply-ch)
-     (cache-cross-compiler a))))
+    (let ([bv+literals (channel-get reply-ch)])
+      (cache-cross-compiler a)
+      (values (car bv+literals) (cdr bv+literals)))))
 
-(define (cross-compile machine v)
-  (do-cross 'c machine v))
+(define (cross-compile machine v quoteds realm unsafe?)
+  (do-cross (if unsafe? 'u 'c) machine (cons v realm) quoteds))
 
-(define (cross-fasl-to-string machine v)
-  (do-cross 'f machine v))
+(define (cross-fasl-to-string machine v quoteds mode)
+  (do-cross (if (eq? mode 'code) 'f 'd) machine v quoteds))
 
 ;; Start a compiler as a Racket thread under the root custodian.
 ;; Using Racket's scheduler lets us use the event and I/O system,
@@ -111,24 +112,53 @@
              ;; called is interrupted, then shut this compiler down:
              (will-register we msg-ch (lambda (msg-ch) (custodian-shutdown-all c)))
              (let loop ()
-               (let ([msg (channel-get msg-ch)])
-                 ;; msg is (list <command> <value> <reply-channel>)
-                 (write-string (#%format "~a\n" (car msg)) to)
-                 (let ([bv (fasl-to-bytevector (cadr msg))])
-                   (write-bytes (integer->integer-bytes (bytevector-length bv) 8 #f #f) to)
-                   (write-bytes bv to))
-                 (flush-output to)
-                 (let* ([len-bstr (read-bytes 8 from)]
-                        [len (integer-bytes->integer len-bstr #f #f)]
-                        [bv (read-bytes len from)])
-                   (channel-put (caddr msg) bv))
+               (let* ([msg (channel-get msg-ch)]
+                      [compress? (case (car msg)
+                                   [(d) compress-data?]
+                                   [else compress-code?])])
+                 ;; msg is (list <command> <value> <quoted> <reply-channel>)
+                 (write-string (#%format "~a~a\n" (car msg) (if compress? #\y #\n)) to)
+                 (let-values ([(bv literals) (fasl-to-bytevector (cadr msg) (caddr msg))])
+                   ;; We can't send all literals to the cross compiler, but we can send
+                   ;; strings and byte stringa, which might affect compilation. Otherwise,
+                   ;; we report the existence of other literals, and the cross compiler can
+                   ;; report which of those remain used in the compiled form.
+                   (let-values ([(literals-bv ignored) (fasl-to-bytevector (strip-opaque literals) #f)])
+                     (write-bytes (integer->integer-bytes (bytevector-length bv) 8 #f #f) to)
+                     (write-bytes bv to)
+                     (write-bytes (integer->integer-bytes (bytevector-length literals-bv) 8 #f #f) to)
+                     (write-bytes literals-bv to)
+                     (flush-output to))
+                   (let* ([read-num (lambda ()
+                                      (integer-bytes->integer (read-bytes 8 from) #f #f))]
+                          [len (read-num)]
+                          [bv (read-bytes len from)]
+                          [kept-literals-count (read-num)] ; number of used-literal indices
+                          [kept-literals (list->vector
+                                          (let loop ([i 0])
+                                            (if (fx= i kept-literals-count)
+                                                '()
+                                                (cons (vector-ref literals (read-num))
+                                                      (loop (fx+ i 1))))))])
+                     (channel-put (cadddr msg) (cons bv kept-literals))))
                  (loop)))))))
       (list machine msg-ch))))
 
-(define (fasl-to-bytevector v)
+(define (fasl-to-bytevector v quoteds)
   (let-values ([(o get) (open-bytevector-output-port)])
-    (fasl-write* v o)
-    (get)))
+    (let ([literals (fasl-write/literals* v quoteds o)])
+      (values (get) literals))))
+
+(define (strip-opaque vec)
+  (let ([vec2 (make-vector (vector-length vec) #f)])
+    (let loop ([i 0])
+      (unless (fx= i (vector-length vec))
+        (let ([e (vector-ref vec i)])
+          (when (or (string? e)
+                    (bytevector? e))
+            (vector-set! vec2 i e)))
+        (loop (fx+ i 1))))
+    vec2))
 
 (define (find-exe exe)
   (let-values ([(base name dir?) (split-path exe)])

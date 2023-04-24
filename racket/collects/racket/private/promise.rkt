@@ -1,10 +1,10 @@
 (module promise '#%kernel
-(#%require "small-scheme.rkt"
+(#%require "define-et-al.rkt" "qq-and-or.rkt" "cond.rkt"
            "more-scheme.rkt"
            "define.rkt"
            (rename "define-struct.rkt" define-struct define-struct*)
            (for-syntax '#%kernel
-                       "small-scheme.rkt"
+                       "cond.rkt" "qq-and-or.rkt"
                        "define.rkt"
                        "struct.rkt"
                        "stxcase-scheme.rkt"
@@ -18,7 +18,8 @@
            promise-forcer
            promise-printer
            (struct running ()) (struct reraise ())
-           (for-syntax delayer delayer?))
+           (for-syntax delayer delayer?)
+           prop:running?)
 
 ;; This module implements "lazy" (composable) promises and a `force'
 ;; that is iterated through them.
@@ -113,10 +114,11 @@
        v))))
 
 ;; dispatcher for composable promises, generic promises, and other values
-(define (force promise)
-  (if (promise? promise)
-    ((promise-forcer promise) promise) ; dispatch to specific forcer
-    promise)) ; different from srfi-45: identity for non-promises
+(define (force v)
+  (let ([forcer (promise-forcer v #f)])
+    (if forcer
+        (forcer v) ; dispatch to specific forcer
+        v))) ; different from srfi-45: identity for non-promises
 
 ;; ----------------------------------------------------------------------------
 ;; Struct definitions
@@ -283,6 +285,15 @@
 ;; struct so it is identifiable.
 (define-struct reraise (val)
   #:property prop:procedure (lambda (this) (raise (reraise-val this))))
+
+(define-values (prop:running? -running?-predicate -running?-ref)
+  (make-struct-type-property 'running
+   (lambda (v info)
+     (unless (and (procedure? v)
+                  (procedure-arity-includes? v 1))
+       (raise-argument-error 'prop:running? "(any/c . -> . boolean?)" v))
+     v)))
+
 (define-struct running (name)
   #:property prop:procedure
   (lambda (this)
@@ -306,7 +317,10 @@
 
 (define (promise-running? promise)
   (if (promise? promise)
-    (running? (pref promise))
+    (let ([v (pref promise)])
+      (or (running? v)
+          (and (-running?-predicate v)
+               ((-running?-ref v) v))))
     (raise-argument-error 'promise-running? "promise?" promise)))
 
 )

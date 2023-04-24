@@ -1,5 +1,7 @@
 
 (define collect-request (box #f))
+(define request-incremental? #f)
+(define disable-incremental? #f)
 
 (define (set-collect-handler!)
   (collect-request-handler (lambda ()
@@ -16,10 +18,12 @@
 
 (define garbage-collect-notify
   (lambda (gen pre-allocated pre-allocated+overhead pre-time re-cpu-time
-               post-allocated post-allocated+overhead post-time post-cpu-time)
+               post-allocated post-allocated+overhead
+               proper-post-time proper-post-cpu-time
+               post-time post-cpu-time)
     (void)))
 
-;; #f or a procedure that accepts `compute-size-increments` to be
+;; #f or a procedure that accepts a CPSed `compute-size-increments` to be
 ;; called in any Chez Scheme thread (with all other threads paused)
 ;; after each major GC; this procedure must not do anything that might
 ;; use "control.ss":
@@ -27,6 +31,12 @@
 
 (define (set-reachable-size-increments-callback! proc)
   (set! reachable-size-increments-callback proc))
+
+(define allocating-places 1)
+(define (collect-trip-for-allocating-places! delta)
+  (with-global-lock
+   (set! allocating-places (+ allocating-places delta))
+   (collect-trip-bytes (* allocating-places (* 8 1024 1024)))))
 
 ;; Replicate the counting that `(collect)` would do
 ;; so that we can report a generation to the notification
@@ -39,9 +49,9 @@
 ;; pages in the allocator), so we need to detect that and force a GC.
 ;; Other patterns don't have as much overhead, so triggering only
 ;; on total size with overhead can increase peak memory use too much.
-;; Trigger a GC is either the non-overhead or with-overhead counts
-;; group enough.
-(define GC-TRIGGER-FACTOR 2)
+;; Trigger a GC when either the non-overhead or with-overhead counts
+;; grows enough.
+(define GC-TRIGGER-FACTOR (* 8 1024)) ; this times the square root of memory use is added to memory use
 (define trigger-major-gc-allocated (* 32 1024 1024))
 (define trigger-major-gc-allocated+overhead (* 64 1024 1024))
 (define non-full-gc-counter 0)
@@ -51,60 +61,122 @@
 ;; and control layer may be in uninterrupted mode, so don't
 ;; do anything that might use "control.ss" (especially in logging).
 (define (collect/report g)
+  ;; If you get "$collect-rendezvous: cannot return to the collect-request-handler", then
+  ;; probably something here is trying to raise an exception. To get more information try
+  ;; uncommenting the exception-handler line below, and then move its last close parenthesis
+  ;; to the end of the enclosing function.
+  #;(guard (x [else (if (condition? x) (display-condition x) (#%write x)) (#%newline) (#%flush-output-port)]))
   (let ([this-counter (if g (bitwise-arithmetic-shift-left 1 (* log-collect-generation-radix g)) gc-counter)]
         [pre-allocated (bytes-allocated)]
         [pre-allocated+overhead (current-memory-bytes)]
-        [pre-time (real-time)] 
+        [pre-time (current-inexact-milliseconds)]
         [pre-cpu-time (cpu-time)])
     (if (> (add1 this-counter) (bitwise-arithmetic-shift-left 1 (* log-collect-generation-radix (sub1 (collect-maximum-generation)))))
         (set! gc-counter 1)
         (set! gc-counter (add1 this-counter)))
-    (let ([gen (cond
-                [(and (not g)
-                      (or (>= pre-allocated trigger-major-gc-allocated)
-                          (>= pre-allocated+overhead trigger-major-gc-allocated+overhead)
-                          (>= non-full-gc-counter 10000)))
-                 ;; Force a major collection if memory use has doubled
-                 (collect-maximum-generation)]
-                [else
-                 ;; Find the minor generation implied by the counter
-                 (let loop ([c this-counter] [gen 0])
-                   (cond
-                    [(zero? (bitwise-and c collect-generation-radix-mask))
-                     (loop (bitwise-arithmetic-shift-right c log-collect-generation-radix) (add1 gen))]
-                    [else gen]))])])
+    (let* ([req-gen (cond
+                      [(and (not g)
+                            (or (>= pre-allocated trigger-major-gc-allocated)
+                                (>= pre-allocated+overhead trigger-major-gc-allocated+overhead)
+                                (>= non-full-gc-counter 10000)))
+                       ;; Force a major collection if memory use has doubled
+                       (collect-maximum-generation)]
+                      [else
+                       ;; Find the minor generation implied by the counter
+                       (let loop ([c this-counter] [gen 0])
+                         (cond
+                           [(zero? (bitwise-and c collect-generation-radix-mask))
+                            (loop (bitwise-arithmetic-shift-right c log-collect-generation-radix) (add1 gen))]
+                           [else gen]))])]
+           [gen (cond
+                  [(and (= req-gen (collect-maximum-generation))
+                        (not (in-original-host-thread?))
+                        (fxpositive? (hashtable-size collect-callbacks)))
+                   ;; Defer a major collection to the main thread
+                   (async-callback-queue-major-gc!)
+                   0]
+                  [else req-gen])])
       (run-collect-callbacks car)
-      (collect gen)
-      (let ([post-allocated (bytes-allocated)]
-            [post-allocated+overhead (current-memory-bytes)])
-        (when (= gen (collect-maximum-generation))
-          ;; Trigger a major GC when twice as much memory is used. Twice
-          ;; `post-allocated+overhead` seems to be too long a wait, because
-          ;; that value may include underused pages that have locked objects.
-          ;; Using just `post-allocated` is too small, because it may force an
-          ;; immediate major GC too soon. Split the difference.
-          (set! trigger-major-gc-allocated (* GC-TRIGGER-FACTOR post-allocated))
-          (set! trigger-major-gc-allocated+overhead (* GC-TRIGGER-FACTOR post-allocated+overhead)))
-        (garbage-collect-notify gen
-                                pre-allocated pre-allocated+overhead pre-time pre-cpu-time
-                                post-allocated  post-allocated+overhead (real-time) (cpu-time)))
-      (update-eq-hash-code-table-size!)
-      (poll-foreign-guardian)
-      (run-collect-callbacks cdr)
-      (when (and reachable-size-increments-callback
-                 (fx= gen (collect-maximum-generation)))
-        (reachable-size-increments-callback compute-size-increments))
-      (when (and (= gen (collect-maximum-generation))
-                 (currently-in-engine?))
-        ;; This `set-timer` doesn't necessarily penalize the right thread,
-        ;; but it's likely to penalize a thread that is allocating quickly:
-        (set-timer 1))
-      (cond
-       [(= gen (collect-maximum-generation))
-        (set! non-full-gc-counter 0)]
-       [else
-        (set! non-full-gc-counter (add1 non-full-gc-counter))])
-      (void))))
+      (let ([maybe-finish-accounting
+             (cond
+               [(and reachable-size-increments-callback
+                     (fx= gen (collect-maximum-generation)))
+                ;; Collect with a fused `collect-size-increments`
+                (reachable-size-increments-callback
+                 (lambda (roots domains k)
+                   (cond
+                     [(null? roots)
+                      ;; Plain old collection, after all:
+                      (collect gen 1 gen)
+                      #f]
+                     [else
+                      (let ([domains (weaken-accounting-domains domains)])
+                        ;; Accounting collection:
+                        (let ([counts (collect gen 1 gen (weaken-accounting-roots roots))])
+                          (lambda ()
+                            (call-with-accounting-domains k counts domains))))])))]
+               [(and request-incremental?
+                     (fx= gen (sub1 (collect-maximum-generation))))
+                ;; "Incremental" mode by not promoting to the maximum generation
+                (collect gen 1 gen)
+                #f]
+               [(fx= gen 0)
+                ;; Plain old minor collection:
+                (collect 0 1 1)
+                #f]
+               [(fx= gen (collect-maximum-generation))
+                ;; Plain old major collection:
+                (collect gen 1 gen)
+                #f]
+               [else
+                ;; Plain old collection that does not necessairy promote to `gen`+1:
+                (collect gen 1 (fx+ gen 1))
+                #f])])
+        (when (fx= gen (collect-maximum-generation))
+          (set! request-incremental? #f))
+        (let ([post-allocated (bytes-allocated)]
+              [post-allocated+overhead (current-memory-bytes)]
+              [post-time (current-inexact-milliseconds)]
+              [post-cpu-time (cpu-time)])
+          (when (= gen (collect-maximum-generation))
+            ;; Trigger a major GC when memory use is a certain factor of current use.
+            ;;
+            ;; The factor is based on the square root of current memory use, which is intended
+            ;;  to make Racket a good citizen in its environment and maximize cooperation among
+            ;;  different processes.[1] We do not attempt to measure allocation and collection
+            ;;  rates, as in the paper describing this rule. Instead, we simplify by assuming
+            ;;  that that ratio of rates is relatively constant.
+            ;;   [1] Kirisame, Shenoy, and Panchekha (2022) https://arxiv.org/abs/2204.10455
+            ;;
+            ;; A factor on `post-allocated+overhead` seems to be too long a wait, because
+            ;;  that value may include underused pages that have locked objects.
+            ;;  Using just `post-allocated` is too small, because it may force an
+            ;;  immediate major GC too soon. So, watch both.
+            (let ([scale (lambda (n)
+                           (+ n (inexact->exact (floor (* (sqrt (max 0 n)) GC-TRIGGER-FACTOR)))))])
+              (set! trigger-major-gc-allocated (scale (- post-allocated (bytes-finalized))))
+              (set! trigger-major-gc-allocated+overhead (scale post-allocated+overhead))))
+          (update-eq-hash-code-table-size!)
+          (update-struct-procs-table-sizes!)
+          (poll-foreign-guardian)
+          (when maybe-finish-accounting
+            (maybe-finish-accounting))
+          (run-collect-callbacks cdr)
+          (garbage-collect-notify gen
+                                  pre-allocated pre-allocated+overhead pre-time pre-cpu-time
+                                  post-allocated post-allocated+overhead post-time post-cpu-time
+                                  (current-inexact-milliseconds) (cpu-time)))
+        (when (and (= req-gen (collect-maximum-generation))
+                   (currently-in-engine?))
+          ;; This `set-timer` doesn't necessarily penalize the right thread,
+          ;; but it's likely to penalize a thread that is allocating quickly:
+          (set-timer 1))
+        (cond
+          [(= gen (collect-maximum-generation))
+           (set! non-full-gc-counter 0)]
+          [else
+           (set! non-full-gc-counter (add1 non-full-gc-counter))])
+        (void)))))
 
 (define collect-garbage
   (case-lambda
@@ -112,7 +184,8 @@
    [(request)
     (cond
      [(eq? request 'incremental)
-      (void)]
+      (unless disable-incremental?
+        (set! request-incremental? #t))]
      [else
       (let ([req (case request
                    [(minor) 0]
@@ -133,7 +206,8 @@
    [(mode)
     (cond
      [(not mode) (bytes-allocated)]
-     [(eq? mode 'cumulative) (+ (bytes-deallocated) (bytes-allocated))]
+     [(eq? mode 'cumulative) (with-interrupts-disabled
+                              (+ (bytes-deallocated) (bytes-allocated)))]
      ;; must be a custodian; hook is reposnsible for complaining if not
      [else (custodian-memory-use mode (bytes-allocated))])]))
 
@@ -152,12 +226,54 @@
                 (#%format "out of memory making ~a\n  length: ~a"
                           what len)
                 (current-continuation-marks))))
-      (immediate-allocation-check n))))
+      (immediate-allocation-check n)
+      ;; Watch out for radiply growing memory use that isn't captured
+      ;; fast enough by regularly scheduled event checking because it's
+      ;; allocated in large chunks
+      (when (>= (bytes-allocated) trigger-major-gc-allocated)
+        (set-timer 1)))))
+
+(define (set-incremental-collection-enabled! on?)
+  (set! disable-incremental? (not on?)))
+
+;; ----------------------------------------
+
+(define (weaken-accounting-roots roots)
+  (let loop ([roots roots])
+    (cond
+      [(null? roots) '()]
+      [else
+       (let ([root (car roots)]
+             [rest (loop (cdr roots))])
+         (cond
+           [(thread? root) (cons root rest)]
+           [else
+            (weak-cons root rest)]))])))
+
+;; We want the elements of `domains` to be available for
+;; finalization, so refer to all of them weakly
+(define (weaken-accounting-domains domains)
+  (let loop ([domains domains])
+    (if (null? domains)
+        '()
+        (weak-cons (car domains) (loop (cdr domains))))))
+
+;; Filter any domain (and associated count) that went to `#!bwp` during collection
+(define (call-with-accounting-domains k counts domains)
+  (let loop ([counts counts] [domains domains] [r-counts '()] [r-domains '()])
+    (cond
+      [(null? counts) (k (reverse r-counts) (reverse r-domains))]
+      [(eq? #!bwp (car domains)) (loop (cdr counts) (cdr domains) r-counts r-domains)]
+      [else (loop (cdr counts) (cdr domains)
+                  (cons (car counts) r-counts) (cons (car domains) r-domains))])))
+
+;; ----------------------------------------
 
 (define prev-stats-objects #f)
 
-(define (dump-memory-stats . args)
-  (let-values ([(backtrace-predicate use-prev? max-path-length) (parse-dump-memory-stats-arguments args)])
+(define/who (dump-memory-stats . args)
+  (let-values ([(backtrace-predicate flags max-path-length every-n)
+                (parse-dump-memory-stats-arguments who args)])
     (enable-object-counts #t)
     (enable-object-backreferences (and backtrace-predicate #t))
     (collect-garbage)
@@ -231,125 +347,171 @@
                                   s1 size-width
                                   " | " 3
                                   c2 count-width
-                                  s2 size-width))])
+                                  s2 size-width))]
+           [use-prev? (#%memq 'new flags)]
+           [skip-counts? (#%memq 'only flags)])
       (enable-object-counts #f)
       (enable-object-backreferences #f)
-      (chez:fprintf (current-error-port) "Begin Dump\n")
-      (chez:fprintf (current-error-port) "Current memory use: ~a\n" (bytes-allocated))
-      (unless (#%memq 'only args)
-        (chez:fprintf (current-error-port) "Begin RacketCS\n")
+      (#%fprintf (current-error-port) "Begin Dump\n")
+      (#%fprintf (current-error-port) "Current memory use: ~a\n" (bytes-allocated))
+      (when (#%memq 'help flags)
+        (let ([lines (lambda strs
+                       (for-each (lambda (str)
+                                   (#%fprintf (current-error-port) str)
+                                   (#%newline (current-error-port)))
+                                 strs))])
+          (lines "Begin Help"
+                 "  (dump-memory-stats <spec> <modifier> ...)"
+                 "    where <spec> shows paths to objects:"
+                 "      <spec> = <symbol>"
+                 "             | <predicate-procedure>"
+                 "             | (make-weak-box <val>)"
+                 "             | (list 'struct <symbol>)"
+                 "    and <modifier> controls that output:"
+                 "       <modifier> = 'new        ; only trace new since last dump"
+                 "                  | 'max-path <exact-nonnegative-integer>"
+                 "                  | 'every <exact-positive-integer> ; show a subset"
+                 "                  | 'only       ; skip table of object counts"
+                 "End Help")))
+      (unless skip-counts?
+        (#%fprintf (current-error-port) "Begin RacketCS\n")
         (for-each (lambda (e)
-                    (chez:fprintf (current-error-port)
-                                  (layout-line (chez:format "~a" (car e))
+                    (chez:display (layout-line (chez:format "~a" (car e))
                                                ((get-count #f) e) ((get-bytes #f) e)
-                                               ((get-count #t) e) ((get-bytes #t) e))))
+                                               ((get-count #t) e) ((get-bytes #t) e))
+				  (current-error-port)))
                   (list-sort (lambda (a b) (< ((get-bytes #f) a) ((get-bytes #f) b))) counts))
-        (chez:fprintf (current-error-port) (layout-line "total"
-                                                        (apply + (map (get-count #f) counts))
-                                                        (apply + (map (get-bytes #f) counts))
-                                                        (apply + (map (get-count #t) counts))
-                                                        (apply + (map (get-bytes #t) counts))))
-        (chez:fprintf (current-error-port) "End RacketCS\n"))
+        (#%fprintf (current-error-port) (layout-line "total"
+                                                     (apply + (map (get-count #f) counts))
+                                                     (apply + (map (get-bytes #f) counts))
+                                                     (apply + (map (get-count #t) counts))
+                                                     (apply + (map (get-bytes #t) counts))))
+        (#%fprintf (current-error-port) "End RacketCS\n"))
       (when backtrace-predicate
         (when (and use-prev? (not prev-stats-objects))
           (set! prev-stats-objects (make-weak-eq-hashtable)))
         (let ([backreference-ht (make-eq-hashtable)])
           (for-each (lambda (l)
                       (for-each (lambda (p)
-                                  (hashtable-set! backreference-ht (car p) (cdr p)))
+                                  (eq-hashtable-set! backreference-ht (car p) (cdr p)))
                                 l))
                     backreferences)
-          (chez:fprintf (current-error-port) "Begin Traces\n")
-          (let ([prev-trace (box '())])
+          (#%fprintf (current-error-port) "Begin Traces\n")
+          (let ([prev-trace (box '())]
+                [count-n 0])
             (for-each (lambda (l)
                         (for-each (lambda (p)
                                     (when (backtrace-predicate (car p))
-                                      (unless (and use-prev?
-                                                   (hashtable-ref prev-stats-objects (car p) #f))
+                                      (set! count-n (add1 count-n))
+                                      (unless (or (< count-n every-n)
+                                                  (and use-prev?
+                                                       (eq-hashtable-ref prev-stats-objects (car p) #f)))
+                                        (set! count-n 0)
                                         (when use-prev?
-                                          (hashtable-set! prev-stats-objects (car p) #t))
+                                          (eq-hashtable-set! prev-stats-objects (car p) #t))
                                         (unless (eqv? 0 max-path-length)
-                                          (chez:printf "*== ~a" (object->backreference-string (car p)))
+                                          (#%printf "*== ~a" (object->backreference-string (car p)))
                                           (let loop ([prev (car p)] [o (cdr p)] [accum '()] [len (sub1 (or max-path-length +inf.0))])
                                             (cond
                                              [(zero? len) (void)]
                                              [(not o) (set-box! prev-trace (reverse accum))]
-                                             [(chez:memq o (unbox prev-trace))
+                                             [(and (not (null? o))
+                                                   (#%memq o (unbox prev-trace)))
                                               => (lambda (l)
-                                                   (chez:printf " <- DITTO\n")
+                                                   (#%printf " <- DITTO\n")
                                                    (set-box! prev-trace (append (reverse accum) l)))]
                                              [else
-                                              (chez:printf " <- ~a" (object->backreference-string
-                                                                     (cond
-                                                                      [(and (pair? o)
-                                                                            (eq? prev (car o)))
-                                                                       (cons 'PREV (cdr o))]
-                                                                      [(and (pair? o)
-                                                                            (eq? prev (cdr o)))
-                                                                       (cons (car o) 'PREV)]
-                                                                      [else o])))
-                                              (loop o (hashtable-ref backreference-ht o #f) (cons o accum) (sub1 len))]))))))
+                                              (#%printf " <- ~a" (object->backreference-string
+                                                                  (cond
+                                                                   [(and (pair? o)
+                                                                         (eq? prev (car o)))
+                                                                    (cons 'PREV (cdr o))]
+                                                                   [(and (pair? o)
+                                                                         (eq? prev (cdr o)))
+                                                                    (cons (car o) 'PREV)]
+                                                                   [else o])))
+                                              (loop o (eq-hashtable-ref backreference-ht o #f) (cons o accum) (sub1 len))]))))))
                                   l))
                       backreferences))
-          (chez:fprintf (current-error-port) "End Traces\n")))
-      (chez:fprintf (current-error-port) "End Dump\n"))))
+          (#%fprintf (current-error-port) "End Traces\n")))
+      (#%fprintf (current-error-port) "End Dump\n"))))
 
-(define (parse-dump-memory-stats-arguments args)
-  (values
-   ;; backtrace predicate:
-   (cond
-    [(null? args) #f]
-    [(eq? (car args) 'struct) #f]
-    [(and (list? (car args))
-          (= 2 (length (car args)))
-          (eq? (caar args) 'struct)
-          (symbol? (cadar args)))
-     (let ([struct-name (cadar args)])
-       (lambda (o)
-         (and (#%$record? o)
-              (eq? (record-type-name (#%$record-type-descriptor o)) struct-name))))]
-    [(weak-box? (car args))
-     (let ([v (weak-box-value (car args))])
-       (lambda (o) (eq? o v)))]
-    [(eq? 'code (car args))
-     #%$code?]
-    [(eq? 'procedure (car args))
-     #%procedure?]
-    [(eq? 'ephemeron (car args))
-     ephemeron-pair?]
-    [(eq? 'bignum (car args))
-     bignum?]
-    [(eq? 'keyword (car args))
-     keyword?]
-    [(eq? 'string (car args))
-     string?]
-    [(eq? 'symbol (car args))
-     symbol?]
-    [(eq? '<ffi-lib> (car args))
-     ffi-lib?]
-    [(eq? '<will-executor> (car args))
-     will-executor?]
-    [(eq? 'metacontinuation-frame (car args))
-     metacontinuation-frame?]
-    [(symbol? (car args))
-     (let ([name (car args)])
-       (lambda (o)
-         (and (#%record? o)
-              (let ([rtd (#%record-rtd o)])
-                (eq? name (#%record-type-name rtd))))))]
-    [else #f])
-   ;; 'new mode for backtrace?
-   (and (pair? args)
-        (pair? (cdr args))
-        (eq? 'new (cadr args)))
-   ;; max path length
-   (and (pair? args)
-        (pair? (cdr args))
-        (or (and (exact-nonnegative-integer? (cadr args))
-                 (cadr args))
-            (and (pair? (cddr args))
-                 (exact-nonnegative-integer? (caddr args))
-                  (caddr args))))))
+(define (parse-dump-memory-stats-arguments who args)
+  (cond
+   [(null? args)
+    (values #f  ; predicate
+            '() ; flags
+            #f  ; max-path-length
+            1)] ; every-n
+   [else
+    (let ([predicate
+           (let ([arg (car args)])
+             (case arg
+               [(help) #f]
+               [(struct) #f]
+               [(code) #%$code?]
+               [(procedure) #%procedure?]
+               [(ephemeron) ephemeron-pair?]
+               [(bignum) bignum?]
+               [(vector) #%vector?]
+               [(box) #%box?]
+               [(stencil-vector) stencil-vector?]
+               [(keyword) keyword?]
+               [(string) string?]
+               [(symbol) symbol?]
+               [(weakpair) weak-pair?]
+               [(<ffi-lib>) ffi-lib?]
+               [(<will-executor>) will-executor?]
+               [(metacontinuation-frame) metacontinuation-frame?]
+               [else
+                (cond
+                 [(and (#%procedure? arg)
+                       (procedure-arity-includes? arg 1))
+                  arg]
+                 [(symbol? arg) (make-struct-name-predicate arg)]
+                 [(and (#%list? arg)
+                       (fx= 2 (length arg))
+                       (eq? (car arg) 'struct)
+                       (symbol? (cadr arg)))
+                  (make-struct-name-predicate (cadr arg))]
+                 [(weak-box? arg)
+                  (let ([v (weak-cons (weak-box-value arg) #f)])
+                    (lambda (o) (eq? o (car v))))]
+                 [else
+                  (raise-arguments-error who "unrecognized predicate;\n try 'help for more information"
+                                         "given" arg)])]))])
+      (let loop ([args (cdr args)] [flags (if (eq? 'help (car args)) '(help) '())] [max-path-length #f] [every-n 1])
+        (cond
+         [(null? args)
+          (values predicate flags max-path-length every-n)]
+         [(eq? (car args) 'new)
+          (loop (cdr args) (cons 'new flags) max-path-length every-n)]
+         [(eq? (car args) 'only)
+          (loop (cdr args) (cons 'only flags) max-path-length every-n)]
+         [(eq? (car args) 'help)
+          (loop (cdr args) (cons 'help flags) max-path-length every-n)]
+         [(eq? (car args) 'max-path)
+          (when (null? (cdr args))
+            (raise-arguments-error who "missing argument for 'max-path"))
+          (let ([max-path-length (cadr args)])
+            (unless (exact-nonnegative-integer? max-path-length)
+              (raise-arguments-error who "bad 'max-path value" "given" max-path-length))
+            (loop (cddr args) flags max-path-length every-n))]
+         [(eq? (car args) 'every)
+          (when (null? (cdr args))
+            (raise-arguments-error who "missing argument for 'every"))
+          (let ([every-n (cadr args)])
+            (unless (exact-positive-integer? every-n)
+              (raise-arguments-error who "bad 'every value" "given" every-n))
+            (loop (cddr args) flags max-path-length every-n))]
+         [else
+          (raise-arguments-error who "unrecognized argument;\n try 'help for more information" "given" (car args))])))]))
+
+(define (make-struct-name-predicate name)
+  (lambda (o)
+    (and (#%record? o)
+         (let ([rtd (#%record-rtd o)])
+           (eq? name (#%record-type-name rtd))))))
 
 (define (object->backreference-string o)
   (parameterize ([print-level 3])
@@ -368,24 +530,24 @@
 ;; ----------------------------------------
 
 (define-record-type (phantom-bytes create-phantom-bytes phantom-bytes?)
-  (fields pbv))
+  (fields pbv)
+  (sealed #t))
 
 (define/who (make-phantom-bytes k)
   (check who exact-nonnegative-integer? k)
-  (let ([ph (create-phantom-bytes (make-phantom-bytevector k))])
-    (when (or (>= (bytes-allocated) trigger-major-gc-allocated)
-              (>= (current-memory-bytes) trigger-major-gc-allocated+overhead))
-      (collect-garbage))
-    ph))
+  (guard-large-allocation who "byte string" k 1)
+  (create-phantom-bytes (make-phantom-bytevector k)))
 
 (define/who (set-phantom-bytes! phantom-bstr k)
   (check who phantom-bytes? phantom-bstr)
   (check who exact-nonnegative-integer? k)
+  (when (> k (phantom-bytevector-length (phantom-bytes-pbv phantom-bstr)))
+    (guard-large-allocation who "byte string" k 1))
   (set-phantom-bytevector-length! (phantom-bytes-pbv phantom-bstr) k))
 
 ;; ----------------------------------------
 
-;; Weak table of (cons <pre> <post>) keys, currently suported
+;; Weak table of (cons <pre> <post>) keys, currently supported
 ;; only in the original host thread of the original place
 (define collect-callbacks (make-weak-eq-hashtable))
 
@@ -423,7 +585,7 @@
        [else #'(foreign-procedure s ...)])]))
 
 ;; This is an inconvenient callback interface, certainly, but it
-;; accomodates a limitation of the traditional Racket implementation
+;; accommodates a limitation of the traditional Racket implementation
 (define (run-one-collect-callback v save sel)
   (let ([protocol (#%vector-ref v 0)]
         [proc (cpointer-address (#%vector-ref v 1))]

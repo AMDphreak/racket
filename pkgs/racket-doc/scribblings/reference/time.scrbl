@@ -5,14 +5,14 @@
 
 @defproc[(current-seconds) exact-integer?]{
 
-Returns the current time in seconds since midnight UTC, January 1,
-1970.}
+Returns the current time in seconds since @deftech{the epoch}:
+midnight UTC, January 1, 1970.}
 
 
 @defproc[(current-inexact-milliseconds) real?]{
 
-Returns the current time in milliseconds since midnight UTC, January
-1, 1970. The result may contain fractions of a millisecond.
+Returns the current time in milliseconds since @tech{the epoch}.
+The result may contain fractions of a millisecond.
 
 @examples[(eval:alts
 (current-inexact-milliseconds)
@@ -23,13 +23,31 @@ In this example, @racket[1289513737015] is in milliseconds and @racket[418]
 is in microseconds.}
 
 
+@defproc[(current-inexact-monotonic-milliseconds) real?]{
+
+Returns the number of milliseconds since an unspecified starting time.
+Unlike @racket[current-inexact-milliseconds], which is sensitive to
+the system clock and may therefore retreat or advance more quickly
+than real time if the system clock is adjusted, results from
+@racket[current-inexact-monotonic-milliseconds] will always advance
+with real time within a Racket process, but results across processes
+are not comparable.
+
+@examples[(eval:alts
+(current-inexact-monotonic-milliseconds)
+12772.418
+)]
+
+@history[#:added "8.1.0.4"]}
+
+
 @defproc[(seconds->date [secs-n real?]
                         [local-time? any/c #t])
          date*?]{
 
-Takes @racket[secs-n], a platform-specific time in seconds returned by
-@racket[current-seconds], @racket[file-or-directory-modify-seconds],
-or 1/1000th of @racket[current-inexact-milliseconds], and returns an
+Takes @racket[secs-n], a time in seconds since @tech{the epoch} (like the value of
+@racket[(current-seconds)], @racket[(file-or-directory-modify-seconds _path)],
+or @racket[(/ (current-inexact-milliseconds) 1000)]), and returns an
 instance of the @racket[date*] structure type. Note that
 @racket[secs-n] can include fractions of a second. If @racket[secs-n]
 is too small or large, the @exnraise[exn:fail].

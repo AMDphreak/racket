@@ -4,12 +4,14 @@
          "../host/rktio.rkt"
          "../host/error.rkt"
          "../host/thread.rkt"
+         "../host/place-local.rkt"
          "../path/path.rkt"
          "../path/parameter.rkt"
          "../port/output-port.rkt"
          "../port/input-port.rkt"
          "../port/fd-port.rkt"
          "../port/file-stream.rkt"
+         "../port/check.rkt"
          "../file/host.rkt"
          "../string/convert.rkt"
          "../locale/string.rkt"
@@ -24,6 +26,7 @@
          subprocess-pid
          current-subprocess-custodian-mode
          subprocess-group-enabled
+         current-subprocess-keep-file-descriptors
          shell-execute)
 
 (struct subprocess ([process #:mutable]
@@ -34,14 +37,18 @@
   prop:evt
   (poller (lambda (sp ctx)
             (define v (rktio_poll_process_done rktio (subprocess-process sp)))
-            (if (eqv? v 0)
-                (begin
-                  (sandman-poll-ctx-add-poll-set-adder!
-                   ctx
-                   (lambda (ps)
-                     (rktio_poll_add_process rktio (subprocess-process sp) ps)))
-                  (values #f sp))
-                (values (list sp) #f)))))
+            (cond
+              [(eqv? v 0)
+               (sandman-poll-ctx-add-poll-set-adder!
+                ctx
+                (lambda (ps)
+                  (rktio_poll_add_process rktio (subprocess-process sp) ps)))
+               (values #f sp)]
+              [else
+               ;; Unregister from the custodian as soon as the process is known
+               ;; to be stopped:
+               (no-custodian! sp)
+               (values (list sp) #f)]))))
 
 (define do-subprocess
   (let ()
@@ -112,7 +119,11 @@
                              (positive? (bitwise-and (rktio_process_allowed_flags rktio)
                                                      RKTIO_PROCESS_WINDOWS_CHAIN_TERMINATION)))
                         (bitwise-ior flags RKTIO_PROCESS_WINDOWS_CHAIN_TERMINATION)
-                        flags)])
+                        flags)]
+             [flags (case (current-subprocess-keep-file-descriptors)
+                      [(all) (bitwise-ior flags RKTIO_PROCESS_NO_CLOSE_FDS)]
+                      [(inherited) flags]
+                      [else (bitwise-ior flags RKTIO_PROCESS_NO_INHERIT_FDS)])])
         
         (define command-bstr (->host (->path command) who '(execute)))
 
@@ -125,6 +136,9 @@
           (maybe-wait stderr))
 
         (start-atomic)
+        (when stdout (check-not-closed who stdout))
+        (when stdin (check-not-closed who stdin))
+        (when (and stderr (not (eq? stderr 'stdout))) (check-not-closed who stderr))
         (poll-subprocess-finalizations)
         (check-current-custodian who)
         (define envvars (rktio_empty_envvars rktio))
@@ -199,6 +213,7 @@
      (end-atomic)
      'running]
     [else
+     (no-custodian! sp)
      (define v (rktio_status_result r))
      (rktio_free r)
      (end-atomic)
@@ -231,7 +246,17 @@
 
 ;; ----------------------------------------
 
-(define subprocess-will-executor (make-will-executor))
+;; in atomic mode
+(define (no-custodian! sp)
+  (when (subprocess-cust-ref sp)
+    (unsafe-custodian-unregister sp (subprocess-cust-ref sp))
+    (set-subprocess-cust-ref! sp #f)))
+
+(define-place-local subprocess-will-executor (make-will-executor))
+
+(define (subprocess-init!)
+  (set! subprocess-will-executor (make-will-executor)))
+(module+ init (provide subprocess-init!))
 
 (define (register-subprocess-finalizer sp)
   (will-register subprocess-will-executor
@@ -240,9 +265,7 @@
                    (when (subprocess-process sp)
                      (rktio_process_forget rktio (subprocess-process sp))
                      (set-subprocess-process! sp #f))
-                   (when (subprocess-cust-ref sp)
-                     (unsafe-custodian-unregister sp (subprocess-cust-ref sp))
-                     (set-subprocess-cust-ref! sp #f))
+                   (no-custodian! sp)
                    #t)))
 
 (define (poll-subprocess-finalizations)
@@ -260,6 +283,14 @@
 
 (define subprocess-group-enabled
   (make-parameter #f (lambda (v) (and v #t)) 'subprocess-group-enabled))
+
+(define/who current-subprocess-keep-file-descriptors
+  (make-parameter 'inherited
+                  (lambda (v)
+                    (unless (or (null? v) (eq? v 'all) (eq? v 'inherited))
+                      (raise-argument-error who "(or/c '() 'uninherited 'all)" v))
+                    v)
+                  'current-subprocess-keep-file-descriptors))
 
 ;; ----------------------------------------
 
@@ -283,13 +314,16 @@
       [(sw_shownoactivate SW_SHOWNOACTIVATE) RKTIO_SW_SHOWNOACTIVATE]
       [(sw_shownormal SW_SHOWNORMAL) RKTIO_SW_SHOWNORMAL]
       [else (raise-argument-error who "(or/c 'sw_hide ....)" show-mode)]))
+  ;; Let `rktio_shell_execute` handle its own atomicity. That's because
+  ;; it can yield to Windows events, and events need to be handled by callbacks
+  ;; starting from a mode that's like a Racket foreign call.
   (define r (rktio_shell_execute rktio
                                  (and verb (string->bytes/utf-8 verb))
                                  (string->bytes/utf-8 target)
                                  (string->bytes/utf-8 parameters)
                                  (->host (->path dir) who '(exists))
                                  show_mode))
-  (when (rktio-error? r) (raise-rktio-error 'who "failed" r))
+  (when (rktio-error? r) (raise-rktio-error who r "failed"))
   #f)
 
 ;; ----------------------------------------

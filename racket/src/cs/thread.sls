@@ -12,7 +12,9 @@
                   [make-engine rumble:make-engine]
                   [engine-timeout rumble:engine-timeout]
                   [engine-return rumble:engine-return]
+                  [engine-roots rumble:engine-roots]
                   [call-with-engine-completion rumble:call-with-engine-completion]
+                  [call-with-current-continuation-roots rumble:call-with-current-continuation-roots]
                   [make-condition rumble:make-condition]
                   [condition-wait rumble:condition-wait]
                   [condition-signal rumble:condition-signal]
@@ -22,6 +24,7 @@
                   [mutex-release rumble:mutex-release]
                   [pthread? rumble:thread?]
                   [fork-place rumble:fork-place]
+                  [place-get-inherit rumble:place-get-inherit]
                   [start-place rumble:start-place]
                   [fork-pthread rumble:fork-thread]
                   [threaded? rumble:threaded?]
@@ -43,7 +46,9 @@
   ;; Special handling of `current-atomic` to use the last virtual register, and
   ;; similarr for other. We rely on the fact that the register's default value is 0
   ;; or the rumble layer installs a suitable default. Also, force inline a few
-  ;; functions and handle other special cases.
+  ;; functions and handle other special cases. Note that the implementation of
+  ;; `start-atomic` and `end-atomic` rely on some specific parameters being thread
+  ;; registers so that the functions can be safely called from any Scheme thread.
   (define-syntax (define stx)
     (let ([define-as-virtual-register
             (lambda (stx n)
@@ -133,6 +138,7 @@
         'make-engine rumble:make-engine
         'engine-timeout rumble:engine-timeout
         'engine-return rumble:engine-return
+        'engine-roots rumble:engine-roots
         'call-with-engine-completion rumble:call-with-engine-completion
         'set-ctl-c-handler! rumble:set-ctl-c-handler!
         'poll-will-executors poll-will-executors
@@ -157,11 +163,12 @@
         'get-wakeup-handle get-wakeup-handle
         'wakeup wakeup
         'fork-place rumble:fork-place
+        'place-get-inherit rumble:place-get-inherit
         'start-place rumble:start-place
         'fork-pthread rumble:fork-thread
         'get-initial-place rumble:get-initial-pthread
         'current-place-roots rumble:current-place-roots
-        'call-with-current-pthread-continuation call/cc
+        'call-with-current-continuation-roots rumble:call-with-current-continuation-roots 
         'exit place-exit
         'pthread? rumble:thread?
         'call-as-asynchronous-callback rumble:call-as-asynchronous-callback
@@ -175,7 +182,8 @@
         'mutex-acquire rumble:mutex-acquire
         'mutex-release rumble:mutex-release
         'threaded? rumble:threaded?
-        'continuation-current-primitive rumble:continuation-current-primitive)]
+        'continuation-current-primitive rumble:continuation-current-primitive
+        'prop:unsafe-authentic-override prop:unsafe-authentic-override)]
       [else #f]))
 
   ;; Tie knots:

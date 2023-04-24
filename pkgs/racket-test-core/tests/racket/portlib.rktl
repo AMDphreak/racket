@@ -472,6 +472,23 @@
   (try-peeking 'none)
   (try-peeking 'block))
 
+(when (run-unreliable-tests? 'timing)
+  (define (try get)
+    (define-values (in out) (make-pipe))
+    (write-char #\. out)
+    (let ((i (peeking-input-port in)))
+      (read-byte i)
+      (let loop ([tries 10])
+        (if (zero? tries)
+            (test #t values `(peeking-input-port-timing-test-failed ,get))
+            (let ([now (current-process-milliseconds)])
+              (get i)
+              (let ([spun (- (current-process-milliseconds) now)])
+                (unless (< spun (/ (* SLEEP-TIME 1000) 10))
+                  (loop (sub1 tries)))))))))
+  (try (lambda (i) (sync/timeout SLEEP-TIME (thread (lambda () (read-byte i))))))
+  (try (lambda (i) (sync/timeout SLEEP-TIME i))))
+
 ;; read synchronization events
 (define (go mk-hello sync atest btest)
   (test #t list? (list mk-hello sync atest btest))
@@ -590,6 +607,41 @@
   (test "c" sync (read-line-evt p 'any-one))
   (test eof sync (read-line-evt p 'any-one)))
 
+;; check that `read-line-evt` works right with a port that is reluctant to give out bytes
+(let* ([pos 0]
+       [progress (make-semaphore)]
+       [move! (lambda (n)
+                (set! pos (+ pos n))
+                (semaphore-post progress)
+                (set! progress (make-semaphore)))]
+       [get-byte (lambda (bstr skip)
+                   (define i (modulo (+ pos skip) 10))
+                   (bytes-set! bstr 0 (if (= i 9)
+                                          (char->integer #\newline)
+                                          (+ 48 i))))]
+       [p (make-input-port
+           'slow
+           (lambda (bstr)
+             (get-byte bstr 0)
+             (move! 1)
+             1)
+           (lambda (bstr skip progress-evt)
+             (printf "peek ~s\n" skip)
+             (get-byte bstr skip)
+             1)
+           void
+           (lambda ()
+             progress)
+           (lambda (amt progress done)
+             (cond
+               [(sync/timeout 0 progress) #f]
+               [(sync/timeout 0 done) #f]
+               [else
+                (printf "commit ~s\n" amt)
+                (move! amt)
+                #t])))])
+  (test "012345678" sync (read-line-evt p)))
+
 ;; input-port-append tests
 (let* ([do-test
 	;; ls is a list of strings for ports
@@ -670,6 +722,11 @@
       (test 2 peek-bytes-avail!* b 0 #f s)
       (test 1 peek-bytes-avail!* b 1 #f s)
       (test 2 read-bytes-avail!* b s))))
+
+;; module-level contract violation check
+(err/rt-test (make-limited-input-port (open-input-bytes #"_") 1.0)
+             exn:fail:contract?)
+
 
 ;; Make sure that blocking on a limited input port doesn't
 ;; block in the case of a peek after available bytes:
@@ -928,7 +985,7 @@
      (object-name p)
      (lambda (bstr)
        (if (zero? (random 2))
-           (wrap-evt (alarm-evt (+ (current-inexact-milliseconds) 5))
+           (wrap-evt (alarm-evt (+ (current-inexact-monotonic-milliseconds) 5) #t)
                      (lambda (v) 0))
            (read-bytes-avail! bstr p)))
      #f
@@ -994,6 +1051,73 @@
   (test 44 file-position o2)
   (write-bytes (make-bytes 80) o2)
   (test 0 file-position o2))
+
+;; --------------------------------------------------
+;; test combine-output
+(let ([port-a (open-output-string)]
+      [port-b (open-output-string)])
+  (define two-byte-port (make-output-port
+                          `two-byte-port
+                          port-b
+                          (lambda (s start end non-blocking? breakable?)
+                            (cond
+                              [non-blocking?
+                               (write-bytes-avail* (subbytes
+                                                    s
+                                                    start
+                                                    (if (< start (- end 1)) (+ start 2) end))
+                                                    port-b)]
+                              [breakable?
+                               (write-bytes-avail/enable-break
+                                (subbytes
+                                 s
+                                 start
+                                 (if (< start (- end 1)) (+ start 2) end))
+                                 port-b)]
+                              [else
+                               (write-bytes s port-b)]))
+                          void))
+  (define port-ab (combine-output port-a two-byte-port))
+  (test 12  write-bytes #"hello, world" port-ab)
+  (test "hello, world" get-output-string port-a)
+  (test "he" get-output-string port-b)
+  (test 0 write-bytes-avail* #" test" port-ab)
+  (test "hello, world" get-output-string port-a)
+  (test "hell" get-output-string port-b)
+  (test (void) flush-output port-ab)
+  (test "hello, world" get-output-string port-a)
+  (test "hello, world" get-output-string port-b)
+  (define worker1 (thread
+                   (lambda ()
+                     (for ([i 10])
+                       (write-bytes (string->bytes/utf-8 (number->string i)) port-ab)))))
+  (define worker2 (thread
+                   (lambda ()
+                     (write-bytes-avail* #"0123456789" port-ab))))
+  (thread-wait worker1)
+  (thread-wait worker2)
+  (test "hello, world01234567890123456789" get-output-string port-a)
+  (test "hello, world01234567890123456789" get-output-string port-b)
+  (test (void) close-output-port port-ab)
+  (test (void) close-output-port port-a)
+  (test (void) close-output-port port-b)
+  (define-values (i1 o1) (make-pipe 10 'i1 'o1))
+  (define-values (i2 o2) (make-pipe 10 'i2 'o2))
+  (define two-pipes (combine-output o1 o2))
+  (test 10 write-bytes #"0123456789" two-pipes)
+  (define sync-test-var 0)
+  (define sync-thread (thread (lambda ()
+                                (begin
+                                  (sync two-pipes)
+                                  (set! sync-test-var 1)))))
+  (test #t equal? sync-test-var 0)
+  (test "01234" read-string 5 i1)
+  (test #t equal? sync-test-var 0)
+  (test "012" read-string 3 i2)
+  (thread-wait sync-thread)
+  (test #t equal? sync-test-var 1)
+  (let ([n (write-bytes-avail* #"test123" two-pipes)]) 
+    (test #t <= 1 n 5)))
 
 ;; --------------------------------------------------
 
@@ -1203,7 +1327,7 @@
     (define PORT 5999)
 
     (define (make-alarm-e)
-      (alarm-evt (+ (current-inexact-milliseconds) 5)))
+      (alarm-evt (+ (current-inexact-monotonic-milliseconds) 5) #t))
 
     (define ((connection-handler in out with-alarm?))
       (let loop ((alarm-e (make-alarm-e))

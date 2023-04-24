@@ -4,8 +4,8 @@
 ;;  check-duplicate-identifier, and assembles everything we have so far
 
 (module stxcase-scheme '#%kernel
-  (#%require "small-scheme.rkt" "stx.rkt" "stxcase.rkt" "with-stx.rkt" "stxloc.rkt"
-             (for-syntax '#%kernel "small-scheme.rkt" "stx.rkt" "stxcase.rkt"
+  (#%require "define-et-al.rkt" "qq-and-or.rkt" "stx.rkt" "stxcase.rkt" "with-stx.rkt" "stxloc.rkt"
+             (for-syntax '#%kernel "define-et-al.rkt" "stx.rkt" "stxcase.rkt"
                          "stxloc.rkt"))
 
   (-define (check-duplicate-identifier names)
@@ -48,7 +48,7 @@
 	   (syntax/loc stx
 	     (lambda (x)
 	       (syntax-case** sr #t x (k ...) free-identifier=? #f
-		 ((_ . pattern) (syntax-protect (syntax/loc x template)))
+		 ((_ . pattern) (syntax/loc x template))
 		 ...))))))))
 
   (-define-syntax syntax-id-rules
@@ -60,12 +60,12 @@
 	   (make-set!-transformer
 	    (lambda (x)
 	      (syntax-case** sidr #t x (k ...) free-identifier=? #f
-		(pattern (syntax-protect (syntax/loc x template)))
+		(pattern (syntax/loc x template))
 		...))))))))
 
   (-define (syntax-protect stx)
     (if (syntax? stx)
-        (syntax-arm stx #f #t)
+        stx
         (raise-argument-error 'syntax-protect "syntax?" stx)))
 
   (#%provide syntax datum (all-from "with-stx.rkt") (all-from "stxloc.rkt") 

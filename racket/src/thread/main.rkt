@@ -31,7 +31,8 @@
          "future.rkt"
          "future-logging.rkt"
          "fsemaphore.rkt"
-         "os-thread.rkt")
+         "os-thread.rkt"
+         "config.rkt")
 
 (provide call-in-main-thread
          
@@ -122,6 +123,7 @@
          custodian-require-memory
          custodian-limit-memory
          custodian-shut-down?
+         custodian-shutdown-root-at-exit
 
          make-will-executor
          make-late-will-executor
@@ -210,5 +212,7 @@
          unsafe-make-os-semaphore
          unsafe-os-semaphore-post
          unsafe-os-semaphore-wait
+
+         set-schedule-quantum!
 
          #%thread-instance)

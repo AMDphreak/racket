@@ -86,18 +86,21 @@
   (define (test-un result proc x
                    #:pre [pre void]
                    #:post [post identity]
-                   #:branch? [branch? #f])
+                   #:branch? [branch? #f]
+                   #:literal-ok? [lit-ok? #t])
     (pre)
     (test result (compose post (eval proc)) x)
     (pre)
     (test result (compose post (eval `(lambda (x) (,proc x)))) x)
-    (pre)
-    (test result (compose post (eval `(lambda () (,proc ',x)))))
+    (when lit-ok?
+      (pre)
+      (test result (compose post (eval `(lambda () (,proc ',x))))))
     (when branch?
       (pre)
       (test (if result 'y 'n) (compose post (eval `(lambda (x) (if (,proc x) 'y 'n)))) x)
-      (pre)
-      (test (if result 'y 'n) (compose post (eval `(lambda () (if (,proc ',x) 'y 'n)))))))
+      (when lit-ok?
+        (pre)
+        (test (if result 'y 'n) (compose post (eval `(lambda () (if (,proc ',x) 'y 'n))))))))
   (define (test-zero result proc
                      #:pre [pre void]
                      #:post [post identity])
@@ -150,6 +153,9 @@
   (test-bin 0 'unsafe-fxmodulo 10 1)
   (err/rt-test (unsafe-fxmodulo (error "bad") 1) exn:fail?) ; not 0
   (err/rt-test (unsafe-fxmodulo 0 (error "bad")) exn:fail?) ; not 0
+
+  (test-bin 60 'unsafe-fxlshift 15 2)  
+  (test-bin 3 'unsafe-fxrshift 15 2)
 
   (test-zero 0.0 'unsafe-fl+)
   (test-un 6.7 'unsafe-fl+ 6.7)
@@ -339,8 +345,12 @@
   (test-bin 8 'unsafe-fxlshift 8 0)
 
   (test-bin 2 'unsafe-fxrshift 32 4)
+  (test-bin -1 'unsafe-fxrshift -1 2)
   (test-bin 8 'unsafe-fxrshift 32 2)
   (test-bin 8 'unsafe-fxrshift 8 0)
+  (test-bin 2 'unsafe-fxrshift/logical 32 4)
+  (test-bin -1 'unsafe-fxrshift/logical -1 0)
+  (test-bin (most-positive-fixnum) 'unsafe-fxrshift/logical -1 1)
 
   (test-un 5 unsafe-fxabs 5)
   (test-un 5 unsafe-fxabs -5)
@@ -352,6 +362,20 @@
   (test-un 5.0 unsafe-flsqrt 25.0)
   (test-un 0.5 unsafe-flsqrt 0.25)
   (test-un +nan.0 unsafe-flsqrt -1.0)
+
+  (test-un 1.0 unsafe-flsingle 1.0)
+  (test-un -1.0 unsafe-flsingle -1.0)
+  (test-un +nan.0 unsafe-flsingle +nan.0)
+  (test-un +inf.0 unsafe-flsingle +inf.0)
+  (test-un -inf.0 unsafe-flsingle -inf.0)
+  (test-un 1.2500000360947476e38 unsafe-flsingle 1.25e38)
+  (test-un 1.2500000449239123e-37 unsafe-flsingle 1.25e-37)
+  (test-un -1.2500000360947476e38 unsafe-flsingle -1.25e38)
+  (test-un  -1.2500000449239123e-37 unsafe-flsingle -1.25e-37)
+  (test-un +inf.0 unsafe-flsingle 1e100)
+  (test-un -inf.0 unsafe-flsingle -1e100)
+  (test-un 0.0 unsafe-flsingle 1e-100)
+  (test-un -0.0 unsafe-flsingle -1e-100)
 
   (test-un 8.0 'unsafe-fx->fl 8)
   (test-un -8.0 'unsafe-fx->fl -8)
@@ -509,6 +533,15 @@
 
   (test-un 5 'unsafe-car (cons 5 9))
   (test-un 9 'unsafe-cdr (cons 5 9))
+  (let ([v (cons 3 7)])
+    (test-bin 8 'unsafe-set-immutable-car! v 8
+              #:pre (lambda () (unsafe-set-immutable-car! v 0))
+              #:post (lambda (x) (car v))
+              #:literal-ok? #f)
+    (test-bin 9 'unsafe-set-immutable-cdr! v 9
+              #:pre (lambda () (unsafe-set-immutable-cdr! v 0))
+              #:post (lambda (x) (cdr v))
+              #:literal-ok? #f))
   (test-un 15 'unsafe-mcar (mcons 15 19))
   (test-un 19 'unsafe-mcdr (mcons 15 19))
   (let ([v (mcons 3 7)])
@@ -593,6 +626,12 @@
               #:pre (lambda () (bytes-set! v 2 0))
               #:post (lambda (x) (list x (bytes-ref v 2)))
               #:literal-ok? #f))
+
+  (let ([bstr (make-bytes 10)])
+    (test (void) unsafe-bytes-copy! bstr 1 #"testing" 2 6)
+    (test #"\0stin\0\0\0\0\0" values bstr)
+    (test (void) unsafe-bytes-copy! bstr 0 #"testing")
+    (test #"testing\0\0\0" values bstr))
 
   (test-bin #\5 'unsafe-string-ref "157" 1)
   (test-un 3 'unsafe-string-length "157")
@@ -690,7 +729,9 @@
                   '(lambda (p ov nv) (unsafe-struct*-cas! p 1 ov nv)) p 199 202
                   #:pre (lambda () (unsafe-struct*-set! p 1 200))
                   #:post (lambda (x) (list x (unsafe-struct*-ref p 1)))
-                  #:literal-ok? #f)))
+                  #:literal-ok? #f))
+      (let ([p (make-posn 100 200 300)])
+        (test-un struct:posn 'unsafe-struct*-type p #:literal-ok? #f)))
     (define-values (prop:nothing nothing? nothing-ref) (make-struct-type-property 'nothing))
     (try-struct prop:nothing 5)
     (try-struct prop:procedure (lambda (s) 'hi!)))
@@ -821,11 +862,17 @@
 ;; Check that unsafe-weak-hash-iterate- ops do not segfault
 ;; when a key is collected before access; throw exception instead.
 ;; They are used for safe iteration in in-weak-hash- sequence forms
-  (let ()
+  (for ([make-weak-hash (list make-weak-hash make-ephemeron-hash)]
+        [unsafe-weak-hash-iterate-first (list unsafe-weak-hash-iterate-first unsafe-ephemeron-hash-iterate-first)]
+        [unsafe-weak-hash-iterate-key (list unsafe-weak-hash-iterate-key unsafe-ephemeron-hash-iterate-key)]
+        [unsafe-weak-hash-iterate-pair (list unsafe-weak-hash-iterate-pair unsafe-ephemeron-hash-iterate-pair)]
+        [unsafe-weak-hash-iterate-key+value (list unsafe-weak-hash-iterate-key+value unsafe-ephemeron-hash-iterate-key+value)])
     (define ht #f)
 
-    (let ([lst (build-list 10 add1)])
-      (set! ht (make-weak-hash `((,lst . val)))))
+    ;; retain the list at first...
+    (define lst (build-list 10 add1))
+
+    (set! ht (make-weak-hash `((,lst . val))))
 
     (define i (unsafe-weak-hash-iterate-first ht))
 
@@ -840,18 +887,23 @@
           '((1 2 3 4 5 6 7 8 9 10) . val))
     (test #t boolean? (unsafe-weak-hash-iterate-next ht i))
 
-    ;; collect key, everything should error (but not segfault)
-    (collect-garbage)(collect-garbage)(collect-garbage)
-    (test #t boolean? (unsafe-weak-hash-iterate-first ht))
-    (err/rt-test (unsafe-weak-hash-iterate-key ht i) exn:fail:contract? err-msg)
-    (test 'gone unsafe-weak-hash-iterate-key ht i 'gone)
-    (err/rt-test (unsafe-weak-hash-iterate-value ht i) exn:fail:contract? err-msg)
-    (test 'gone unsafe-weak-hash-iterate-value ht i 'gone)
-    (err/rt-test (unsafe-weak-hash-iterate-pair ht i) exn:fail:contract? err-msg)
-    (test '(gone . gone) unsafe-weak-hash-iterate-pair ht i 'gone)
-    (err/rt-test (unsafe-weak-hash-iterate-key+value ht i) exn:fail:contract? err-msg)
-    (test-values '(gone gone) (lambda () (unsafe-weak-hash-iterate-key+value ht i 'gone)))
-    (test #f unsafe-weak-hash-iterate-next ht i))
+    ;; drop `lst` on next GC
+    (test #t list? lst)
+    (set! lst #f)
+
+    (unless (eq? 'cgc (system-type 'gc))
+      ;; collect key, everything should error (but not segfault)
+      (collect-garbage)(collect-garbage)(collect-garbage)
+      (test #t boolean? (unsafe-weak-hash-iterate-first ht))
+      (err/rt-test (unsafe-weak-hash-iterate-key ht i) exn:fail:contract? err-msg)
+      (test 'gone unsafe-weak-hash-iterate-key ht i 'gone)
+      (err/rt-test (unsafe-weak-hash-iterate-value ht i) exn:fail:contract? err-msg)
+      (test 'gone unsafe-weak-hash-iterate-value ht i 'gone)
+      (err/rt-test (unsafe-weak-hash-iterate-pair ht i) exn:fail:contract? err-msg)
+      (test '(gone . gone) unsafe-weak-hash-iterate-pair ht i 'gone)
+      (err/rt-test (unsafe-weak-hash-iterate-key+value ht i) exn:fail:contract? err-msg)
+      (test-values '(gone gone) (lambda () (unsafe-weak-hash-iterate-key+value ht i 'gone)))
+      (test #f unsafe-weak-hash-iterate-next ht i)))
 
 ;; Check that unsafe mutable hash table operations do not segfault
 ;; after getting valid index from unsafe-mutable-hash-iterate-first and -next.
@@ -884,7 +936,11 @@
     (test-values '(gone gone) (lambda () (unsafe-mutable-hash-iterate-key+value ht i 'gone)))
     (test #f unsafe-mutable-hash-iterate-next ht i))
 
-  (let ()
+  (for ([make-weak-hash (list make-weak-hash make-ephemeron-hash)]
+        [unsafe-weak-hash-iterate-first (list unsafe-weak-hash-iterate-first unsafe-ephemeron-hash-iterate-first)]
+        [unsafe-weak-hash-iterate-key (list unsafe-weak-hash-iterate-key unsafe-ephemeron-hash-iterate-key)]
+        [unsafe-weak-hash-iterate-pair (list unsafe-weak-hash-iterate-pair unsafe-ephemeron-hash-iterate-pair)]
+        [unsafe-weak-hash-iterate-key+value (list unsafe-weak-hash-iterate-key+value unsafe-ephemeron-hash-iterate-key+value)])
     (define ht (make-weak-hash '((a . b))))
     (define i (unsafe-weak-hash-iterate-first ht))
 
@@ -927,12 +983,22 @@
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Check that constant folding doesn't go wrong for `unsafe-fxlshift`:
 
-(test #t fixnum? (if (eqv? 64 (system-type 'word))
-                     (unsafe-fxlshift 1 62)
-                     (unsafe-fxlshift 1 30)))
-(test #t zero? (if (eqv? 64 (system-type 'word))
-                   (unsafe-fxlshift 1 63)
-                   (unsafe-fxlshift 1 31)))
+(test #t procedure? (lambda ()
+                      (if (eqv? 64 (system-type 'word))
+                          (unsafe-fxlshift 1 60)
+                          (unsafe-fxlshift 1 28))))
+(test #t procedure? (lambda ()
+                      (if (eqv? 64 (system-type 'word))
+                          (unsafe-fxlshift 1 61)
+                          (unsafe-fxlshift 1 29))))
+(test #t procedure? (lambda ()
+                      (if (eqv? 64 (system-type 'word))
+                          (unsafe-fxlshift 1 62)
+                          (unsafe-fxlshift 1 30))))
+(test #t procedure? (lambda ()
+                      (if (eqv? 64 (system-type 'word))
+                          (unsafe-fxlshift 1 63)
+                          (unsafe-fxlshift 1 31))))
 
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Check that allocation by inlined `unsafe-flrandom` is ok
@@ -959,6 +1025,74 @@
                 'same
                 'diff)))))
 
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(let ([bstr (make-bytes 5 65)]
+      [str (make-string 5 #\x)]
+      [vec (make-vector 5 'x)])
+  (let ([bstr (unsafe-bytes->immutable-bytes! bstr)]
+        [str (unsafe-string->immutable-string! str)]
+        [vec (unsafe-vector*->immutable-vector! vec)])
+    (test #t immutable? bstr)
+    (test #t immutable? str)
+    (test #t immutable? vec)
+    (test #t equal? #"AAAAA" bstr)
+    (test #t equal? "xxxxx" str)
+    (test #t equal? '#(x x x x x) vec)
+    (test #t immutable? (unsafe-bytes->immutable-bytes! (make-bytes 0)))
+    (test #f immutable? (make-bytes 0))
+    (test #t immutable? (unsafe-string->immutable-string! (make-string 0)))
+    (test #f immutable? (make-string 0))
+    (test #t immutable? (unsafe-vector*->immutable-vector! (make-vector 0)))
+    (test #f immutable? (make-vector 0))))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Make sure `bitwise-{and,ior,xor}` are not converted to
+;; unsafe fixnum operations in `#:unsafe` mode
+
+(module unsafe-but-not-restricted-to-fixnum racket/base
+  (#%declare #:unsafe)
+  (provide band bior bxor)
+  (define (band x)
+    (bitwise-and #xFF x))
+  (define (bior x)
+    (bitwise-ior #xFF x))
+  (define (bxor x)
+    (bitwise-xor #xFF x)))
+
+(require 'unsafe-but-not-restricted-to-fixnum)
+(test #x55 band (+ #x5555 (expt 2 100)))
+(test (+ (expt 2 100) #x55FF) bior (+ #x5555 (expt 2 100)))
+(test (+ (expt 2 100) #x55AA) bxor (+ #x5555 (expt 2 100)))
+
+;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define-syntax-rule (module-claiming-unreachable-part name flag ...)
+  (module name racket/base
+    (require racket/unreachable)
+    (provide f1 f2)
+    (#%declare flag ...)
+    (struct s (a) #:authentic)
+    (define (f1 x)
+      (if (s? x)
+          (s-a x)
+          (assert-unreachable)))
+    (define (f2 x)
+      (if (s? x)
+          (s-a x)
+          (with-assert-unreachable
+            (raise-argument-error 'f2 "oops" x))))))
+
+(module-claiming-unreachable-part claims-unreachable-parts/safe)
+(module-claiming-unreachable-part claims-unreachable-parts/unsafe #:unsafe)
+
+(err/rt-test ((dynamic-require ''claims-unreachable-parts/safe 'f1) (arity-at-least 7)))
+(err/rt-test ((dynamic-require ''claims-unreachable-parts/safe 'f2) (arity-at-least 7)))
+
+(when (eq? 'chez-scheme (system-type 'vm))
+  (test 7 (dynamic-require ''claims-unreachable-parts/unsafe 'f1) (arity-at-least 7))
+  (test 7 (dynamic-require ''claims-unreachable-parts/unsafe 'f2) (arity-at-least 7)))
+  
 ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (report-errs)

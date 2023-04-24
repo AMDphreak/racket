@@ -12,10 +12,14 @@
 # include <pwd.h>
 # include <grp.h>
 # include <dirent.h>
+# include <sys/time.h>
+# include <sys/utsname.h>
 #endif
 #ifdef RKTIO_SYSTEM_WINDOWS
+# include <windows.h>
 # include <shlobj.h>
 # include <direct.h>
+# include <sys/types.h>
 # include <sys/stat.h>
 # include <sys/utime.h>
 # include <io.h>
@@ -372,7 +376,7 @@ static int UNC_stat(rktio_t *rktio, const char *dirname, int *flags, int *isdir,
 
   wp = WIDE_PATH_temp(copy);
   if (!wp) {
-    /* Treat invalid path as non-existent */
+    /* Treat invalid path as non-existent; `WIDE_PATH_temp` set the error */
     free(copy);
     return 0;
   }
@@ -385,6 +389,8 @@ static int UNC_stat(rktio_t *rktio, const char *dirname, int *flags, int *isdir,
     if ((GET_FF_ATTRIBS(fad) & FF_A_LINK) && !same_path) {
       if (islink) {
 	*islink = 1;
+        if (isdir)
+          *isdir = (GET_FF_ATTRIBS(fad) & FF_A_DIR);
 	return 1;
       } else {
 	/* Resolve a link by opening the link and then getting
@@ -409,7 +415,7 @@ static int UNC_stat(rktio_t *rktio, const char *dirname, int *flags, int *isdir,
           init_procs();
           if (dest) free(dest);
           dest_len = len + 1;
-          dest = malloc(dest_len);
+          dest = malloc(dest_len * sizeof(wchar_t));
           len = GetFinalPathNameByHandleProc(h, dest, dest_len, rktioFILE_NAME_NORMALIZED);
         } while (len > dest_len);
 
@@ -587,6 +593,46 @@ int rktio_link_exists(rktio_t *rktio, const char *filename)
 #endif
 }
 
+int rktio_file_type(rktio_t *rktio, rktio_const_string_t filename)
+/* Windows: check for special filenames before calling */
+{
+#ifdef RKTIO_SYSTEM_WINDOWS
+  {
+    int islink, isdir;
+    if (UNC_stat(rktio, filename, NULL, &isdir, &islink, NULL, NULL, NULL, -1)) {
+      if (islink) {
+        if (isdir)
+          return RKTIO_FILE_TYPE_DIRECTORY_LINK;
+        else
+          return RKTIO_FILE_TYPE_LINK;
+      } else if (isdir)
+        return RKTIO_FILE_TYPE_DIRECTORY;
+      else
+        return RKTIO_FILE_TYPE_FILE;
+    } else
+      return RKTIO_FILE_TYPE_ERROR;
+  }
+#else
+  {
+    struct MSC_IZE(stat) buf;
+    while (1) {
+      if (!MSC_W_IZE(lstat)(MSC_WIDE_PATH_temp(filename), &buf))
+	break;
+      else if (errno != EINTR)
+	return RKTIO_FILE_TYPE_ERROR;
+    }
+
+    if (S_ISLNK(buf.st_mode))
+      return RKTIO_FILE_TYPE_LINK;
+    else if (S_ISDIR(buf.st_mode))
+      return RKTIO_FILE_TYPE_DIRECTORY;
+    else
+      return RKTIO_FILE_TYPE_FILE;
+  }
+#endif
+  
+}
+
 char *rktio_get_current_directory(rktio_t *rktio)
 {
 #ifdef RKTIO_SYSTEM_WINDOWS
@@ -594,7 +640,7 @@ char *rktio_get_current_directory(rktio_t *rktio)
  wchar_t *wbuf;
  char *r;
 
- wbuf = malloc(bl);
+ wbuf = malloc(bl * sizeof(wchar_t));
  while (1) {
    need_l = GetCurrentDirectoryW(bl, wbuf);
    if (need_l > bl) {
@@ -654,6 +700,106 @@ rktio_ok_t rktio_set_current_directory(rktio_t *rktio, const char *path)
   get_posix_error();
 
   return !err;
+}
+
+#if defined(RKTIO_STAT_TIMESPEC_FIELD)
+# define rktio_st_atim st_atimespec
+# define rktio_st_mtim st_mtimespec
+# define rktio_st_ctim st_ctimespec
+#else
+# define rktio_st_atim st_atim
+# define rktio_st_mtim st_mtim
+# define rktio_st_ctim st_ctim
+#endif
+
+rktio_stat_t *rktio_file_or_directory_stat(
+  rktio_t *rktio, rktio_const_string_t path, rktio_bool_t follow_links)
+{
+  int stat_result;
+  struct rktio_stat_t *rktio_stat_buf;
+#ifdef RKTIO_SYSTEM_UNIX
+  struct stat stat_buf;
+
+  do {
+    if (follow_links) {
+      stat_result = stat(path, &stat_buf);
+    } else {
+      stat_result = lstat(path, &stat_buf);
+    }
+  } while ((stat_result == -1) && (errno == EINTR));
+
+  if (stat_result) {
+    get_posix_error();
+    return NULL;
+  } else {
+    rktio_stat_buf = (struct rktio_stat_t *) malloc(sizeof(struct rktio_stat_t));
+    rktio_stat_buf->device_id = stat_buf.st_dev;
+    rktio_stat_buf->inode = stat_buf.st_ino;
+    rktio_stat_buf->mode = stat_buf.st_mode;
+    rktio_stat_buf->hardlink_count = stat_buf.st_nlink;
+    rktio_stat_buf->user_id = stat_buf.st_uid;
+    rktio_stat_buf->group_id = stat_buf.st_gid;
+    rktio_stat_buf->device_id_for_special_file = stat_buf.st_rdev;
+    rktio_stat_buf->size = stat_buf.st_size;
+    rktio_stat_buf->block_size = stat_buf.st_blksize;
+    rktio_stat_buf->block_count = stat_buf.st_blocks;
+    /* The `tv_nsec` fields are only the fractional part of the seconds.
+       (The value is always lower than 1_000_000_000.) */
+    rktio_stat_buf->access_time_seconds = stat_buf.rktio_st_atim.tv_sec;
+    rktio_stat_buf->access_time_nanoseconds = stat_buf.rktio_st_atim.tv_nsec;
+    rktio_stat_buf->modify_time_seconds = stat_buf.rktio_st_mtim.tv_sec;
+    rktio_stat_buf->modify_time_nanoseconds = stat_buf.rktio_st_mtim.tv_nsec;
+    rktio_stat_buf->ctime_seconds = stat_buf.rktio_st_ctim.tv_sec;
+    rktio_stat_buf->ctime_nanoseconds = stat_buf.rktio_st_ctim.tv_nsec;
+    rktio_stat_buf->ctime_is_change_time = 1;
+  }
+#endif
+#ifdef RKTIO_SYSTEM_WINDOWS
+  struct __stat64 stat_buf;
+  const WIDE_PATH_t *wp;
+  wp = MSC_WIDE_PATH_temp(path);
+  if (!wp) {
+    return NULL;
+  }
+
+  do {
+    /* No stat/lstat distinction under Windows */
+    stat_result = _wstat64(wp, &stat_buf);
+  } while ((stat_result == -1) && (errno == EINTR));
+
+  if (stat_result) {
+    get_posix_error();
+    return NULL;
+  }
+
+  rktio_stat_buf = (struct rktio_stat_t *) malloc(sizeof(struct rktio_stat_t));
+  /* Corresponds to drive on Windows. 0 = A:, 1 = B: etc. */
+  rktio_stat_buf->device_id = stat_buf.st_dev;
+  rktio_stat_buf->inode = stat_buf.st_ino;
+  rktio_stat_buf->mode = stat_buf.st_mode;
+  rktio_stat_buf->hardlink_count = stat_buf.st_nlink;
+  rktio_stat_buf->user_id = stat_buf.st_uid;
+  rktio_stat_buf->group_id = stat_buf.st_gid;
+  /* `st_rdev` has the same value as `st_dev`, so don't use it */
+  rktio_stat_buf->device_id_for_special_file = 0;
+  rktio_stat_buf->size = stat_buf.st_size;
+  /* `st_blksize` and `st_blocks` don't exist under Windows,
+     so set them to an arbitrary integer, for example 0. */
+  rktio_stat_buf->block_size = 0;
+  rktio_stat_buf->block_count = 0;
+  /* The stat result under Windows doesn't contain nanoseconds
+     information, so set them to 0, corresponding to times in
+     whole seconds. */
+  rktio_stat_buf->access_time_seconds = stat_buf.st_atime;
+  rktio_stat_buf->access_time_nanoseconds = 0;
+  rktio_stat_buf->modify_time_seconds = stat_buf.st_mtime;
+  rktio_stat_buf->modify_time_nanoseconds = 0;
+  rktio_stat_buf->ctime_seconds = stat_buf.st_ctime;
+  rktio_stat_buf->ctime_nanoseconds = 0;
+  rktio_stat_buf->ctime_is_change_time = 0;
+#endif
+
+  return rktio_stat_buf;
 }
 
 static rktio_identity_t *get_identity(rktio_t *rktio, rktio_fd_t *fd, const char *path, int follow_links)
@@ -905,7 +1051,7 @@ char *rktio_readlink(rktio_t *rktio, const char *fullfilename)
 #endif
 }
 
-int rktio_make_directory(rktio_t *rktio, const char *filename)
+int rktio_make_directory_with_permissions(rktio_t *rktio, const char *filename, int perm_bits)
 {
 #ifdef NO_MKDIR
   set_racket_error(RKTIO_ERROR_UNSUPPORTED);
@@ -926,10 +1072,13 @@ int rktio_make_directory(rktio_t *rktio, const char *filename)
 
   while (1) {
     wp = MSC_WIDE_PATH_temp(filename);
-    if (!wp) return 0;
+    if (!wp) {
+      if (copied) free(copied);
+      return 0;
+    }
     if (!MSC_W_IZE(mkdir)(wp
 # ifndef MKDIR_NO_MODE_FLAG
-			  , 0777
+			  , perm_bits
 # endif
 			  )) {
       if (copied) free(copied);
@@ -946,6 +1095,11 @@ int rktio_make_directory(rktio_t *rktio, const char *filename)
   if (copied) free(copied);
 
   return 0;
+}
+
+int rktio_make_directory(rktio_t *rktio, const char *filename)
+{
+  return rktio_make_directory_with_permissions(rktio, filename, RKTIO_DEFAULT_DIRECTORY_PERM_BITS);
 }
 
 int rktio_delete_directory(rktio_t *rktio, const char *filename, const char *current_directory, int enable_write_on_fail)
@@ -986,16 +1140,21 @@ int rktio_make_link(rktio_t *rktio, const char *src, const char *dest, int dest_
 {
 #if defined(RKTIO_SYSTEM_WINDOWS)
   init_procs();
-    
+
+# ifndef SYMBOLIC_LINK_FLAG_DIRECTORY
+#  define SYMBOLIC_LINK_FLAG_DIRECTORY 0x1
+# endif
+# ifndef SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
+#  define SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE 0x2
+# endif
+
   if (CreateSymbolicLinkProc) {
-    int flags;
+    int flags = SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
     wchar_t *src_w;
     wchar_t *dest_w;
 
     if (dest_is_directory)
-      flags = 0x1; /* directory */
-    else
-      flags = 0; /* file */
+      flags |= SYMBOLIC_LINK_FLAG_DIRECTORY; /* directory */
 
     src_w = WIDE_PATH_copy(src);
     if (!src_w) return 0;
@@ -1487,12 +1646,13 @@ char *rktio_directory_list_step(rktio_t *rktio, rktio_directory_list_t *dl)
   while ((e = readdir(dl->dir))) {
     int nlen;
 
-# ifdef DIRENT_NO_NAMLEN
-    nlen = strlen(e->d_name);
-# elif defined(__QNX__) || defined(__QNXNTO__)
+# ifdef HAVE_DIRENT_NAMLEN
+    nlen = e->d_namlen;
+# elif HAVE_DIRENT_NAMELEN
+    /* Case for QNX - which seems to define d_namelen instead */
     nlen = e->d_namelen;
 # else
-    nlen = e->d_namlen;
+    nlen = strlen(e->d_name);
 # endif
 
 # if defined(RKTIO_SYSTEM_UNIX) || defined(RKTIO_SYSTEM_WINDOWS)
@@ -1544,11 +1704,28 @@ struct rktio_file_copy_t {
   int done;
   rktio_fd_t *src_fd, *dest_fd;
 #ifdef RKTIO_SYSTEM_UNIX
+  int override_create_perms;
   intptr_t mode;
+#endif
+#ifdef RKTIO_SYSTEM_WINDOWS
+  wchar_t *dest_w;
+  int read_only;
 #endif
 };
 
-rktio_file_copy_t *rktio_copy_file_start(rktio_t *rktio, const char *dest, const char *src, int exists_ok)
+rktio_file_copy_t *rktio_copy_file_start(rktio_t *rktio, const char *dest, const char *src,
+                                         int exists_ok)
+{
+  return rktio_copy_file_start_permissions(rktio, dest, src,
+                                           exists_ok,
+                                           0, 0,
+                                           1);
+}
+
+rktio_file_copy_t *rktio_copy_file_start_permissions(rktio_t *rktio, const char *dest, const char *src,
+                                                     int exists_ok,
+                                                     rktio_bool_t use_perm_bits, int perm_bits,
+                                                     rktio_bool_t override_create_perms)
 {
 #ifdef RKTIO_SYSTEM_UNIX
   {
@@ -1577,8 +1754,17 @@ rktio_file_copy_t *rktio_copy_file_start(rktio_t *rktio, const char *dest, const
       return NULL;
     }
 
-    dest_fd = rktio_open(rktio, dest, (RKTIO_OPEN_WRITE
-                                       | (exists_ok ? RKTIO_OPEN_TRUNCATE : 0)));
+    if (!use_perm_bits)
+      perm_bits = buf.st_mode;
+
+    dest_fd = rktio_open_with_create_permissions(rktio, dest, (RKTIO_OPEN_WRITE
+                                                               | (exists_ok ? RKTIO_OPEN_TRUNCATE : 0)),
+                                                 /* Permissions may be reduced by umask, but even if
+                                                    `override_create_perms`, the intent here is to make
+                                                    sure the file doesn't have more permissions than
+                                                    it will end up with. If `override_create_perms`, we
+                                                    install final permissions after the copy. */
+                                                 perm_bits);
     if (!dest_fd) {
       rktio_close(rktio, src_fd);
       rktio_set_last_error_step(rktio, RKTIO_COPY_STEP_OPEN_DEST);
@@ -1593,7 +1779,8 @@ rktio_file_copy_t *rktio_copy_file_start(rktio_t *rktio, const char *dest, const
       fc->done = 0;
       fc->src_fd = src_fd;
       fc->dest_fd = dest_fd;
-      fc->mode = buf.st_mode;
+      fc->override_create_perms = override_create_perms;
+      fc->mode = perm_bits;
 
       return fc;
     }
@@ -1609,18 +1796,29 @@ rktio_file_copy_t *rktio_copy_file_start(rktio_t *rktio, const char *dest, const
     rktio_set_last_error_step(rktio, RKTIO_COPY_STEP_OPEN_SRC);
     return NULL;
   }
-  dest_w = WIDE_PATH_temp(dest);
+  if (use_perm_bits)
+    dest_w = WIDE_PATH_copy(dest);
+  else
+    dest_w = WIDE_PATH_temp(dest);
   if (!dest_w) {
     rktio_set_last_error_step(rktio, RKTIO_COPY_STEP_OPEN_DEST);
     return NULL;
   }
 
+  /* Note: if the requested permission is read-only and the source
+     is writable, the destination will be temporarily writable; even
+     if the destination file exists, though, we impose a requested
+     read-only mode after copying.*/
+
   if (CopyFileW(src_w, dest_w, !exists_ok)) {
     rktio_file_copy_t *fc;
     free(src_w);
+
     /* Return a pointer to indicate success: */
     fc = malloc(sizeof(rktio_file_copy_t));
     fc->done = 1;
+    fc->dest_w = (use_perm_bits ? (wchar_t *)dest_w : NULL);
+    fc->read_only = !(perm_bits & RKTIO_PERMISSION_WRITE);
     return fc;
   }
   
@@ -1633,6 +1831,8 @@ rktio_file_copy_t *rktio_copy_file_start(rktio_t *rktio, const char *dest, const
   rktio_set_last_error_step(rktio, RKTIO_COPY_STEP_UNKNOWN);
 
   free(src_w);
+  if (use_perm_bits)
+    free((void *)dest_w);
 
   return NULL;
 #endif
@@ -1681,18 +1881,53 @@ rktio_ok_t rktio_copy_file_step(rktio_t *rktio, rktio_file_copy_t *fc)
 rktio_ok_t rktio_copy_file_finish_permissions(rktio_t *rktio, rktio_file_copy_t *fc)
 {
 #ifdef RKTIO_SYSTEM_UNIX
-  int err;
-  
-  do {
-    err = fchmod(rktio_fd_system_fd(rktio, fc->dest_fd), fc->mode);
-  } while ((err == -1) && (errno != EINTR));
+  if (fc->override_create_perms) {
+    int err;
 
-  if (err) {
-    get_posix_error();
-    rktio_set_last_error_step(rktio, RKTIO_COPY_STEP_WRITE_DEST_METADATA);
-    return 0;
+    do {
+      /* We could skip this step if we know that the creation mode
+         wasn't reduced by umask, that the file didn't already exist,
+         and that the mode wasn't changed while the copy is in
+         progress. Instead of trying to get umask (without setting it,
+         but the obvious get-and-set trick is no good for a
+         process-wide value in a multithreaded context) or getting the
+         current mode (although it turns out that creating `dest_fd`
+         already used `fstat`, but the mode is forgotten by here), we
+         just always set it. */
+      err = fchmod(rktio_fd_system_fd(rktio, fc->dest_fd), fc->mode);
+    } while ((err == -1) && (errno != EINTR));
+
+    if (err) {
+      get_posix_error();
+      rktio_set_last_error_step(rktio, RKTIO_COPY_STEP_WRITE_DEST_METADATA);
+      return 0;
+    }
   }
 #endif
+#ifdef RKTIO_SYSTEM_WINDOWS
+  if (fc->dest_w) {
+    int ok;
+    DWORD attrs = GetFileAttributesW(fc->dest_w);
+    if (attrs != INVALID_FILE_ATTRIBUTES) {
+      if (!!(attrs & FILE_ATTRIBUTE_READONLY) != fc->read_only) {
+        if (fc->read_only)
+          attrs |= FILE_ATTRIBUTE_READONLY;
+        else
+          attrs -= FILE_ATTRIBUTE_READONLY;
+        ok = SetFileAttributesW(fc->dest_w, attrs);
+      } else
+        ok = 1;
+    } else
+      ok = 0;
+
+    if (!ok) {
+      get_windows_error();
+      rktio_set_last_error_step(rktio, RKTIO_COPY_STEP_WRITE_DEST_METADATA);
+      return 0;
+    }
+  }
+#endif
+  
   return 1;
 }
 
@@ -1701,6 +1936,9 @@ void rktio_copy_file_stop(rktio_t *rktio, rktio_file_copy_t *fc)
 #ifdef RKTIO_SYSTEM_UNIX
   rktio_close(rktio, fc->src_fd);
   rktio_close(rktio, fc->dest_fd);
+#endif
+#ifdef RKTIO_SYSTEM_WINDOWS
+  if (fc->dest_w) free(fc->dest_w);
 #endif
   free(fc);
 }
@@ -1866,6 +2104,20 @@ static char *append_paths(char *a, char *b, int free_a, int free_b)
   return s;
 }
 
+#ifdef RKTIO_SYSTEM_UNIX
+static int directory_or_file_exists(rktio_t *rktio, char *dir, char *maybe_file)
+{
+  if (maybe_file) {
+    int r;
+    char *path = append_paths(dir, maybe_file, 0, 0);
+    r = rktio_file_exists(rktio, path);
+    free(path);
+    return r;
+  } else
+    return rktio_directory_exists(rktio, dir);
+}
+#endif
+
 char *rktio_system_path(rktio_t *rktio, int which)
 {
 #ifdef RKTIO_SYSTEM_UNIX
@@ -1897,21 +2149,62 @@ char *rktio_system_path(rktio_t *rktio, int which)
   
   {
     /* Everything else is in ~: */
-    char *home_str, *alt_home, *home;
+    char *home_str, *alt_home, *home, *default_xdg_home_str = NULL, *xdg_home_str = NULL, *prefer_home;
+    char *home_file = NULL, *prefer_home_file = NULL;
+
+    alt_home = rktio_getenv(rktio, "PLTUSERHOME");
 
     if ((which == RKTIO_PATH_PREF_DIR) 
-	|| (which == RKTIO_PATH_PREF_FILE)
-	|| (which == RKTIO_PATH_ADDON_DIR)) {
-#if defined(OS_X) && !defined(XONX)
+        || (which == RKTIO_PATH_PREF_FILE)
+        || (which == RKTIO_PATH_ADDON_DIR)
+        || (which == RKTIO_PATH_CACHE_DIR)
+        || (which == RKTIO_PATH_INIT_DIR)
+        || (which == RKTIO_PATH_INIT_FILE)) {
+#if defined(OS_X) && !defined(RACKET_XONX) && !defined(XONX)
       if (which == RKTIO_PATH_ADDON_DIR)
 	home_str = "~/Library/Racket/";
-      else
+      else if (which == RKTIO_PATH_CACHE_DIR)
+	home_str = "~/Library/Caches/Racket/";
+      else if ((which == RKTIO_PATH_INIT_DIR)
+               || (which == RKTIO_PATH_INIT_FILE)) {
+        default_xdg_home_str = "~/Library/Racket/";
+        prefer_home_file = "racketrc.rktl";
+        home_str = "~/";
+        home_file = ".racketrc";
+      } else
 	home_str = "~/Library/Preferences/";
 #else
-      home_str = "~/.racket/";
-#endif 
+      char *envvar, *xdg_dir;
+      if (which == RKTIO_PATH_ADDON_DIR) {
+        default_xdg_home_str = "~/.local/share/racket/";
+        envvar = "XDG_DATA_HOME";
+      } else if (which == RKTIO_PATH_CACHE_DIR) {
+        default_xdg_home_str = "~/.cache/racket/";
+        envvar = "XDG_CACHE_HOME";
+      } else {
+        default_xdg_home_str = "~/.config/racket/";
+        envvar = "XDG_CONFIG_HOME";
+      }
+      if (alt_home)
+        xdg_dir = NULL;
+      else
+        xdg_dir = rktio_getenv(rktio, envvar);
+      /* xdg_dir is invalid if it is not an absolute path */
+      if (xdg_dir && (strlen(xdg_dir) > 0) && (xdg_dir[0] == '/')) {
+        xdg_home_str = append_paths(xdg_dir, "racket/", 1, 0);
+      } else {
+        if (xdg_dir) free(xdg_dir);
+      }
+
+      if ((which == RKTIO_PATH_INIT_DIR) || (which == RKTIO_PATH_INIT_FILE)) {
+        home_str = "~/";
+        home_file = ".racketrc";
+      } else { /* RKTIO_PATH_{ADDON_DIR,PREF_DIR,PREF_FILE,CACHE_DIR} */
+        home_str = "~/.racket/";
+      }
+#endif
     } else {
-#if defined(OS_X) && !defined(XONX)
+#if defined(OS_X) && !defined(RACKET_XONX) && !defined(XONX)
       if (which == RKTIO_PATH_DESK_DIR)
 	home_str = "~/Desktop/";
       else if (which == RKTIO_PATH_DOC_DIR)
@@ -1921,35 +2214,69 @@ char *rktio_system_path(rktio_t *rktio, int which)
         home_str = "~/";
     }
 
-    alt_home = rktio_getenv(rktio, "PLTUSERHOME");
-    if (alt_home)
-      home = append_paths(alt_home, home_str + 2, 1, 0);
-    else {
-      home = rktio_expand_user_tilde(rktio, home_str);
-      
-      if (!home) {
-        /* Something went wrong with the user lookup. Just drop "~'. */
-        int h_len = strlen(home_str);
-        home = (char *)malloc(h_len - 2 + 1);
-        strcpy(home, home_str+2);
+    /* If `xdg_home_str` is non-NULL, it must be an absolute
+       path that is `malloc`ed.
+       If `default_xdg_home_str` is non-NULL, it starts with "~/"
+       and is not `malloc`ed. */
+
+    if (xdg_home_str || default_xdg_home_str) {
+      if (xdg_home_str)
+        prefer_home = xdg_home_str;
+      else if (alt_home)
+        prefer_home = append_paths(alt_home, default_xdg_home_str + 2, 0, 0);
+      else
+        prefer_home = rktio_expand_user_tilde(rktio, default_xdg_home_str);
+
+      if (directory_or_file_exists(rktio, prefer_home, prefer_home_file))
+        home_str = NULL;
+    } else
+      prefer_home = NULL;
+
+    if (home_str) {
+      if (alt_home)
+        home = append_paths(alt_home, home_str + 2, 1, 0);
+      else
+        home = rktio_expand_user_tilde(rktio, home_str);
+
+      if (prefer_home) {
+        if (!directory_or_file_exists(rktio, home, home_file)) {
+          free(home);
+          home = prefer_home;
+        } else {
+          free(prefer_home);
+          prefer_home = NULL;
+        }
       }
-    }
-    
+    } else
+      home = prefer_home;
+
+    /* At this point, we're using `home`, but `prefer_home` can still
+       be non-NULL and equal to `home` to mean that we should use
+       XDG-style file names. */
+
     if ((which == RKTIO_PATH_PREF_DIR) || (which == RKTIO_PATH_INIT_DIR) 
 	|| (which == RKTIO_PATH_HOME_DIR) || (which == RKTIO_PATH_ADDON_DIR)
-	|| (which == RKTIO_PATH_DESK_DIR) || (which == RKTIO_PATH_DOC_DIR))
+	|| (which == RKTIO_PATH_DESK_DIR) || (which == RKTIO_PATH_DOC_DIR)
+        || (which == RKTIO_PATH_CACHE_DIR))
       return home;
 
-    if (which == RKTIO_PATH_INIT_FILE)
-      return append_paths(home, ".racketrc", 1, 0);
+    if (which == RKTIO_PATH_INIT_FILE) {
+      if (prefer_home)
+        return append_paths(prefer_home, "racketrc.rktl", 1, 0);
+      else
+        return append_paths(home, ".racketrc", 1, 0);
+    }
+
     if (which == RKTIO_PATH_PREF_FILE) {
-#if defined(OS_X) && !defined(XONX)
+#if defined(OS_X) && !defined(RACKET_XONX) && !defined(XONX)
       return append_paths(home, "org.racket-lang.prefs.rktd", 1, 0);
-#else      
+#else
       return append_paths(home, "racket-prefs.rktd", 1, 0);
 #endif
-    } else
+    } else {
+      free(home);
       return strdup("/");
+    }
   }
 #endif
 
@@ -1991,6 +2318,7 @@ char *rktio_system_path(rktio_t *rktio, int which)
       int which_folder;
 
       if ((which == RKTIO_PATH_ADDON_DIR)
+          || (which == RKTIO_PATH_CACHE_DIR) /* maybe CSIDL_LOCAL_APPDATA instead? */
 	  || (which == RKTIO_PATH_PREF_DIR)
 	  || (which == RKTIO_PATH_PREF_FILE)) 
 	which_folder = CSIDL_APPDATA;
@@ -2084,6 +2412,7 @@ char *rktio_system_path(rktio_t *rktio, int which)
       return home;
 
     if ((which == RKTIO_PATH_ADDON_DIR)
+        || (which == RKTIO_PATH_CACHE_DIR)
 	|| (which == RKTIO_PATH_PREF_DIR)
 	|| (which == RKTIO_PATH_PREF_FILE)) {
       home = append_paths(home, "Racket", 1, 0);
@@ -2097,3 +2426,91 @@ char *rktio_system_path(rktio_t *rktio, int which)
   }
 #endif
 }
+
+/*========================================================================*/
+/* system information as a string                                         */
+/*========================================================================*/
+
+
+#ifdef RKTIO_SYSTEM_UNIX
+char *rktio_uname(rktio_t *rktio) {
+  char *s;
+  struct utsname u;
+  int ok, len;
+  int syslen, nodelen, rellen, verlen, machlen;
+
+  do {
+    ok = uname(&u);
+  } while ((ok == -1) && (errno == EINTR));
+    
+  if (ok != 0)
+    return strdup("<unknown machine>");
+
+  syslen = strlen(u.sysname);
+  nodelen = strlen(u.nodename);
+  rellen = strlen(u.release);
+  verlen = strlen(u.version);
+  machlen = strlen(u.machine);
+
+  len = (syslen + 1 + nodelen + 1 + rellen + 1 + verlen + 1 + machlen + 1);
+
+  s = malloc(len);
+
+# define ADD_UNAME_STR(sn, slen) do {                  \
+    memcpy(s + len, sn, slen);                         \
+    len += slen;                                       \
+    s[len++] = ' ';                                    \
+  } while (0)
+
+  len = 0;
+  ADD_UNAME_STR(u.sysname, syslen);
+  ADD_UNAME_STR(u.nodename, nodelen);
+  ADD_UNAME_STR(u.release, rellen);
+  ADD_UNAME_STR(u.version, verlen);
+  ADD_UNAME_STR(u.machine, machlen);
+  s[len - 1] = 0;
+
+# undef ADD_UNAME_STR
+  
+  return s;
+}
+#endif
+ 
+#ifdef RKTIO_SYSTEM_WINDOWS
+char *rktio_uname(rktio_t *rktio) {
+  char buff[1024];
+  OSVERSIONINFO info;
+  BOOL hasInfo;
+  char *p;
+
+  info.dwOSVersionInfoSize = sizeof(info);
+
+  GetVersionEx(&info);
+
+  hasInfo = FALSE;
+
+  p = info.szCSDVersion;
+
+  while (p < info.szCSDVersion + sizeof(info.szCSDVersion) &&
+	 *p) {
+    if (*p != ' ') {
+      hasInfo = TRUE;
+      break;
+    }
+    p = p + 1;
+  }
+
+  sprintf(buff,"Windows %s %ld.%ld (Build %ld)%s%s",
+	  (info.dwPlatformId == VER_PLATFORM_WIN32_WINDOWS) ?
+	  "9x" :
+	  (info.dwPlatformId == VER_PLATFORM_WIN32_NT) ?
+	  "NT" : "Unknown platform",
+	  info.dwMajorVersion,info.dwMinorVersion,
+	  (info.dwPlatformId == VER_PLATFORM_WIN32_NT) ?
+	  info.dwBuildNumber :
+	  info.dwBuildNumber & 0xFFFF,
+	  hasInfo ? " " : "",hasInfo ? info.szCSDVersion : "");
+
+  return strdup(buff);
+}
+#endif

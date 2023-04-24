@@ -8,6 +8,8 @@
 (define SYNC-SLEEP-DELAY 0.025)
 (define SYNC-BUSY-DELAY 0.1) ; go a little slower to check busy waits
 
+(define starting-monotonic-time (current-inexact-monotonic-milliseconds))
+
 ;; ----------------------------------------
 ;;  Semaphore peeks
 
@@ -140,15 +142,30 @@
 ;; ----------------------------------------
 ;; Alarms
 
-(test #f sync/timeout 0.1 (alarm-evt (+ (current-inexact-milliseconds) 200)))
-(test 'ok sync/timeout 0.1 
-      (wrap-evt
-       (alarm-evt (+ (current-inexact-milliseconds) 50))
-       (lambda (x) 'ok)))
-(test 'ok sync/timeout 100
-      (wrap-evt
-       (alarm-evt (+ (current-inexact-milliseconds) 50))
-       (lambda (x) 'ok)))
+;; These tests are inherently flaky, because they rely on Racket
+;; running fast enough relative to wall-clock time.
+
+(when (run-unreliable-tests? 'timing)
+  
+  (test #f sync/timeout 0.1 (alarm-evt (+ (current-inexact-milliseconds) 200)))
+  (test 'ok sync/timeout 0.1
+        (wrap-evt
+         (alarm-evt (+ (current-inexact-milliseconds) 50))
+         (lambda (x) 'ok)))
+  (test 'ok sync/timeout 100
+        (wrap-evt
+         (alarm-evt (+ (current-inexact-milliseconds) 50))
+         (lambda (x) 'ok)))
+
+  (test #f sync/timeout 0.1 (alarm-evt (+ (current-inexact-monotonic-milliseconds) 200) #t))
+  (test 'ok sync/timeout 0.1
+        (wrap-evt
+         (alarm-evt (+ (current-inexact-monotonic-milliseconds) 50) #t)
+         (lambda (x) 'ok)))
+  (test 'ok sync/timeout 100
+        (wrap-evt
+         (alarm-evt (+ (current-inexact-monotonic-milliseconds) 50) #t)
+         (lambda (x) 'ok))))
 
 ;; ----------------------------------------
 ;; Waitable sets
@@ -175,6 +192,7 @@
     (test s2 sync/timeout SYNC-SLEEP-DELAY set)
     (test #f sync/timeout SYNC-SLEEP-DELAY set))
   (thread (lambda () (sleep) (semaphore-post s3)))
+  (sync (system-idle-evt))
   (test s3 sync/timeout SYNC-SLEEP-DELAY (choice-evt s1 s2 s3))
   (test #f sync/timeout SYNC-SLEEP-DELAY (choice-evt s1 s2 s3))
   (semaphore-post s3)
@@ -205,12 +223,14 @@
 	 [set (choice-evt s1 s2 c)])
     (test #f sync/timeout SYNC-SLEEP-DELAY set)
     (thread (lambda () (channel-put c 12)))
+    (sync (system-idle-evt))
     (test 12 sync/timeout SYNC-SLEEP-DELAY set)
     (test #f sync/timeout SYNC-SLEEP-DELAY set)
     (let* ([p (channel-put-evt c 85)]
 	   [set (choice-evt s1 s2 p)])
       (test #f sync/timeout SYNC-SLEEP-DELAY set)
       (thread (lambda () (channel-get c)))
+      (sync (system-idle-evt))
       (test p sync/timeout SYNC-SLEEP-DELAY set)
       (test #f sync/timeout SYNC-SLEEP-DELAY set))))
 
@@ -537,7 +557,7 @@
   (test 'not-ready values ok?))
 
 ;; If a `nack-guard-evt` function returns a `choice-evt`,
-;; then chosing any of those should avoid a NACK:
+;; then choosing any of those should avoid a NACK:
 (let ([n #f])
   (sync (nack-guard-evt (lambda (nack)
                           (set! n nack)
@@ -681,6 +701,42 @@
                                        (lambda (_)
                                          (+ a b))))))
 
+(let ()
+  (define (chain-evts e1 e2)
+    (sync (make-semaphore) (replace-evt e1
+                                        (lambda (v)
+                                          (choice-evt
+                                           e2
+                                           (make-semaphore))))))
+  (test always-evt chain-evts always-evt always-evt)
+  (test always-evt chain-evts (make-semaphore 1) always-evt)
+  (let ([s (make-semaphore 1)])
+    (test always-evt chain-evts s always-evt))
+  (let ([s (make-semaphore 1)])
+    (test s chain-evts (make-semaphore 1) s))
+  (let ([s (make-semaphore 2)])
+    (test s chain-evts s s)
+    (test #f sync/timeout 0 s))
+  (let ([s (make-semaphore)])
+    (thread (lambda () (semaphore-post s)))
+    (test always-evt chain-evts s always-evt))
+  (let ([s (make-semaphore)])
+    (thread (lambda () (semaphore-post s) (sleep) (semaphore-post s)))
+    (test s chain-evts s s)))
+
+;; indirectly check that a `guard-evt` callabck in a `replace-evt`
+;; is not called in atomic mode; if it is, then the thread won't
+;; escape and terminate right
+(test #t thread? (sync
+                  (thread
+                   (lambda ()
+                     (let/cc esc
+                       (sync (replace-evt
+                              (guard-evt
+                               (lambda ()
+                                 (esc 'done)))
+                              void)))))))
+
 ;; ----------------------------------------
 ;; Structures as waitables
 
@@ -730,10 +786,8 @@
 		   1000.0)]
 	  [real-took (/ (abs (- (current-milliseconds) real-msecs)) 1000.0)]
 	  [boundary (/ SYNC-BUSY-DELAY 6)])
-      ;; Hack.
-      ;; The following test isn't reliable, so only Matthew should see it,
-      ;; and only in non-parallel mode:
-      (when (and (regexp-match #rx"(mflatt)|(matthewf)" (path->string (find-system-path 'home-dir)))
+      ;; Run unreliable timing test only in non-parallel mode:
+      (when (and (run-unreliable-tests? 'timing)
                  (equal? "" Section-prefix))
 	(test busy? (lambda (a ax b c d) (> b c)) 'busy-wait? go took boundary real-took)))))
 
@@ -860,7 +914,7 @@
 
 ;; ----------------------------------------
 
-;; In the current implemenation, a depth of 10 for 
+;; In the current implementation, a depth of 10 for 
 ;;  waitable chains is a magic number; it causes the scheduler to
 ;;  swap a thread in to check whether it can run, instead of
 ;;  checking in the thread. (For a well-behaved chain, this 
@@ -997,6 +1051,23 @@
 ;; make sure it's ok for rewind to be the first action:
 (test (void) thread-wait (thread (lambda () (thread-rewind-receive '(1 2 3)))))
 
+(let* ([t (thread/suspend-to-kill
+           (lambda ()
+             (let loop ()
+               (sync
+                (handle-evt
+                 (thread-receive-evt)
+                 (λ (_)
+                   (channel-put (thread-receive) 'ok)
+                   (loop)))))))]
+       [res (for/list ([_ (in-range 2)])
+              (thread-suspend t)
+              (thread-resume t (current-thread))
+              (define ch (make-channel))
+              (thread-send t ch)
+              (channel-get ch))])
+  (test '(ok ok) values res))
+
 ;; ----------------------------------------
 ;; Unsafe poller
 
@@ -1024,7 +1095,7 @@
                               (set! counter (sub1 counter))
                               (when wakeups
                                 ;; Cancel any sleep:
-                                (unsafe-poll-ctx-milliseconds-wakeup wakeups (current-inexact-milliseconds)))
+                                (unsafe-poll-ctx-milliseconds-wakeup wakeups (current-inexact-monotonic-milliseconds)))
                               (values #f self)]))))
   (test #t sync (p)))
 
@@ -1182,6 +1253,9 @@
       [did-post2 #f]
       [did-done #f]
       [break-on (lambda () (break-enabled #t))]
+      [sync-idle/break-thread (lambda (t)
+                                (sync (system-idle-evt))
+                                (break-thread t))]
       [sw semaphore-wait])
   (let ([mk-t
 	 (lambda (init ;; how to start
@@ -1193,7 +1267,7 @@
 		  pre-thunk act-thunk post-thunk
 		  ;; sema-wait or sema-wait/enable-break:
 		  pre-semaphore-wait act-semaphore-wait post-semaphore-wait)
-	   ;; This reset function is called for a cptured continuation
+	   ;; This reset function is called for a captured continuation
 	   ;;  to reset the effective arguments
 	   (define (reset
 		    -capture-pre -capture-act -capture-post
@@ -1229,8 +1303,8 @@
 			reset
 			(lambda ()
 			  (set! did-pre1 #t)
-			  (semaphore-post p)
 			  (pre-thunk)
+			  (semaphore-post p)
 			  (pre-semaphore-wait s)
 			  (set! did-pre2 #t))))
 		     (lambda () 
@@ -1238,8 +1312,8 @@
 			reset
 			(lambda ()
 			  (set! did-act1 #t)
-			  (semaphore-post p)
 			  (act-thunk)
+			  (semaphore-post p)
 			  (act-semaphore-wait s)
 			  (set! did-act2 #t))))
 		     (lambda ()
@@ -1247,8 +1321,8 @@
 			reset
 			(lambda ()
 			  (set! did-post1 #t)
-			  (semaphore-post p)
 			  (post-thunk)
+			  (semaphore-post p)
 			  (post-semaphore-wait s)
 			  (set! did-post2 #t)))))
 		 (set! did-done #t))))))])
@@ -1293,7 +1367,8 @@
 	(semaphore-post s)
 	(if should-pre-break?
 	    (begin
-	      (thread-wait t)
+              (thread-wait t)
+              (test #t semaphore-try-wait? s)
 	      (test #f 'pre2 did-pre2))
 	    (if should-preact-break?
 		(begin
@@ -1321,6 +1396,7 @@
 			(if should-post-break?
 			    (begin
 			      (thread-wait t)
+                              (test #t semaphore-try-wait? s)
 			      (test #f 'post2 did-post2))
 			    (begin
 			      (thread-wait t)
@@ -1330,29 +1406,32 @@
      (lambda (mk-t)
        (for-each 
 	(lambda (nada)
-	  ;; Basic checks --- dynamic-wind thunks don't explicitly enable breaks
-	  (go mk-t #f  nada nada nada  sw sw sw  void #f #f void #f void #f #f)
-	  (go mk-t #f  nada nada nada  sw sw sw  break-thread #f 'pre-act void #f void #f #f)
-	  (go mk-t #f  nada nada nada  sw sw sw  void #f #f break-thread 'act void #f #f)
-	  (go mk-t #f  nada nada nada  sw sw sw  void #f #f void #f break-thread #f 'done)
+          (for-each
+           (lambda (break-thread)
+             ;; Basic checks --- dynamic-wind thunks don't explicitly enable breaks
+             (go mk-t #f  nada nada nada  sw sw sw  void #f #f void #f void #f #f)
+             (go mk-t #f  nada nada nada  sw sw sw  break-thread #f 'pre-act void #f void #f #f)
+             (go mk-t #f  nada nada nada  sw sw sw  void #f #f break-thread 'act void #f #f)
+             (go mk-t #f  nada nada nada  sw sw sw  void #f #f void #f break-thread #f 'done)
 
-	  ;; All dynamic-wind thunks enable breaks
-	  (map (lambda (break-on sw)
-		 (go mk-t #f  break-on break-on break-on  sw sw sw  void #f #f void #f void #f #f)
-		 (go mk-t #f  break-on break-on break-on  sw sw sw  break-thread 'pre #f void #f void #f #f)
-		 (go mk-t #f  break-on break-on break-on  sw sw sw  void #f #f break-thread 'act void #f #f)
-		 (go mk-t #f  break-on break-on break-on  sw sw sw  void #f #f void #f break-thread 'post #f))
-	       (list break-on void)
-	       (list sw semaphore-wait/enable-break))
+             ;; All dynamic-wind thunks enable breaks
+             (map (lambda (break-on sw)
+                    (go mk-t #f  break-on break-on break-on  sw sw sw  void #f #f void #f void #f #f)
+                    (go mk-t #f  break-on break-on break-on  sw sw sw  break-thread 'pre #f void #f void #f #f)
+                    (go mk-t #f  break-on break-on break-on  sw sw sw  void #f #f break-thread 'act void #f #f)
+                    (go mk-t #f  break-on break-on break-on  sw sw sw  void #f #f void #f break-thread 'post #f))
+                  (list break-on void)
+                  (list sw semaphore-wait/enable-break))
 
-	  ;; Enable break in pre or act shouldn't affect post
-	  (go mk-t #f  break-on nada nada  sw sw sw  void #f #f void #f break-thread #f 'done)
-	  (go mk-t #f  nada break-on nada  sw sw sw  void #f #f void #f break-thread #f 'done)
-	  
-	  ;; Enable break in pre shouldn't affect act/done
-	  (go mk-t #t  break-on nada nada  sw sw sw  void #f #f break-thread #f void #f #f)
-	  (go mk-t #t  break-on nada nada  sw sw sw  void #f #f void #f break-thread #f #f))
-	(list void sleep)))
+             ;; Enable break in pre or act shouldn't affect post
+             (go mk-t #f  break-on nada nada  sw sw sw  void #f #f void #f break-thread #f 'done)
+             (go mk-t #f  nada break-on nada  sw sw sw  void #f #f void #f break-thread #f 'done)
+
+             ;; Enable break in pre shouldn't affect act/done
+             (go mk-t #t  break-on nada nada  sw sw sw  void #f #f break-thread #f void #f #f)
+             (go mk-t #t  break-on nada nada  sw sw sw  void #f #f void #f break-thread #f #f))
+           (list break-thread sync-idle/break-thread)))
+        (list void sleep)))
      ;; We'll make threads in three modes: normal, restore a continuation into pre,
      ;;  and restore a continuation into act
      (let* ([no-capture (lambda (reset body) (body))]
@@ -1391,7 +1470,7 @@
 	     (procedure-rename (mk-capturing 'act) 'act-capturing))))))
 
 ;; ----------------------------------------
-;; Check wrap-evt result superceded by internally
+;; Check wrap-evt result superseded by internally
 ;;  installed constant (i.e., the input port):
 
 (let ([p (make-input-port
@@ -1529,8 +1608,42 @@
       (test val values got)))
 
   (try values 'ok-channel)
-  (try (lambda (c) (choice-evt c (alarm-evt (+ 10000 (current-inexact-milliseconds)))))
+  (try (lambda (c) (choice-evt c (alarm-evt (+ 10000 (current-inexact-monotonic-milliseconds)) #t)))
        'ok-channel+alarm))
+
+;; ----------------------------------------
+;; Extra check that a sync/enable-break either succeeds or breaks,
+;; where we avoid explicit thread synchronization and spin to
+;; try to get different schedules.
+;; Based on an example from Bogdan.
+
+(for ([i 50])
+  (let ([succeeded? #f]
+        [broke? #f])
+    (define (spin-then thunk)
+      (let loop ([n (random 1000000)])
+        (cond
+          [(zero? n) (thunk)]
+          [else (loop (sub1 n))])))
+    (struct p ()
+      #:property prop:evt (unsafe-poller
+                           (lambda (self wakeups)
+                             ;; loop to try to be slow
+                             (spin-then
+                              (lambda ()
+                                (set! succeeded? #t)
+                                (values (list 'success) #f))))))
+    (define ready-sema (make-semaphore))
+    (define t (thread (lambda ()
+                        (parameterize-break #f
+                          (semaphore-post ready-sema)
+                          (with-handlers ([exn:break? (lambda (exn)
+                                                        (set! broke? #t))])
+                            (sync/enable-break (p)))))))
+    (semaphore-wait ready-sema)
+    (spin-then (lambda () (break-thread t)))
+    (sync t)
+    (test #t 'xor-on-success-and-break (if succeeded? (not broke?) broke?))))
 
 ;; ----------------------------------------
 ;; Make sure that suspending a thread that's blocked on a
@@ -1566,6 +1679,30 @@
     ;; This will get stuck if the success of time sync got lost
     (sync s))
   (thread-wait t))
+
+;; ----------------------------------------
+;; regression test to check that when a choice evt replaces a single
+;; event, an already-chosen event (perhaps represented as an index) is
+;; not misinterpreted later
+
+(for ([i (in-range 10)])
+  (define ch (make-channel))
+  (define v
+    (sync (guard-evt
+           (lambda ()
+             (thread (lambda () (channel-put ch 0)))
+             (sync (system-idle-evt))
+             (choice-evt
+              (wrap-evt always-evt (lambda (v) 1))
+              (wrap-evt always-evt (lambda (v) 2))
+              (wrap-evt always-evt (lambda (v) 3)))))
+          ch))
+  (unless (memq v '(0 1 2 3))
+    (error "bad sync result" v)))
+
+;; ----------------------------------------
+
+(test #t <= starting-monotonic-time (current-inexact-monotonic-milliseconds))
 
 ;; ----------------------------------------
 

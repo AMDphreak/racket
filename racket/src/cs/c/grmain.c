@@ -18,7 +18,7 @@ static void pre_filter_cmdline_arguments(int *argc, char ***argv);
 char *check_for_another = "yes, please check for another";
 
 # include <windows.h>
-# include "../start/win_single.inc"
+# include "../../start/win_single.inc"
 # define CHECK_SINGLE_INSTANCE
 #endif
 
@@ -26,7 +26,7 @@ char *check_for_another = "yes, please check for another";
 
 #if defined(WIN32)
 static void pre_filter_cmdline_arguments(int *argc, char ***argv) { }
-#elif defined(OS_X)
+#elif defined(OS_X) && !defined(RACKET_XONX)
 # define wx_mac
 #else
 # define wx_xt

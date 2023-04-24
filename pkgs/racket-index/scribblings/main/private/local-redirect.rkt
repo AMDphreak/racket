@@ -200,10 +200,11 @@
                        null
                        (resolve-get-keys #f ri
                                          (lambda (v)
-                                           ;; Support key-based indirect only on sections
-                                           ;; and module names:
+                                           ;; Support key-based indirect only on sections,
+                                           ;; module names, and @deftech{} terms:
                                            (define t (car v))
                                            (or (eq? t 'part)
+                                               (eq? t 'tech)
                                                (eq? t 'mod-path))))))
       (define (target? v) (and (vector? v) (= 5 (vector-length v))))
       (define dest-dir (send renderer get-dest-directory #t))
@@ -284,7 +285,8 @@
                [i (in-naturals)])
            (define name (extract-name e))
            (fprintf o (if (zero? i) "\n" ",\n"))
-           (fprintf o " [~s, ~s]" name (if user?
+           (fprintf o " [~s, ~s]" name (if (or user?
+                                               (not (immediately-in-doc-dir? e)))
                                            (url->string (path->url e))
                                            (format "../~a" name))))
          (fprintf o "];\n\n")
@@ -305,4 +307,8 @@
                (js-addition (string->url "local-user-redirect.js"))
                (js-addition
                 (string->bytes/utf-8 search-code))))
-    null)))
+     null)))
+
+(define (immediately-in-doc-dir? path)
+  (define-values (base name dir?) (split-path path))
+  (equal? (path->directory-path (find-doc-dir)) base))

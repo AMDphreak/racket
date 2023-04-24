@@ -122,8 +122,9 @@
               (mk-finalized n)
               (loop (sub1 n))))
           (gc)
-          ;; finalize at least half?
-          (test #t > (length removed) 50)
+          (unless (eq? 'cgc (system-type 'gc))
+            ;; finalize at least half
+            (test #t > (length removed) 50))
           (test #f ormap symbol? removed)
           (test 12 custodian-box-value b1)
           (loop (sub1 m))))
@@ -135,7 +136,8 @@
       (test b1 sync/timeout 0 b1)
       (test #f ormap values (map custodian-box-value saved))
       (gc)
-      (test #t <= 5 (apply + (map (lambda (v) (if (symbol? v) 1 0)) removed))))))
+      (unless (eq? 'cgc (system-type 'gc))
+        (test #t <= 5 (apply + (map (lambda (v) (if (symbol? v) 1 0)) removed)))))))
 
 (when (custodian-memory-accounting-available?)
   ;; Check custodian boxes for accounting
@@ -245,10 +247,14 @@
 (unless (eq? 'cgc (system-type 'gc))
   (define s (make-semaphore))
   (define c (make-custodian))
+  (define bits (let loop ([bits 29])
+                 (if (fixnum? (expt 2 bits))
+                     bits
+                     (loop (sub1 bits)))))
   (define t (parameterize ([current-custodian c])
               (thread (lambda ()
                         (semaphore-wait s)
-                        (define b (make-phantom-bytes (expt 2 29)))
+                        (define b (make-phantom-bytes (expt 2 bits)))
                         (test #t phantom-bytes? b)
                         (test #f phantom-bytes? 0)
                         (semaphore-wait s)
@@ -260,16 +266,16 @@
   (define mc (current-memory-use c))
   (semaphore-post s)
   (sync (system-idle-evt))
-  (test #t > (current-memory-use) (+ m (expt 2 28)))
+  (test #t > (current-memory-use) (+ m (expt 2 (sub1 bits))))
   (collect-garbage)
-  (test #t > (current-memory-use) (+ m (expt 2 28)))
-  (test #t > (current-memory-use c) (+ mc (expt 2 28)))
+  (test #t > (current-memory-use) (+ m (expt 2 (sub1 bits))))
+  (test #t > (current-memory-use c) (+ mc (expt 2 (sub1 bits))))
   (semaphore-post s)
   (sync (system-idle-evt))
-  (test #t < (current-memory-use) (+ m (expt 2 28)))
+  (test #t < (current-memory-use) (+ m (expt 2 (sub1 bits))))
   (collect-garbage)
-  (test #t < (current-memory-use) (+ m (expt 2 28)))
-  (test #t < (current-memory-use c) (+ mc (expt 2 28)))
+  (test #t < (current-memory-use) (+ m (expt 2 (sub1 bits))))
+  (test #t < (current-memory-use c) (+ mc (expt 2 (sub1 bits))))
   (semaphore-post s)
 
   (let ([done? #f])
@@ -370,7 +376,7 @@
   (provide go)
   
   (define (f x y)
-    (let ([z (make-vector 1024 x)]) ; problem if `z` is retained during non-tail `(y)`
+    (let ([z (make-vector 10240 x)]) ; problem if `z` is retained during non-tail `(y)`
       (let ([w (cons x x)])
         (if (pair? x)
             'ok ; SFS pass should clear `z` in or after this branch
@@ -380,11 +386,12 @@
   (set! f f)
   
   (define (go)
-    (let loop ([n 100000])
-      (f '(1 2) (lambda ()
-                  (if (zero? n)
-                      'done
-                      (unbox (loop (sub1 n)))))))))
+    (for ([i 100])
+      (let loop ([n 1000])
+        (f '(1 2) (lambda ()
+                    (if (zero? n)
+                        'done
+                        (unbox (loop (sub1 n))))))))))
 
 (unless (eq? 'cgc (system-type 'gc))
   (let ([init-memory-use (current-memory-use)])
@@ -397,7 +404,7 @@
                          (let loop ()
                            (sleep 0.1)
                            (define mu (current-memory-use))
-                           (printf "~s\n" mu)
+                           (printf "~s\n" (- mu init-memory-use))
                            (cond
                              [(mu . < . (+ init-memory-use (* 100 1024 1024)))
                               (loop)]
@@ -428,7 +435,7 @@
                 (thread
                  (lambda ()
                    ;; Ideally, this loop retains only `loop`
-                   ;; and `sema`. If it retains everything refereneced
+                   ;; and `sema`. If it retains everything referenced
                    ;; or defined in the module, though, at least make
                    ;; sure it doesn't retain the whole namespace
                    (let loop () (sync sema) (loop)))))))
@@ -489,9 +496,9 @@
     (define ITERS 5)
     (define msecs
       (/ (for/fold ([t 0]) ([i (in-range ITERS)])
-           (define start (current-inexact-milliseconds))
+           (define start (current-inexact-monotonic-milliseconds))
            (collect-garbage)
-           (+ t (- (current-inexact-milliseconds) start)))
+           (+ t (- (current-inexact-monotonic-milliseconds) start)))
          ITERS))
     ;; Keep `key` and `es` live:
     (if (zero? (random 1))
@@ -560,7 +567,8 @@
   (collect-garbage)
   (test #f weak-box-value wb))
 
-(check-weak-box-before-will)
+(unless (eq? 'cgc (system-type 'gc))
+  (check-weak-box-before-will))
 
 ;; ----------------------------------------
 

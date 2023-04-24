@@ -16,11 +16,13 @@
 #endif
 
 #ifdef RKTIO_SYSTEM_UNIX
-static rktio_fd_t *finish_unix_fd_creation(rktio_t *rktio, int fd, int modes, rktio_fd_t *existing_rfd);
+static rktio_fd_t *finish_unix_fd_creation(rktio_t *rktio, int fd, int modes, rktio_fd_t *existing_rfd,
+                                           int perm_bits, int replace_perms);
 #endif
 
 #ifdef RKTIO_USE_PENDING_OPEN
-static rktio_fd_t *open_via_thread(rktio_t *rktio, const char *filename, int modes, int flags);
+static rktio_fd_t *open_via_thread(rktio_t *rktio, const char *filename, int modes, int flags,
+                                   int perm_bits, int replace_perms);
 static int do_pending_open_release(rktio_t *rktio, struct open_in_thread_t *data, int close_fd);
 #endif
 
@@ -113,7 +115,7 @@ static rktio_fd_t *open_read(rktio_t *rktio, const char *filename, int modes)
 #endif
 }
 
-static rktio_fd_t *open_write(rktio_t *rktio, const char *filename, int modes)
+static rktio_fd_t *open_write(rktio_t *rktio, const char *filename, int modes, int perm_bits)
 {
 #ifdef RKTIO_SYSTEM_UNIX
   int fd;
@@ -130,24 +132,25 @@ static rktio_fd_t *open_write(rktio_t *rktio, const char *filename, int modes)
     flags |= O_EXCL;
 
   do {
-    fd = open(filename, flags | RKTIO_NONBLOCKING | RKTIO_BINARY, 0666);
+    fd = open(filename, flags | RKTIO_NONBLOCKING | RKTIO_BINARY, perm_bits);
   } while ((fd == -1) && (errno == EINTR));
 
   if (errno == ENXIO) {
     /* FIFO with no reader? */
 #ifdef RKTIO_USE_PENDING_OPEN
-    return open_via_thread(rktio, filename, modes, flags | RKTIO_BINARY);
+    return open_via_thread(rktio, filename, modes, flags | RKTIO_BINARY,
+                           perm_bits, modes & RKTIO_OPEN_REPLACE_PERMS);
 #else
     /* Try opening in RW mode: */
     flags -= O_WRONLY;
     flags |= O_RDWR;
     do {
-      fd = open(filename, flags | RKTIO_NONBLOCKING | RKTIO_BINARY, 0666);
+      fd = open(filename, flags | RKTIO_NONBLOCKING | RKTIO_BINARY, perm_bits);
     } while ((fd == -1) && (errno == EINTR));
 #endif
   }
 
-  return finish_unix_fd_creation(rktio, fd, modes, NULL);
+  return finish_unix_fd_creation(rktio, fd, modes, NULL, perm_bits, modes & RKTIO_OPEN_REPLACE_PERMS);
 #endif
 #ifdef RKTIO_SYSTEM_WINDOWS
   HANDLE fd;
@@ -167,13 +170,16 @@ static rktio_fd_t *open_write(rktio_t *rktio, const char *filename, int modes)
 
   wp = WIDE_PATH_temp(filename);
   if (!wp) return NULL;
-
+    
   fd = CreateFileW(wp,
 		   GENERIC_WRITE | ((modes & RKTIO_OPEN_READ) ? GENERIC_READ : 0),
 		   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
 		   NULL,
 		   hmode,
-		   FILE_FLAG_BACKUP_SEMANTICS, /* lets us detect directories in NT */
+		   (FILE_FLAG_BACKUP_SEMANTICS /* lets us detect directories in NT */
+                    | ((perm_bits & RKTIO_PERMISSION_WRITE)
+                       ? 0
+                       : FILE_ATTRIBUTE_READONLY)),
 		   NULL);
 
   if (fd == INVALID_HANDLE_VALUE) {
@@ -186,6 +192,28 @@ static rktio_fd_t *open_write(rktio_t *rktio, const char *filename, int modes)
       return NULL;
     } else {
       get_windows_error();
+      return NULL;
+    }
+  }
+
+  if (modes & RKTIO_OPEN_REPLACE_PERMS) {
+    FILE_BASIC_INFO info;
+    if (GetFileInformationByHandleEx(fd, FileBasicInfo, &info, sizeof(info))) {
+      DWORD attr = ((perm_bits & RKTIO_PERMISSION_WRITE) ? 0 : FILE_ATTRIBUTE_READONLY);
+      if ((info.FileAttributes & FILE_ATTRIBUTE_READONLY) != attr) {
+        if (attr)
+          info.FileAttributes |= attr;
+        else
+          info.FileAttributes -= attr;
+        if (!SetFileInformationByHandle(fd, FileBasicInfo, &info, sizeof(info))) {
+          get_windows_error();
+          CloseHandle(fd);
+          return NULL;
+        }
+      }
+    } else {
+      get_windows_error();
+      CloseHandle(fd);
       return NULL;
     }
   }
@@ -219,7 +247,8 @@ static rktio_fd_t *open_write(rktio_t *rktio, const char *filename, int modes)
 }
 
 #ifdef RKTIO_SYSTEM_UNIX
-static rktio_fd_t *finish_unix_fd_creation(rktio_t *rktio, int fd, int modes, rktio_fd_t *existing_rfd)
+static rktio_fd_t *finish_unix_fd_creation(rktio_t *rktio, int fd, int modes, rktio_fd_t *existing_rfd,
+                                           int perm_bits, int replace_perms)
 {
   struct stat buf;
   int cr;
@@ -242,6 +271,19 @@ static rktio_fd_t *finish_unix_fd_creation(rktio_t *rktio, int fd, int modes, rk
     }
   }
 
+  if (replace_perms) {
+    do {
+      cr = fchmod(fd, perm_bits);
+    } while ((cr == -1) && (errno == EINTR));
+    if (cr == -1) {
+      get_posix_error();
+      do {
+        cr = close(fd);
+      } while ((cr == -1) && (errno == EINTR));
+      return NULL;
+    }
+  }
+
   do {
     cr = fstat(fd, &buf);
   } while ((cr == -1) && (errno == EINTR));
@@ -258,20 +300,27 @@ static rktio_fd_t *finish_unix_fd_creation(rktio_t *rktio, int fd, int modes, rk
             ? RKTIO_OPEN_REGFILE
             : RKTIO_OPEN_NOT_REGFILE);
 
+# ifdef RKTIO_USE_PENDING_OPEN
   if (existing_rfd) {
     rktio_update_system_fd(rktio, existing_rfd, fd, modes);
     return existing_rfd;
   } else
+# endif
     return rktio_system_fd(rktio, fd, modes);
 }
 #endif
 
-rktio_fd_t *rktio_open(rktio_t *rktio, const char *filename, int modes)
+rktio_fd_t *rktio_open_with_create_permissions(rktio_t *rktio, const char *filename, int modes, int perm_bits)
 {
   if (modes & RKTIO_OPEN_WRITE)
-    return open_write(rktio, filename, modes);
+    return open_write(rktio, filename, modes, perm_bits);
   else
     return open_read(rktio, filename, modes);
+}
+
+rktio_fd_t *rktio_open(rktio_t *rktio, const char *filename, int modes)
+{
+  return rktio_open_with_create_permissions(rktio, filename, modes, RKTIO_DEFAULT_PERM_BITS);
 }
 
 /*========================================================================*/
@@ -433,6 +482,8 @@ typedef struct open_in_thread_t {
   pthread_cond_t ready_cond; /* wait until helper thread is ready (including cleanup) */
   char *filename;
   int flags;
+  int perm_bits;
+  int replace_perms;
   int done;
   int fd;
   int errval;
@@ -498,7 +549,7 @@ static void *do_open_in_thread(void *_data)
      canceled before `open` returns, but not both (otherwise there
      could be a space leak) */
   do {
-    fd = open(data->filename, data->flags, 0666);
+    fd = open(data->filename, data->flags, data->perm_bits);
   } while ((fd == -1) && (errno == EINTR));
 
   pthread_setcanceltype(PTHREAD_CANCEL_DISABLE, NULL);
@@ -517,7 +568,8 @@ static void *do_open_in_thread(void *_data)
   return NULL;
 }
 
-static rktio_fd_t *open_via_thread(rktio_t *rktio, const char *filename, int modes, int flags)
+static rktio_fd_t *open_via_thread(rktio_t *rktio, const char *filename, int modes, int flags,
+                                   int perm_bits, int replace_perms)
 {
   open_in_thread_t *data;
 
@@ -527,6 +579,8 @@ static rktio_fd_t *open_via_thread(rktio_t *rktio, const char *filename, int mod
 
   data->filename = strdup(filename);
   data->flags = flags;
+  data->perm_bits = perm_bits;
+  data->replace_perms = replace_perms;
   pthread_mutex_init(&data->lock, NULL);
   pthread_cond_init(&data->ready_cond, NULL);
 
@@ -558,8 +612,10 @@ int rktio_pending_open_poll(rktio_t *rktio, rktio_fd_t *existing_rfd, struct ope
       return data->errval;
     else {
       int fd = data->fd;
+      int perm_bits = data->perm_bits;
+      int replace_perms = data->replace_perms;
       (void)do_pending_open_release(rktio, data, 0);
-      if (!finish_unix_fd_creation(rktio, fd, 0, existing_rfd)) {
+      if (!finish_unix_fd_creation(rktio, fd, 0, existing_rfd, perm_bits, replace_perms)) {
         /* Posix error must be saved in `rktio` */
         return rktio->errid;
       }

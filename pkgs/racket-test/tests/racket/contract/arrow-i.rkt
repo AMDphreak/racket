@@ -2,7 +2,8 @@
 (require "test-util.rkt")
 
 (parameterize ([current-contract-namespace
-                (make-basic-contract-namespace 'racket/contract/parametric)])
+                (make-basic-contract-namespace 'racket/contract/parametric
+                                               'racket/contract/combinator)])
   (define exn:fail:contract:blame? (contract-eval 'exn:fail:contract:blame?))
 
   (test/no-error '(->i ([x integer?]) ([y integer?]) any))
@@ -141,6 +142,11 @@
    '->i-stx23
    #'(->i ([f (f x) any/c]) (#:x [x any/c]) [res any/c]))
   
+  (contract-syntax-error-test
+   '->i-stx24
+   #'(let ([p (make-parameter #f)])
+       (->i ([x integer?]) #:param (x) p any)))
+
   (test/spec-passed
    '->i1
    '((contract (->i () () [x number?]) (lambda () 1) 'pos 'neg)))
@@ -1272,6 +1278,42 @@
    '(2 0 0 1 4 5 3 3 6)
    do-not-double-wrap)
   
+  (test/spec-passed/result
+   '->i62
+   '(let* ([p (make-parameter 0)]
+           [f (contract (->i ([x integer?])
+                             #:param (x) p x
+                             any)
+                        (λ (_) (p)) 'pos 'neg)])
+      (list (f 1) (f 2)))
+   '(1 2))
+
+  (test/spec-passed/result
+   '->i63
+   '(let* ([p (make-parameter 0)]
+           [f (contract (->i (#:x [x integer?])
+                             (#:y [y integer?])
+                             #:rest [rst (listof integer?)]
+                             #:param (x y rst) p
+                             (+ x (if (unsupplied-arg? y) 0 y) (apply + rst))
+                             any)
+                        (λ (#:x x #:y [y -100]. rst) (p)) 'pos 'neg)])
+      (list (f #:x 1 10 13) (f 10 8 #:x 2 #:y 1)))
+   '(24 21))
+
+  (test/spec-passed/result
+   '->i64
+   '(let* ([p1 (make-parameter 0)]
+           [p2 (make-parameter 0)]
+           [f (contract (->i ([x integer?]
+                              [y integer?])
+                             #:param (x) p1 (add1 x)
+                             #:param (y) p2 (add1 y)
+                             any)
+                        (λ (_x _y) (list (p1) (p2))) 'pos 'neg)])
+      (list (f 1 2) (f 3 4)))
+   '((2 3) (4 5)))
+
   (test/pos-blame
    '->i-arity1
    '(contract (->i ([x number?]) () any) (λ () 1) 'pos 'neg))
@@ -1789,6 +1831,14 @@
                'pos
                'neg)
      1))
+
+  (test/neg-blame
+   '->i-neg-party-is-being-passed-properly
+   '((contract (-> (->i () any) any)
+               (λ (x) 1)
+               'pos
+               'neg)
+     0))
   
   ;; this used to cause a runtime error in the code that parses ->i
   (test/no-error '(->i ([x () any/c] [y (x) any/c]) any))
@@ -1821,7 +1871,7 @@
    #t)
 
   (test/spec-passed/result
-   'shortcut-error-message
+   'shortcut-error-message-1
    '(with-handlers ([exn:fail?
                      (λ (x) (define m
                               (regexp-match #rx"expected: ([^\n]*)\n"
@@ -1834,7 +1884,29 @@
                   (λ (y) 1)
                   'pos 'neg)
         1))
-   "(and/c number? (>/c 1))")
+   "a number strictly greater than 1")
+
+  (contract-error-test
+   'shortcut-error-message-2
+   '(let ()
+      (define ctc
+        (make-flat-contract
+         #:first-order (λ (x) #f)
+         #:late-neg-projection
+         (λ (b)
+           (λ (x neg-party)
+             (raise-blame-error
+              b x #:missing-party neg-party
+              "an informative error message")))))
+      ((contract (->i ([x any/c])
+                      [_ (x) ctc])
+                 (λ (x) 42)
+                 'pos 'neg)
+       10))
+    (λ (x)
+      (and (exn:fail:contract:blame? x)
+           (regexp-match? #rx"an informative error message"
+                          (exn-message x)))))
 
   (test/spec-passed/result
    'two-underscores
@@ -1858,5 +1930,4 @@
             55 66))
      list)
    '(1 2 3 4))
-      
   )

@@ -1,11 +1,20 @@
 #lang racket/base
-(require racket/linklet)
+(require racket/linklet
+         compiler/zo-parse
+         compiler/zo-marshal
+         compiler/faslable-correlated
+         racket/phase+space)
 
 ;; Re-implement just enough deserialization to deal with 'decl
 ;; linklets, so we can get `required`, etc.
 
 (provide deserialize-instance
-         (struct-out module-use))
+         (struct-out module-use)
+
+         deserialize-requires-and-provides
+
+         (struct-out faslable-correlated-linklet)
+         strip-correlated)
 
 (struct module-use (module phase))
 (struct provided (binding protected? syntax?))
@@ -76,13 +85,19 @@
           (values (reverse rev) rest)]
          [(#:mpi)
           (values (vector-ref mpis (cadr r)) (cddr r))]
-         [(#:hash #:hasheq #:hasheqv)
+         [(#:hash #:hashalw #:hasheq #:hasheqv #:hasheqv/phase+space)
           (define ht (case i
                        [(#:hash) (hash)]
+                       [(#:hashalw) (hashalw)]
                        [(#:hasheq) (hasheq)]
-                       [(#:hasheqv) (hasheqv)]))
-          (for/fold ([ht ht] [r (cddr r)]) ([i (in-range (cadr r))])
-            (define-values (k k-rest) (loop r))
+                       [(#:hasheqv  #:hasheqv/phase+space) (hasheqv)]))
+          (for/fold ([ht ht] [r (cddr r)]) ([j (in-range (cadr r))])
+            (define-values (k k-rest)
+              (if (and (eq? i '#:hasheqv/phase+space)
+                       (pair? (car r)))
+                  (values (phase+space (caar r) (cdar r))
+                          (cdr r))
+                  (loop r)))
             (define-values (v v-rest) (loop k-rest))
             (values (hash-set ht k v) v-rest))]
          [(#:provided)
@@ -101,7 +116,10 @@
                  (string? i)
                  (null? i)
                  (hash? i)
-                 (boolean? i))
+                 (boolean? i)
+                 (and (pair? i)
+                      (phase? (car i))
+                      (symbol? (cdr i))))
              (values i (cdr r))]
             [else
              (error 'deserialize "unsupported instruction: ~s" i)])])])))
@@ -119,3 +137,56 @@
                  'syntax-shift-phase-level syntax-shift-phase-level
                  'module-use module-use
                  'deserialize deserialize))
+
+(define (make-eager-instance)
+  (make-instance 'instance #f 'constant
+                 '.namespace (current-namespace)
+                 '.dest-phase 0
+                 '.self (module-path-index-join #f #f)
+                 '.bulk-binding-registry #f
+                 '.inspector (current-inspector)
+                 'swap-top-level-scopes (lambda (s original-scopes-s new-ns) s)))
+
+;; ----------------------------------------
+
+;; Returns (values mpi-vector requires recur-requires provides phase-to-link-modules)
+(define (deserialize-requires-and-provides l)
+  (define ht (linkl-bundle-table l))
+  (let ([data-l (hash-ref ht 'data #f)]  ; for module
+        [decl-l (hash-ref ht 'decl #f)]  ; for module
+        [link-l (hash-ref ht 'link #f)]) ; for top level
+    (define (zo->linklet l)
+      (cond
+        [(faslable-correlated-linklet? l)
+         (compile-linklet (strip-correlated (faslable-correlated-linklet-expr l))
+                          (faslable-correlated-linklet-name l))]
+        [(linklet? l) l]
+        [else
+         (let ([o (open-output-bytes)])
+           (zo-marshal-to (linkl-bundle (hasheq 'data l)) o)
+           (parameterize ([read-accept-compiled #t])
+             (define b (read (open-input-bytes (get-output-bytes o))))
+             (hash-ref (linklet-bundle->hash b) 'data)))]))
+    (cond
+      [(and data-l
+            decl-l)
+       (define data-i (instantiate-linklet (zo->linklet data-l)
+                                           (list deserialize-instance)))
+       (define decl-i (instantiate-linklet (zo->linklet decl-l)
+                                           (list deserialize-instance
+                                                 data-i)))
+       (values (instance-variable-value data-i '.mpi-vector)
+               (instance-variable-value decl-i 'requires)
+               (instance-variable-value decl-i 'recur-requires)
+               (instance-variable-value decl-i 'provides)
+               (instance-variable-value decl-i 'phase-to-link-modules))]
+      [link-l
+       (define link-i (instantiate-linklet (zo->linklet link-l)
+                                           (list deserialize-instance
+                                                 (make-eager-instance))))
+       (values (instance-variable-value link-i '.mpi-vector)
+               '()
+               '()
+               '#hasheqv()
+               (instance-variable-value link-i 'phase-to-link-modules))]
+      [else (values '#() '() '() '#hasheqv() '#hasheqv())])))

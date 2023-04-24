@@ -6,7 +6,9 @@
          compiler/zo-structs
          racket/dict
          racket/set
-         racket/fasl)
+         racket/fasl
+         ffi/unsafe/vm
+         "private/opaque.rkt")
 
 (provide zo-parse)
 (provide (all-from-out compiler/zo-structs))
@@ -281,22 +283,23 @@
     [29 closure]
     [30 delayed]
     [31 prefab]
-    [32 let-one-unused]
-    [33 shared]
-    [34 toplevel]
-    [35 begin]
-    [36 begin0]
-    [37 let-value]
-    [38 let-void]
-    [39 letrec]
-    [40 wcm]
-    [41 define-values]
-    [42 set-bang]
-    [43 varref]
-    [44 apply-values]
-    [45 other-form]
-    [46 srcloc]
-    [47 74 small-number]
+    [32 prefab-type]
+    [33 let-one-unused]
+    [34 shared]
+    [35 toplevel]
+    [36 begin]
+    [37 begin0]
+    [38 let-value]
+    [39 let-void]
+    [40 letrec]
+    [41 wcm]
+    [42 define-values]
+    [43 set-bang]
+    [44 varref]
+    [45 apply-values]
+    [46 other-form]
+    [47 srcloc]
+    [48 74 small-number]
     [74 92 small-symbol]
     [92 ,(+ 92 small-list-max) small-proper-list]
     [,(+ 92 small-list-max) 192 small-list]
@@ -502,6 +505,9 @@
            ; XXX This is faster than apply+->list, but can we avoid allocating the vector?
            (call-with-values (lambda () (vector->values v))
                              make-prefab-struct))]
+        [(prefab-type)
+         (let ([v (read-compact cp)])
+           (prefab-key->struct-type v (read-compact-number cp)))]
         [(hash-table)
          ; XXX Allocates an unnessary list (maybe use for/hash(eq))
          (let ([eq (read-compact-number cp)]
@@ -509,7 +515,8 @@
            ((case eq
               [(0) make-hasheq-placeholder]
               [(1) make-hash-placeholder]
-              [(2) make-hasheqv-placeholder])
+              [(2) make-hasheqv-placeholder]
+              [(3) make-hashalw-placeholder])
             (for/list ([i (in-range len)])
               (cons (read-compact cp)
                     (read-compact cp)))))]
@@ -805,6 +812,7 @@
     [else
      (error 'zo-parse "bad file format specifier")]))
 
+;; returns a hash table representing linklet bundle content
 (define (zo-parse-top port vm [check-end? #t])
 
   ;; Skip module hash code
@@ -859,9 +867,17 @@
      
      (make-reader-graph (read-compact cp))]
     [(equal? vm #"chez-scheme")
-     (hash
-      'opaque
-      (read-bytes (read-simple-number port) port))]
+     (define len (read-simple-number port))
+     (define bstr (read-bytes len port))
+     (cond
+       [(eq? 'chez-scheme (system-type 'vm))
+        (hash-set ((vm-primitive 'read-linklet-bundle-hash)
+                   (open-input-bytes (bytes-append
+                                      (integer->integer-bytes len 4 #f #f)
+                                      bstr)))
+                  'opaque (opaque bstr))]
+       [else
+        (hash 'opaque bstr)])]
     [else
      (error 'zo-parse "cannot parse for virtual machine: ~s" vm)]))
 

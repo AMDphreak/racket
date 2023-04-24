@@ -48,7 +48,9 @@
                        #:serializable? [serializable? #t]
                        #:module-prompt? [module-prompt? #f]
                        #:to-correlated-linklet? [to-correlated-linklet? #f]
-                       #:cross-linklet-inlining? [cross-linklet-inlining? #t])
+                       #:optimize-linklet? [optimize-linklet? #t]
+                       #:unsafe?-box [unsafe?-box #f]
+                       #:realm [realm (current-compile-realm)])
   (define phase (compile-context-phase cctx))
   (define self (compile-context-self cctx))
   
@@ -236,7 +238,7 @@
     (for/hash ([phase (in-list phases-in-order)])
       (define header (hash-ref phase-to-header phase #f))
       (define-values (link-module-uses imports extra-inspectorsss def-decls)
-        (generate-links+imports header phase cctx cross-linklet-inlining?))
+        (generate-links+imports header phase cctx optimize-linklet?))
       (values phase (link-info link-module-uses imports extra-inspectorsss def-decls))))
   
   ;; Generate the phase-specific linking units
@@ -279,9 +281,11 @@
                                    #:serializable? serializable?
                                    #:module-prompt? module-prompt?
                                    #:module-use*s module-use*s
-                                   #:cross-linklet-inlining? cross-linklet-inlining?
+                                   #:optimize-linklet? optimize-linklet?
+                                   #:unsafe? (and unsafe?-box (unbox unsafe?-box))
                                    #:load-modules? #f
-                                   #:namespace (compile-context-namespace cctx))]))
+                                   #:namespace (compile-context-namespace cctx)
+                                   #:realm realm)]))
       (values phase (cons linklet new-module-use*s))))
   
   (define body-linklets
@@ -300,7 +304,7 @@
                 [(extra-inspectorsss) (in-value (module-uses-extract-extra-inspectorsss
                                                  (cdr l+mu*s)
                                                  (car l+mu*s)
-                                                 (and cross-linklet-inlining?
+                                                 (and optimize-linklet?
                                                       (not to-correlated-linklet?))
                                                  (length body-imports)))]
                 #:when extra-inspectorsss)
@@ -355,20 +359,23 @@
 ;; ----------------------------------------
 
 ;; Handle the `define-syntaxes`-with-zero-results hack for the top level;
-;; beware that we make two copies of `finish`
+;; beware that we may make two copies of `finish`, and we assume that `finish`
+;; is a `begin` form
 (define (generate-top-level-define-syntaxes gen-syms rhs transformer-set!s finish)
   `(call-with-values
     (lambda () ,rhs)
     (case-lambda
-      [,gen-syms
-       (begin
-         ,@transformer-set!s
-         ,finish
-         (void))]
+      ,@(if (null? gen-syms) ; avoid unnecessary duplication if no `gen-syms`
+            '()
+            `([,gen-syms
+               (begin
+                 ,@transformer-set!s
+                 ,@(cdr finish)
+                 (void))]))
       [()
        (let-values ([,gen-syms (values ,@(for/list ([s (in-list gen-syms)]) `'#f))])
          (begin
-           ,finish
+           ,@(cdr finish)
            (void)))]
       [args
        ;; Provoke the wrong-number-of-arguments error:
@@ -396,20 +403,28 @@
                                 #:serializable? serializable?
                                 #:module-prompt? module-prompt?
                                 #:module-use*s module-use*s
-                                #:cross-linklet-inlining? cross-linklet-inlining?
+                                #:optimize-linklet? optimize-linklet?
+                                #:unsafe? unsafe?
                                 #:load-modules? load-modules?
-                                #:namespace namespace)
+                                #:namespace namespace
+                                #:realm realm)
   (define-values (linklet new-module-use*s)
     (performance-region
      ['compile '_ 'linklet]
      ((lambda (l name keys getter)
-        (compile-linklet l name keys getter (if serializable?
-                                                (if module-prompt?
-                                                    '(serializable use-prompt)
-                                                    '(serializable))
-                                                (if module-prompt?
-                                                    '(use-prompt)
-                                                    '()))))
+        (parameterize ([current-compile-realm realm])
+          (compile-linklet l name keys getter (let ([flags (if serializable?
+                                                               (if module-prompt?
+                                                                   '(serializable use-prompt)
+                                                                   '(serializable))
+                                                               (if module-prompt?
+                                                                   '(use-prompt)
+                                                                   (if optimize-linklet?
+                                                                       '()
+                                                                       '(quick))))])
+                                                (if unsafe?
+                                                    (cons 'unsafe flags)
+                                                    flags)))))
       body-linklet
       'module
       ;; Support for cross-module optimization starts with a vector
@@ -421,7 +436,7 @@
       ;; To complete cross-module support, map a key (which is a `module-use`)
       ;; to a linklet and an optional vector of keys for that linklet's
       ;; imports:
-      (make-module-use-to-linklet cross-linklet-inlining?
+      (make-module-use-to-linklet optimize-linklet?
                                   load-modules?
                                   namespace
                                   get-module-linklet-info
@@ -431,14 +446,14 @@
 
 ;; ----------------------------------------
 
-(define (make-module-use-to-linklet cross-linklet-inlining? load-modules?
+(define (make-module-use-to-linklet optimize-linklet? load-modules?
                                     ns get-module-linklet-info init-mu*s)
   ;; Inlining might reach the same module though different indirections;
   ;; use a consistent `module-use` value so that the compiler knows to
   ;; collapse them to a single import
   (define mu*-intern-table (make-hash))
   (define (intern-module-use* mu*)
-    (define mod-name (module-path-index-resolve (module-use-module mu*)))
+    (define mod-name (module-path-index-resolve (module-use-module mu*) load-modules?))
     (define existing-mu* (hash-ref mu*-intern-table (cons mod-name (module-use-phase mu*)) #f))
     (cond
       [existing-mu*
@@ -458,7 +473,7 @@
       ;; that would change the overall protocol for module or
       ;; top-level linklets), but it can describe shapes.
       (values mu*-or-instance #f)]
-     [(not cross-linklet-inlining?)
+     [(not optimize-linklet?)
       ;; Although we let instances through, because that's cheap,
       ;; don't track down linklets and allow inlining of functions
       (values #f #f)]

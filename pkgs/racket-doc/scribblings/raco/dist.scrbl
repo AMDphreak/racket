@@ -4,11 +4,21 @@
 @title[#:tag "exe-dist"]{@exec{raco distribute}: Sharing Stand-Alone Executables}
 
 The @exec{raco distribute} command combines a
-stand-alone executable created by @exec{raco exe} with all of the
+stand-alone executable created by @seclink["exe"]{@exec{raco exe}} with all of the
 shared libraries that are needed to run it, along with any run-time
 files declared via @racket[define-runtime-path].  The resulting
 package can be moved to other machines that run the same operating
 system.
+
+@margin-note{On Windows and Mac OS, native libraries tend to be
+included with the output of @exec{raco distribute}. On Unix platforms,
+native libraries tend not to be included, so system libraries will be
+used on the host machine. The difference is whether a Racket
+installation itself includes bundled native libraries or relies on
+system-installed libraries. Adding a symbolic link in Racket's
+@filepath{lib} directory to a system-installed library causes that
+library to be included with a distribution directory created by
+@exec{raco distribute}; see also @racket[define-runtime-path].}
 
 After the @exec{raco distribute} command, supply a directory to
 contain the combined files for a distribution. Each command-line
@@ -20,9 +30,16 @@ executables can be packaged together. For example, on Windows,
 creates a directory @filepath{greetings} (if the directory doesn't
 exist already), and it copies the executables @filepath{hello.exe} and
 @filepath{goodbye.exe} into @filepath{greetings}. It also creates a
-@filepath{lib} sub-directory in @filepath{greetings} to contain DLLs,
-and it adjusts the copied @filepath{hello.exe} and
-@filepath{goodbye.exe} to use the DLLs in @filepath{lib}.
+@filepath{lib} sub-directory in @filepath{greetings} if needed to
+contain DLLs, and in that case it adjusts the copied
+@filepath{hello.exe} and @filepath{goodbye.exe} to use the DLLs in
+@filepath{lib}.
+
+The number of needed support files depends in part on the way that
+executables for a distribution are created. Supplying
+@DFlag{embed-dlls} or @DFlag{orig-exe} to @exec{raco exe} reduces the
+need for support files, but at the expense of making the distribution
+larger if it contains multiple executables.
 
 The layout of files within a distribution directory is
 platform-specific:

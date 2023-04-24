@@ -56,7 +56,7 @@
    codes are customized to the probabilities in the current block, and so
 <   can code it much better than the pre-determined fixed codes.
  
-   The Huffman codes themselves are decoded using a mutli-level table
+   The Huffman codes themselves are decoded using a multi-level table
    lookup, in order to maximize the speed of decoding plus the speed of
    building the decoding tables.  See the comments below that precede the
    lbits and dbits tuning parameters.
@@ -268,6 +268,7 @@
   (define buffer (make-bytes BUFFER-SIZE))
   (define buf-max 0) ; number of bytes in buffer
   (define buf-pos 0) ; index into buffer = number of used peeked bytes
+  (define hit-eof? #f)
 
   (define bb 0) ; /* bit buffer */
   (define bk 0) ; /* bits in bit buffer */
@@ -288,13 +289,19 @@
             (set! buf-pos (min MAX-LOOKAHEAD buf-max)))
           ;; Peek (not read) some available bytes:
           (let ([got (peek-bytes-avail! buffer buf-pos #f input-port buf-pos BUFFER-SIZE)])
-            (if (eof-object? got)
-                ;; Treat an EOF as a -1 "byte":
-                (begin
-                  (bytes-set! buffer buf-pos 255)
-                  (set! buf-max (add1 buf-pos)))
-                ;; Got normal bytes:
-                (set! buf-max (+ buf-pos got))))
+            (cond
+              [(eof-object? got)
+               (set! hit-eof? #t)
+               ;; Treat an EOF as a -1 "byte":
+               (bytes-set! buffer buf-pos 255)
+               (set! buf-max (add1 buf-pos))]
+              [(fixnum? got)
+               ;; Got normal bytes:
+               (set! buf-max (+ buf-pos got))]
+              [else
+               (raise-arguments-error 'inflate
+                                      "non-character in an unsupported context"
+                                      "port" input-port)]))
           (READBITS n))
         (let ([v (bytes-ref buffer buf-pos)])
           (set! buf-pos (add1 buf-pos))
@@ -658,7 +665,8 @@
 		(check-flush)
 		(unless (zero? n)
 		  (loop)))))
-	(loop))))
+        (unless hit-eof?
+          (loop)))))
   
   (define (inflate_stored)
     ; /* "decompress" an inflated type 0 (stored) block. */

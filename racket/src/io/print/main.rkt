@@ -1,6 +1,9 @@
 #lang racket/base
 (require racket/flonum
          racket/fixnum
+         racket/symbol
+         racket/keyword
+         racket/unsafe/undefined
          "../common/check.rkt"
          "../port/output-port.rkt"
          "../port/input-port.rkt"
@@ -8,6 +11,7 @@
          "../port/bytes-output.rkt"
          "../port/bytes-port.rkt"
          "../port/parameter.rkt"
+         "../error/message.rkt"
          "custom-write.rkt"
          "write-with-max.rkt"
          "string.rkt"
@@ -119,19 +123,19 @@
   (set! do-global-print
         (lambda (who v o [quote-depth-in PRINT-MODE/UNQUOTED] [max-length #f])
           (define global-print (param))
-          (define quote-depth (if (print-as-expression) quote-depth-in WRITE-MODE))
           (cond
             [(eq? global-print default-value)
+             (define quote-depth (if (print-as-expression) quote-depth-in WRITE-MODE))
              (do-print who v o quote-depth max-length)]
             [(not max-length)
-             (global-print v o quote-depth)]
+             (global-print v o quote-depth-in)]
             [else
              ;; There's currently no way to communicate `max-length`
              ;; to the `global-print` function, but we should only get
              ;; here when `o` is a string port for errors, so write to
              ;; a fresh string port and truncate as needed.
              (define o2 (open-output-bytes))
-             (global-print v o2 quote-depth)
+             (global-print v o2 quote-depth-in)
              (define bstr (get-output-bytes o2))
              (if ((bytes-length bstr) . <= . max-length)
                  (unsafe-write-bytes who bstr o)
@@ -156,12 +160,20 @@
 (define (sub3 n) (and n (- n 3)))
 
 (define (dots max-length o)
-  (when (eq? max-length 'full)
-    (write-string "..." o)))
+  (cond
+    [(eq? max-length 'full)
+     (write-string "..." o)]
+    [(pair? max-length)
+     ;; pending bytes fit after all
+     (write-bytes (cdr max-length) o)]
+    [else (void)]))
 
 ;; ----------------------------------------
 
-;; Returns the max length that is still available
+;; Returns the max length that is still available, where 'full
+;; means that more than three items would otherwise have been
+;; written, and a pair indicates that some bytes/characters are
+;; pending until the rest of the writes are determined
 (define (p who v mode o max-length graph config)
   (cond
     [(and graph (hash-ref graph v #f))
@@ -200,6 +212,7 @@
               (hash? v)
               (prefab-struct-key v)
               (and (custom-write? v)
+                   (not (struct-type? v))
                    (not (printable-regexp? v))
                    (not (eq? 'self (custom-print-quotable-accessor v 'self))))))
      ;; Since this value is not marked for constructor mode,
@@ -226,14 +239,14 @@
        [else (print-bytes v o max-length)])]
     [(symbol? v)
      (cond
-       [(eq? mode DISPLAY-MODE) (write-string/max (symbol->string v) o max-length)]
+       [(eq? mode DISPLAY-MODE) (write-string/max (symbol->immutable-string v) o max-length)]
        [else (print-symbol v o max-length config)])]
     [(keyword? v)
      (let ([max-length (write-string/max "#:" o max-length)])
        (cond
-         [(eq? mode DISPLAY-MODE) (write-string/max (keyword->string v) o max-length)]
+         [(eq? mode DISPLAY-MODE) (write-string/max (keyword->immutable-string v) o max-length)]
          [else
-          (print-symbol (string->symbol (keyword->string v)) o max-length config
+          (print-symbol (string->symbol (keyword->immutable-string v)) o max-length config
                         #:for-keyword? #t)]))]
     [(char? v)
      (cond
@@ -255,6 +268,21 @@
      (print-vector p who v mode o max-length graph config "fl" flvector-length flvector-ref equal?)]
     [(fxvector? v)
      (print-vector p who v mode o max-length graph config "fx" fxvector-length fxvector-ref eq?)]
+    [(stencil-vector? v)
+     (define lst (let loop ([i 0])
+                   (if (= i (stencil-vector-length v))
+                       '()
+                       (cons (stencil-vector-ref v i) (loop (add1 i))))))
+     (print-list p who lst
+                 (if (eq? mode DISPLAY-MODE) DISPLAY-MODE WRITE-MODE)
+                 o max-length graph config
+                 (string-append "#<stencil "
+                                (number->string (stencil-vector-mask v))
+                                (if (eqv? 0 (stencil-vector-mask v))
+                                    ""
+                                    ": "))
+                 #f
+                 ">")]
     [(box? v)
      (cond
        [(config-get config print-box)
@@ -278,6 +306,7 @@
            (define prefix (cond
                             [(hash-eq? v) "(hasheq"]
                             [(hash-eqv? v) "(hasheqv"]
+                            [(hash-equal-always? v) "(hashalw"]
                             [else "(hash"]))
            (print-list p who l mode o max-length graph config #f prefix)]
           [else
@@ -287,12 +316,14 @@
         (write-string/max "#<hash>" o max-length)])]
     [(and (eq? mode WRITE-MODE)
           (not (config-get config print-unreadable))
+          (not (prefab-struct-key v))
           ;; Regexps are a special case: custom writers that produce readable input
           (not (printable-regexp? v)))
      (fail-unreadable who v)]
     [(mpair? v)
      (print-mlist p who v mode o max-length graph config)]
-    [(custom-write? v)
+    [(and (not (struct-type? v))
+          (custom-write? v))
      (let ([o/m (make-output-port/max o max-length)])
        (set-port-handlers-to-recur!
         o/m
@@ -304,10 +335,10 @@
           (config-get config print-struct))
      (cond
        [(eq? mode PRINT-MODE/UNQUOTED)
-        (define l (vector->list (struct->vector v)))
+        (define l (vector->list (struct->vector v struct-dots)))
         (define alt-list-constructor
           ;; strip "struct:" from the first element of `l`:
-          (string-append "(" (substring (symbol->string (car l)) 7)))
+          (string-append "(" (substring (symbol->immutable-string (car l)) 7)))
         (print-list p who (cdr l) mode o max-length graph config #f alt-list-constructor)]
        [(prefab-struct-key v)
         => (lambda (key)
@@ -329,22 +360,29 @@
      (print-named "input-port" v mode o max-length)]
     [(core-output-port? v)
      (print-named "output-port" v mode o max-length)]
+    [(continuation-prompt-tag? v)
+     (print-named "continuation-prompt-tag" v mode o max-length)]
     [(unquoted-printing-string? v)
      (write-string/max (unquoted-printing-string-value v) o max-length)]
+    [(eq? v unsafe-undefined)
+     (write-string/max "#<unsafe-undefined>" o max-length)]
     [else
      ;; As a last resort, fall back to the host `format`:
      (write-string/max (format "~s" v) o max-length)]))
 
 (define (fail-unreadable who v)
   (raise (exn:fail
-          (string-append (symbol->string who)
-                         ": printing disabled for unreadable value"
-                         "\n  value: "
-                         (parameterize ([print-unreadable #t])
-                           ((error-value->string-handler) v (error-print-width))))
+          (error-message->string
+           who
+           (string-append "printing disabled for unreadable value"
+                          "\n  value: "
+                          (parameterize ([print-unreadable #t])
+                            ((error-value->string-handler) v (error-print-width)))))
           (current-continuation-marks))))
 
 (define (check-unreadable who config mode v)
   (when (and (eq? mode WRITE-MODE)
              (not (config-get config print-unreadable)))
     (fail-unreadable who v)))
+
+(define struct-dots (unquoted-printing-string "..."))

@@ -3,6 +3,8 @@
          racket/port
          racket/system
          racket/match
+         compiler/find-exe
+         syntax/parse/define
          (for-syntax racket/base
                      syntax/parse))
 
@@ -29,13 +31,15 @@
 (define-syntax-rule (check-case m e ...)
   (exception-if-failed test-case m e ...))
 
-(define-syntax-rule (check-similar? act exp name)
+(define-syntax-parse-rule (check-similar? act exp name)
+  #:with check-regexp-stx (syntax/loc (syntax exp) (check-regexp-match exp-v act-v name))
+  #:with check-equal-stx  (syntax/loc (syntax exp) (check-equal? act-v exp-v name))
   (let ()
     (define exp-v exp)
     (define act-v act)
     (if (regexp? exp-v)
-      (check-regexp-match exp-v act-v name)
-      (check-equal? act-v exp-v name))))
+      check-regexp-stx
+      check-equal-stx)))
 
 (define (exn:input-port-closed? x)
   (and (exn:fail? x)
@@ -56,8 +60,8 @@
              #:attr
              code
              (quasisyntax/loc
-                 #'command-line
-               (let ([cmd command-line])
+               #'command-line
+               (let ([cmd (rename-racket command-line)])
                  (check-case
                   cmd
                   (define output-port (open-output-string))
@@ -143,5 +147,33 @@
            (λ ()
              (shelly-begin after ...))))]))
 ;; }}
+
+(define racket-run-suffix
+  (let ()
+    (define racket (find-exe))
+    (cond
+      [racket
+       (define-values (base name dir?) (split-path racket))
+       (define m (regexp-match #rx"^(?i:racket)(.*)$" (path-element->string name)))
+       (define suffix (and m (cadr m)))
+       (and (not (equal? suffix ""))
+            suffix)]
+      [else #f])))
+      
+;; Add a suffix ro "racket" or "raco", if there's one on the current executable
+(define rename-racket
+  (cond
+    [racket-run-suffix
+     ;; Adjust comands by adding a suffix:
+     (lambda (cmd)
+       (cond
+         [(regexp-match-positions #rx"^(racket|raco) " cmd)
+          => (lambda (m)
+               (string-append (substring cmd 0 (cdadr m))
+                              racket-run-suffix
+                              (substring cmd (cdadr m))))]
+         [else cmd]))]
+    [else
+     (lambda (cmd) cmd)]))
 
 (provide (all-defined-out))

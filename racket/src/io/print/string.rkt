@@ -10,10 +10,15 @@
     (let loop ([start-i 0] [i 0] [max-length max-length])
       (cond
        [(eq? max-length 'full) 'full]
-       [(or (= i len)
-            (and max-length ((- i start-i) . > . max-length)))
+       [(= i len)
         (let ([max-length (write-string/max str o max-length start-i i)])
           (write-bytes/max #"\"" o max-length))]
+       [(and max-length
+             (or (pair? max-length)
+                 ((- i start-i) . > . max-length)))
+        ;; Getting full: abandon block mode so that we stop earlier
+        (let ([max-length (write-string/max str o max-length start-i i)])
+          (loop i (add1 i) max-length))]
        [else
         (define c (string-ref str i))
         (define escaped
@@ -35,8 +40,9 @@
                  [max-length (write-bytes/max escaped o max-length)]
                  [i (add1 i)])
             (loop i i max-length))]
-         [(or (char-graphic? c)
-              (char-blank? c))
+         [(char-graphic? c)
+          (loop start-i (+ i (string-grapheme-span str i)) max-length)]
+         [(char-blank? c)
           (loop start-i (add1 i) max-length)]
          [else
           (define n (char->integer c))

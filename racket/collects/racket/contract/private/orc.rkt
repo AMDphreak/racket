@@ -10,7 +10,8 @@
 (provide symbols or/c first-or/c one-of/c
          blame-add-or-context
          blame-add-ior-context
-         (rename-out [_flat-rec-contract flat-rec-contract]))
+         (rename-out [_flat-rec-contract flat-rec-contract]
+                     [_flat-murec-contract flat-murec-contract]))
 
 (define/subexpression-pos-prop/name or/c-name or/c
   (case-lambda 
@@ -32,29 +33,33 @@
                 [else
                  (loop (cons arg ho-contracts) flat-contracts (cdr args))]))])))
      (define pred (make-flat-predicate flat-contracts))
+     (define the-or/c
+       (cond
+         [(null? ho-contracts)
+          (cond
+            [(and (pair? flat-contracts)
+                  (pair? (cdr flat-contracts))
+                  (null? (cddr flat-contracts))
+                  (or (and (equal? false/c-contract (car flat-contracts))
+                           (equal? true/c-contract (cadr flat-contracts)))
+                      (and (equal? false/c-contract (cadr flat-contracts))
+                           (equal? true/c-contract (car flat-contracts)))))
+             (coerce-contract 'or/c boolean?)]
+            [else
+             (make-flat-or/c pred flat-contracts)])]
+         [(null? (cdr ho-contracts))
+          (define name (apply build-compound-type-name 'or/c args))
+          (if (chaperone-contract? (car ho-contracts))
+              (make-chaperone-single-or/c name pred flat-contracts (car ho-contracts))
+              (make-impersonator-single-or/c name pred flat-contracts (car ho-contracts)))]
+         [else
+          (define name (apply build-compound-type-name 'or/c args))
+          (if (andmap chaperone-contract? ho-contracts)
+              (make-chaperone-multi-or/c name flat-contracts ho-contracts)
+              (make-impersonator-multi-or/c name flat-contracts ho-contracts))]))
      (cond
-       [(null? ho-contracts)
-        (cond
-          [(and (pair? flat-contracts)
-                (pair? (cdr flat-contracts))
-                (null? (cddr flat-contracts))
-                (or (and (equal? false/c-contract (car flat-contracts))
-                         (equal? true/c-contract (cadr flat-contracts)))
-                    (and (equal? false/c-contract (cadr flat-contracts))
-                         (equal? true/c-contract (car flat-contracts)))))
-           (coerce-contract 'or/c boolean?)]
-          [else
-           (make-flat-or/c pred flat-contracts)])]
-       [(null? (cdr ho-contracts))
-        (define name (apply build-compound-type-name 'or/c args))
-        (if (chaperone-contract? (car ho-contracts))
-            (make-chaperone-single-or/c name pred flat-contracts (car ho-contracts))
-            (make-impersonator-single-or/c name pred flat-contracts (car ho-contracts)))]
-       [else
-        (define name (apply build-compound-type-name 'or/c args))
-        (if (andmap chaperone-contract? ho-contracts)
-            (make-chaperone-multi-or/c name flat-contracts ho-contracts)
-            (make-impersonator-multi-or/c name flat-contracts ho-contracts))])]))
+       [(ormap prop:any/c? args) (named-any/c (contract-name the-or/c))]
+       [else the-or/c])]))
 
 (define/subexpression-pos-prop first-or/c
   (case-lambda 
@@ -73,14 +78,46 @@
   (cond
     [(null? flat-contracts) not]
     [else
-     (let loop ([fst (car flat-contracts)]
-                [rst (cdr flat-contracts)])
-       (let ([fst-pred (flat-contract-predicate fst)])
+     (define-values (eqables noneqables)
+       (let loop ([flat-contracts flat-contracts])
          (cond
-           [(null? rst) fst-pred]
-           [else 
-            (let ([r (loop (car rst) (cdr rst))])
-              (λ (x) (or (fst-pred x) (r x))))])))]))
+           [(null? flat-contracts)
+            (values '() '())]
+           [else
+            (define fst (car flat-contracts))
+            (define-values (eqables noneqables)
+              (loop (cdr flat-contracts)))
+            (cond
+              [(eq-contract? fst)
+               (values (cons fst eqables) noneqables)]
+              [else
+               (values eqables (cons fst noneqables))])])))
+
+     (define eqables-pred
+       (cond
+         [(pair? eqables)
+          (define vals (map eq-contract-val eqables))
+          (λ (x) (and (memq x vals) #t))]
+         [else #f]))
+     (define noneqables-pred
+       (cond
+         [(pair? noneqables)
+          (let loop ([fst (car noneqables)]
+                     [rst (cdr noneqables)])
+            (define fst-pred (flat-contract-predicate fst))
+            (cond
+              [(null? rst) fst-pred]
+              [else
+               (define r (loop (car rst) (cdr rst)))
+               (λ (x)
+                 (or (fst-pred x) (r x)))]))]
+         [else #f]))
+     (cond
+       [(and eqables-pred noneqables-pred)
+        (λ (x) (or (eqables-pred x) (noneqables-pred x)))]
+       [eqables-pred eqables-pred]
+       [noneqables-pred noneqables-pred]
+       [else (error 'ack.orc.rkt)])]))
 
 (define (single-or/c-late-neg-projection ctc)
   (define c-proj (get/build-late-neg-projection (single-or/c-ho-ctc ctc)))
@@ -549,7 +586,7 @@
   (unless ans (error 'flat-rec-contract "attempted to access the contract too early"))
   ans)
 
-(struct flat-rec-contract ([me #:mutable] name)
+(struct flat-rec-contract ([me #:mutable] [predicate #:mutable] name)
   #:property prop:custom-write custom-write-property-proc
   #:property prop:flat-contract
   (build-flat-contract-property
@@ -575,9 +612,9 @@
             (contract-struct-equivalent? (get-flat-rec-me this) that))]
          [else #f])))
    #:first-order
-   (λ (ctc) 
+   (λ (ctc)
      (λ (v)
-       ((contract-first-order (get-flat-rec-me ctc)) v)))
+       ((flat-rec-contract-predicate ctc) v)))
    #:generate 
    (λ (ctc) 
      (λ (fuel)
@@ -585,21 +622,56 @@
            #f
            (contract-random-generate/choose (get-flat-rec-me ctc) (- fuel 1)))))))
 
+(define (flat-rec-contract-too-early murec? who)
+  (λ (x)
+    (error (if murec? 'flat-murec-contract 'flat-rec-contract)
+           "attempted to check the contract too early\n  ctc: ~a\n  accessed via: contract-first-order" who)))
+
 (define-syntax (_flat-rec-contract stx)
   (syntax-case stx  ()
     [(_ name ctc ...)
      (identifier? (syntax name))
+     (with-syntax ([(x ...) (generate-temporaries #'(ctc ...))])
      (syntax
-      (let ([name (flat-rec-contract #f 'name)])
-        (set-flat-rec-contract-me!
-         name
-         (or/c (coerce-flat-contract 'flat-rec-contract ctc) 
-               ...))
-        name))]
+      (let ([name (flat-rec-contract #f (flat-rec-contract-too-early #f 'name) 'name)])
+        (let ([x (coerce-flat-contract 'flat-rec-contract ctc)] ...)
+          (set-flat-rec-contract-me! name (or/c x ...))
+          (set-flat-rec-contract-predicate!
+           name
+           (let ([x (flat-contract-predicate x)] ...)
+             (λ (v)
+               (or (x v) ...)))))
+        name)))]
     [(_ name ctc ...)
      (raise-syntax-error 'flat-rec-contract
                          "expected first argument to be an identifier"
                          stx
                          (syntax name))]))
-(define (flat-rec-contract/init x) 
-  (error 'flat-rec-contract "applied too soon"))
+
+(define-syntax (_flat-murec-contract stx)
+  (syntax-case stx  ()
+    [(_ ([name ctc ...] ...) body1 body ...)
+     (andmap identifier? (syntax->list (syntax (name ...))))
+     (with-syntax ([((x ...) ...)
+                    (for/list ([names (in-list (syntax->list #'((ctc ...) ...)))])
+                      (generate-temporaries names))])
+       (syntax
+        (let ([name (flat-rec-contract #f (flat-rec-contract-too-early #t 'name) 'name)] ...)
+          (let ([x (coerce-flat-contract 'flat-murec-contract ctc)] ...)
+            (set-flat-rec-contract-me! name (or/c x ...))
+            (set-flat-rec-contract-predicate!
+             name
+             (let ([x (flat-contract-predicate x)] ...)
+               (λ (v)
+                 (or (x v) ...)))))
+          ...
+          body1
+          body ...)))]
+    [(_ ([name ctc ...] ...) body1 body ...)
+     (for-each (λ (name)
+                 (unless (identifier? name)
+                   (raise-syntax-error 'flat-murec-contract
+                                       "expected an identifier" stx name)))
+               (syntax->list (syntax (name ...))))]
+    [(_ ([name ctc ...] ...))
+     (raise-syntax-error 'flat-murec-contract "expected at least one body expression" stx)]))

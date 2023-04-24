@@ -103,7 +103,7 @@ parameter is true.
 Copies the Racket (if @racket[gracket?] and @racket[mred?] are
 @racket[#f]) or GRacket (otherwise) binary, embedding code into the
 copied executable to be loaded on startup.  On Unix, the binary is
-actually a wrapper executable that execs the original; see also the
+actually a wrapper executable that @tt{exec}s the original; see also the
 @racket['original-exe?] tag for @racket[aux].
 
 The embedding executable is written to @racket[dest], which is
@@ -279,16 +279,16 @@ currently supported keys are as follows:
         brings the other instance to the front; @racket[#f] means that
         multiple instances are expected.}
 
-  @item{@racket['forget-exe?] (Windows, Mac OS) : A boolean;
+  @item{@racket['forget-exe?] (Unix, Windows, Mac OS) : A boolean;
         @racket[#t] for a launcher (see @racket[launcher?] below) does
         not preserve the original executable name for
-        @racket[(find-system-path 'exec-file)]; the main consequence
+        @racket[(find-system-path 'exec-file)]; one consequence
         is that library collections will be found relative to the
         launcher instead of the original executable.}
 
   @item{@racket['original-exe?] (Unix) : A boolean; @racket[#t] means
         that the embedding uses the original Racket or GRacket
-        executable, instead of a wrapper binary that execs the
+        executable, instead of a wrapper binary that @tt{exec}s the
         original; the default is @racket[#f].}
 
   @item{@racket['relative?] (Unix, Windows, Mac OS) : A boolean;
@@ -329,12 +329,12 @@ use of @tech[#:doc reference-doc]{collection links files}.
 
 If the @racket[#:launcher?] argument is @racket[#t], then
 @racket[mod-list] should be null, @racket[literal-files] should be
-null, @racket[literal-sexp] should be @racket[#f], and the platform
-should be Windows or Mac OS. The embedding executable is created in
+null, and @racket[literal-sexp] should be @racket[#f]. The embedding executable is created in
 such a way that @racket[(find-system-path 'exec-file)] produces the
 source Racket or GRacket path instead of the embedding executable (but
 the result of @racket[(find-system-path 'run-file)] is still the
-embedding executable).
+embedding executable), unless @racket['forget-exe?] is associated
+to a true value in @racket[aux].
 
 The @racket[#:variant] argument indicates which variant of the
 original binary to use for embedding. The default is
@@ -467,7 +467,10 @@ be a string indicating a required extension for the directory name. }
 @defproc[(embedding-executable-add-suffix [path path-string?] [mred? any/c])
          path-string?]{
 
-Adds a suitable executable suffix, if it's not present already.}
+Adds a suitable executable suffix, if it's not present already.
+
+@history[#:changed "8.1.0.7" @elem{Changed to actually add a suffix, instead of
+                                   replacing an existing suffix.}]}
 
 
 @; ----------------------------------------

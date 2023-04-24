@@ -29,7 +29,7 @@
 (define (expand-body bodys ctx
                      #:source s
                      #:stratified? [stratified? #f])
-  (log-expand ctx 'enter-block (datum->syntax #f bodys))
+  (log-expand ctx 'enter-block bodys)
   ;; In principle, we have an outside-edge scope that identifies the
   ;; original content of the definition context --- but a body always
   ;; exists inside some binding form, so that form's scope will do;
@@ -39,7 +39,7 @@
   (define init-bodys
     (for/list ([body (in-list bodys)])
       (add-scope body inside-sc)))
-  (log-expand ctx 'block-renames (datum->syntax #f init-bodys) (datum->syntax #f bodys))
+  (log-expand ctx 'block-renames init-bodys bodys)
   (define phase (expand-context-phase ctx))
   (define frame-id (make-reference-record)) ; accumulates info on referenced variables
   (define def-ctx-scopes (box null))
@@ -101,12 +101,11 @@
                                                (struct*-copy expand-context body-ctx
                                                              [name name])
                                                body-ctx)))
-      (define disarmed-exp-body (syntax-disarm exp-body))
-      (case (core-form-sym disarmed-exp-body phase)
+      (case (core-form-sym exp-body phase)
         [(begin)
          ;; Splice a `begin` form
-         (log-expand body-ctx 'prim-begin)
-         (define-match m disarmed-exp-body '(begin e ...))
+         (log-expand body-ctx 'prim-begin exp-body)
+         (define-match m exp-body '(begin e ...))
          (define (track e) (syntax-track-origin e exp-body))
          (define splice-bodys (append (map track (m 'e)) rest-bodys))
          (log-expand body-ctx 'splice splice-bodys)
@@ -125,10 +124,10 @@
         [(define-values)
          ;; Found a variable definition; add bindings, extend the
          ;; environment, and continue
-         (log-expand body-ctx 'prim-define-values)
-         (define-match m disarmed-exp-body '(define-values (id ...) rhs))
+         (log-expand body-ctx 'prim-define-values exp-body)
+         (define-match m exp-body '(define-values (id ...) rhs))
          (define ids (remove-use-site-scopes (m 'id) body-ctx))
-         (log-expand body-ctx 'rename-one (datum->syntax #f (list ids (m 'rhs))))
+         (log-expand body-ctx 'rename-one (list ids (m 'rhs)))
          (define new-dups (check-no-duplicate-ids ids phase exp-body dups))
          (define counter (root-expand-context-counter ctx))
          (define local-sym (and (expand-context-normalize-locals? ctx) 'loc))
@@ -175,10 +174,10 @@
          ;; Found a macro definition; add bindings, evaluate the
          ;; compile-time right-hand side, install the compile-time
          ;; values in the environment, and continue
-         (log-expand body-ctx 'prim-define-syntaxes)
-         (define-match m disarmed-exp-body '(define-syntaxes (id ...) rhs))
+         (log-expand body-ctx 'prim-define-syntaxes exp-body)
+         (define-match m exp-body '(define-syntaxes (id ...) rhs))
          (define ids (remove-use-site-scopes (m 'id) body-ctx))
-         (log-expand body-ctx 'rename-one (datum->syntax #f (list ids (m 'rhs))))
+         (log-expand body-ctx 'rename-one (list ids (m 'rhs)))
          (define new-dups (check-no-duplicate-ids ids phase exp-body dups))
          (define counter (root-expand-context-counter ctx))
          (define local-sym (and (expand-context-normalize-locals? ctx) 'mac))
@@ -245,6 +244,12 @@
                  dups
                  #f)])])])))
 
+;; precondition: xs is a list with at least one element
+(define (last xs)
+  (if (null? (cdr xs))
+      (car xs)
+      (last (cdr xs))))
+
 ;; Partial expansion is complete, so assumble the result as a
 ;; `letrec-values` form and continue expanding
 (define (finish-expanding-body body-ctx frame-id def-ctx-scopes
@@ -260,26 +265,20 @@
   (when (or (null? done-bodys)
             just-saw-define-syntaxes?)
     (raise-syntax-error (string->symbol "begin (possibly implicit)")
-                        "no expression after a sequence of internal definitions"
+                        "the last form is not an expression"
                         (datum->syntax #f (cons 'begin init-bodys) s)
-                        #f
-                        init-bodys))
+                        (if (null? init-bodys) #f (last init-bodys))))
   ;; As we finish expanding, we're no longer in a definition context
   (define finish-ctx (struct*-copy expand-context (accumulate-def-ctx-scopes body-ctx def-ctx-scopes)
                                    [context 'expression]
                                    [use-site-scopes #:parent root-expand-context (box null)]
-                                   [scopes (append
-                                            (unbox (root-expand-context-use-site-scopes body-ctx))
-                                            (expand-context-scopes body-ctx))]
                                    [only-immediate? #f]
                                    [def-ctx-scopes #f]
                                    [post-expansion #:parent root-expand-context #f]))
   ;; Helper to expand and wrap the ending expressions in `begin`, if needed:
-  (define (finish-bodys)
-    (define block->list? (null? val-idss))
-    (unless block->list? (log-expand body-ctx 'next-group)) ; to go with 'block->letrec
+  (define (finish-bodys finish-ctx)
     (define last-i (sub1 (length done-bodys)))
-    (log-expand body-ctx 'enter-list (datum->syntax #f done-bodys))
+    (log-expand body-ctx 'enter-list done-bodys)
     (define exp-bodys
       (for/list ([done-body (in-list done-bodys)]
                  [i (in-naturals)])
@@ -288,20 +287,17 @@
                               (struct*-copy expand-context finish-ctx
                                             [name name])
                               finish-ctx))))
-    (log-expand body-ctx 'exit-list (datum->syntax #f exp-bodys))
+    (log-expand body-ctx 'exit-list exp-bodys)
     (reference-record-clear! frame-id)
     exp-bodys)
   (cond
    [(and (null? val-idss)
          (null? disappeared-transformer-bindings))
     ;; No definitions, so just return the body list
-    (log-expand finish-ctx 'block->list (datum->syntax s done-bodys))
-    (finish-bodys)]
+    (log-expand finish-ctx 'block->list)
+    (finish-bodys finish-ctx)]
    [else
-    (log-expand... finish-ctx (lambda (obs)
-                                ;; Simulate old expansion steps
-                                (log-letrec-values obs finish-ctx s val-idss val-rhss track-stxs
-                                                   stx-clauses done-bodys)))
+    (log-expand finish-ctx 'block->letrec val-idss val-rhss done-bodys)
     ;; Roughly, finish expanding the right-hand sides, finish the body
     ;; expression, then add a `letrec-values` wrapper:
     (define exp-s (expand-and-split-bindings-by-reference
@@ -310,15 +306,17 @@
                    #:frame-id frame-id #:ctx finish-ctx
                    #:source s #:had-stxes? (pair? stx-clauses)
                    #:get-body finish-bodys #:track? #f))
-    (log-expand* body-ctx ['exit-prim exp-s] ['return exp-s])
     (if (expand-context-to-parsed? body-ctx)
         (list exp-s)
         (let ([exp-s (attach-disappeared-transformer-bindings
                       exp-s
                       disappeared-transformer-bindings)])
-          (list (for/fold ([exp-s exp-s]) ([form (in-list disappeared-transformer-forms)]
-                                           #:when form)
-                  (syntax-track-origin exp-s form)))))]))
+          (let ([tracked-exp-s
+                 (for/fold ([exp-s exp-s]) ([form (in-list disappeared-transformer-forms)]
+                                            #:when form)
+                   (syntax-track-origin exp-s form))])
+            (log-expand finish-ctx 'finish-block (list tracked-exp-s))
+            (list tracked-exp-s))))]))
 
 ;; Roughly, create a `letrec-values` for for the given ids, right-hand sides, and
 ;; body. While expanding right-hand sides, though, keep track of whether any
@@ -334,15 +332,16 @@
   (define phase (expand-context-phase ctx))
   (let loop ([idss idss] [keyss keyss] [rhss rhss] [track-stxs track-stxs]
              [accum-idss null] [accum-keyss null] [accum-rhss null] [accum-track-stxs null]
-             [track? track?] [get-list? #f] [can-log? #t])
+             [ctx ctx]
+             [track? track?] [get-list? #f])
     (cond
      [(null? idss)
       (cond
        [(and (null? accum-idss)
              get-list?)
-        (get-body)]
+        (get-body ctx)]
        [else
-        (define exp-body (get-body))
+        (define exp-body (get-body ctx))
         (define result-s
           (if (expand-context-to-parsed? ctx)
               (if (null? accum-idss)
@@ -359,7 +358,6 @@
                       (core-id 'letrec-values phase))
                  ,(build-clauses accum-idss accum-rhss accum-track-stxs)
                  ,@exp-body))))
-        (log-expand* ctx #:when (and can-log? (log-tag? had-stxes? ctx)) ['tag result-s])
         (if get-list? (list result-s) result-s)])]
      [else
       (log-expand ctx 'next)
@@ -375,11 +373,13 @@
        [(and (not local-or-forward-references?)
              split?)
         (unless (null? accum-idss) (error "internal error: accumulated ids not empty"))
-        (define exp-rest (loop (cdr idss) (cdr keyss) (cdr rhss) (cdr track-stxs)
+        (define-values (next-idss next-ctx) (create-binding-layer (cdr idss) (cdr keyss) ctx))
+        (define exp-rest (loop next-idss (cdr keyss) (cdr rhss) (cdr track-stxs)
                                null null null null
-                               #f #t #f))
+                               next-ctx
+                               #f #t))
         (define result-s
-          (if (expand-context-to-parsed? ctx)
+          (if (expand-context-to-parsed? next-ctx)
              (parsed-let-values (keep-properties-only s)
                                 (list ids)
                                 (list (list (car keyss) expanded-rhs))
@@ -390,15 +390,16 @@
               `(,(core-id 'let-values phase)
                 (,(build-clause ids expanded-rhs track-stx))
                 ,@exp-rest))))
-        (log-expand* ctx #:when (and can-log? (log-tag? had-stxes? ctx)) ['tag result-s])
         (if get-list? (list result-s) result-s)]
        [(and (not forward-references?)
              (or split? (null? (cdr idss))))
-        (define exp-rest (loop (cdr idss) (cdr keyss) (cdr rhss) (cdr track-stxs)
+        (define-values (next-idss next-ctx) (create-binding-layer (cdr idss) (cdr keyss) ctx))
+        (define exp-rest (loop next-idss (cdr keyss) (cdr rhss) (cdr track-stxs)
                                null null null null
-                               #f #t #f))
+                               next-ctx
+                               #f #t))
         (define result-s
-         (if (expand-context-to-parsed? ctx)
+         (if (expand-context-to-parsed? next-ctx)
              (parsed-letrec-values (keep-properties-only s)
                                    (reverse (cons ids accum-idss))
                                    (reverse
@@ -413,13 +414,42 @@
                                 (cons expanded-rhs accum-rhss)
                                 (cons track-stx accum-track-stxs))
                 ,@exp-rest))))
-        (log-expand* ctx #:when (and can-log? (log-tag? had-stxes? ctx)) ['tag result-s])
         (if get-list? (list result-s) result-s)]
        [else
         (loop (cdr idss) (cdr keyss) (cdr rhss) (cdr track-stxs)
               (cons ids accum-idss) (cons (car keyss) accum-keyss)
               (cons expanded-rhs accum-rhss) (cons track-stx accum-track-stxs)
-              track? get-list? can-log?)])])))
+              ctx
+              track? get-list?)])])))
+
+(define (create-binding-layer idss keyss ctx)
+  (cond
+    [(or (expand-context-to-parsed? ctx)
+         (null? idss))
+     (values idss ctx)]
+    [else
+     ;; In case of expansion to a syntax object, we need to create a
+     ;; scope to reflect a new `let[rec]-values` context, otherwise
+     ;; re-expansion can lead to ambiguous bindings. The scope is
+     ;; added to the binding of subsequent identifiers in the expanded
+     ;; form, and we want the extra scope to show up on the expanded
+     ;; form of a reference to those variables; so, update the
+     ;; environment's mapping for the local-binding key to have the
+     ;; identifier with extra scopes.
+     (define sc (new-scope 'local))
+     (define new-idss (for/list ([ids (in-list idss)])
+                        (for/list ([id (in-list ids)])
+                          (add-scope id sc))))
+     (define env (expand-context-env ctx))
+     (define new-env (for/fold ([env env]) ([new-ids (in-list new-idss)]
+                                            [keys (in-list keyss)]
+                                            #:when #t
+                                            [new-id (in-list new-ids)]
+                                            [key (in-list keys)])
+                       (env-extend env key (local-variable new-id))))
+     (values new-idss
+             (struct*-copy expand-context ctx
+                           [env new-env]))]))
 
 (define (build-clauses accum-idss accum-rhss accum-track-stxs)
   (map build-clause
@@ -446,39 +476,3 @@
 (define (log-tag? had-stxes? ctx)
   (and had-stxes?
        (not (expand-context-only-immediate? ctx))))
-
-;; Generate observer actions that simulate the old expander
-;; going back through `letrec-values`:
-(define (log-letrec-values obs ctx s val-idss val-rhss track-stxs
-                           stx-clauses done-bodys)
-  (define phase (expand-context-phase ctx))
-  (define clauses (for/list ([val-ids (in-list val-idss)]
-                             [val-rhs (in-list val-rhss)]
-                             [track-stx (in-list track-stxs)])
-                    (datum->syntax #f `[,val-ids ,val-rhs] track-stx)))
-  (define had-stxes? (not (null? stx-clauses)))
-  (define lv-id (core-id (if had-stxes? 'letrec-syntaxes+values 'letrec-values) phase))
-  (define lv-s (datum->syntax #f (if had-stxes?
-                                     `(,lv-id ,stx-clauses ,clauses ,@done-bodys)
-                                     `(,lv-id ,clauses ,@done-bodys))
-                              s))
-  (...log-expand obs
-                 ['block->letrec (list lv-s)]
-                 ['visit lv-s]
-                 ['resolve lv-id]
-                 ['enter-prim lv-s])
-  (cond
-    [had-stxes?
-     (...log-expand obs
-                    ['prim-letrec-syntaxes+values]
-                    ['letrec-syntaxes-renames stx-clauses clauses (datum->syntax #f done-bodys s)]
-                    ['prepare-env]
-                    ['next-group])
-     (unless (null? val-idss)
-       (...log-expand obs
-                      ['prim-letrec-values]
-                      ['let-renames clauses (datum->syntax #f done-bodys s)]))]
-    [else
-     (...log-expand obs
-                    ['prim-letrec-values]
-                    ['let-renames clauses (datum->syntax #f done-bodys s)])]))

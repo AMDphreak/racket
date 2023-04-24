@@ -34,10 +34,9 @@
                #:single-expression? #t))
 
 ;; Compile a single form, which can be a `define-values` form, a
-;; `define-syntaxes` form, or an expression (where `begin` is treated
-;; as an expression form). If `serializable?` is false, don't bother
-;; generating the linklet for serialized data, because it won't be
-;; used.
+;; `define-syntaxes` form, a `begin` form, or an expression. If
+;; `serializable?` is false, don't bother generating the linklet for
+;; serialized data, because it won't be used.
 (define (compile-top p cctx
                      #:serializable? [serializable? #t]
                      #:single-expression? [single-expression? #f]
@@ -59,7 +58,7 @@
                    phase-to-link-extra-inspectorss
                    syntax-literals
                    no-root-context-pos)
-     (compile-forms (list p) cctx mpis
+     (compile-forms (flatten-begin p) cctx mpis
                     #:body-imports (if single-expression?
                                        `([]
                                          [,syntax-literals-id]
@@ -83,7 +82,7 @@
                     #:other-form-callback (lambda (s cctx)
                                             (set! purely-functional? #f)
                                             (compile-top-level-require s cctx))
-                    #:cross-linklet-inlining? (not single-expression?)))
+                    #:optimize-linklet? (not single-expression?)))
 
    (define (add-metadata ht)
      (let* ([ht (hash-set ht 'original-phase phase)]
@@ -146,10 +145,12 @@
    (compiled-in-memory (hash->linklet-directory (hasheq #f bundle))
                        #f ; self
                        #f ; requires
+                       #f ; recur-requires
                        #f ; provides
                        phase-to-link-module-uses
                        (current-code-inspector)
                        phase-to-link-extra-inspectorss
+                       #hasheqv()
                        (mpis-as-vector mpis)
                        (syntax-literals-as-vector syntax-literals)
                        null
@@ -163,6 +164,18 @@
   (define phase (compile-context-phase cctx))
   (cond
    [(parsed-require? p)
-    (define form-stx (compile-quote-syntax (syntax-disarm (parsed-s p)) cctx))
-    `(,top-level-require!-id ,form-stx ,ns-id)]
+    (define form-stx (compile-quote-syntax (parsed-s p) cctx))
+    `(,top-level-require!-id ,form-stx ,ns-id (quote ,(parsed-require-portal-syms p)))]
    [else #f]))
+
+;; Normally, `begin` flattening is the job of a previous layer, so
+;; that each definition in a `begin` can affect the expansion and
+;; compilation of later forms in the `begin`. It's possible, however,
+;; for a form to claim to be an expression and yet expand to a `begin`
+;; that contains definitions. To be flexible (and, to a lesser degree,
+;; for historical reasons), allow that kind of `begin`.
+(define (flatten-begin p)
+  (cond
+    [(parsed-begin? p)
+     (apply append (map flatten-begin (parsed-begin-body p)))]
+    [else (list p)]))

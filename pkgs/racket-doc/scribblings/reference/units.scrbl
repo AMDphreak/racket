@@ -77,7 +77,10 @@ to initialize the variable may be visible as a mutation.
 
 Each import or export @racket[sig-spec] ultimately refers to a
 @racket[sig-id], which is an identifier that is bound to a signature
-by @racket[define-signature].
+by @racket[define-signature]. The @tech{lexical information} of each
+identifier imported through a @racket[sig-id] starts with the lexical
+information of the @racket[sig-id]; see @racket[define-signature] form
+more information.
 
 In a specific import or export position, the set of identifiers bound
 or required by a particular @racket[sig-id] can be adjusted in a few
@@ -89,7 +92,7 @@ ways:
  @racket[sig-spec], except that each binding is prefixed with @racket[id].
  As an export, this form causes definitions using the @racket[id]
  prefix to satisfy the exports required by @racket[sig-spec].}
- 
+
  @item{@racket[(rename sig-spec (id id) ...)] as an import binds the
  same as @racket[sig-spec], except that the first @racket[id] is used
  for the binding instead of the second @racket[id] (where
@@ -153,7 +156,7 @@ the corresponding import. Each @racket[tagged-sig-id] in an
 @defform/subs[
 #:literals (define-syntaxes define-values define-values-for-export
             open extends contracted struct)
-(define-signature id extension-decl
+(define-signature sig-id extension-decl
   (sig-elem ...))
 
 ([extension-decl
@@ -163,11 +166,11 @@ the corresponding import. Each @racket[tagged-sig-id] in an
  [sig-elem
   id
   (define-syntaxes (id ...) expr)
-  (define-values (id ...) expr) 
-  (define-values-for-export (id ...) expr) 
+  (define-values (id ...) expr)
+  (define-values-for-export (id ...) expr)
   (contracted [id contract] ...)
-  (open sig-spec) 
-  (struct id (field ...) struct-option ...) 
+  (open sig-spec)
+  (struct id (field ...) struct-option ...)
   (sig-form-id . datum)]
 
  [field id
@@ -179,7 +182,7 @@ the corresponding import. Each @racket[tagged-sig-id] in an
                 #:omit-define-syntaxes
                 #:omit-define-values])]{
 
-Binds an identifier to a signature that specifies a group
+Binds an identifier @racket[sig-id] to a signature that specifies a group
 of bindings for import or export:
 
 @itemize[
@@ -236,7 +239,16 @@ of bindings for import or export:
 When a @racket[define-signature] form includes an @racket[extends]
 clause, then the define signature automatically includes everything in
 the extended signature. Furthermore, any implementation of the new
-signature can be used as an implementation of the extended signature.}
+signature can be used as an implementation of the extended signature.
+
+The @tech{lexical information} of each @racket[id] within a signature is
+compared to the lexical information of @racket[sig-id]. The extra scopes
+of @racket[id] relative to @racket[sig-id] are recorded for the
+@racket[id]. When the @racket[sig-id] is used as a reference (e.g., in
+the @racket[import] clause of @racket[unit]), a variant of @racket[id]
+is created for the referencing context by starting with the lexical
+information of the referencing @racket[sig-id], and then adding the extra
+scopes for @racket[id].}
 
 @defkeywords[[(open sig-spec) _sig-elem define-signature]
              [(define-values-for-export (id ...) expr) _sig-elem define-signature]
@@ -288,10 +300,15 @@ identifier's binding in the surrounding context is used for the
 corresponding import in the invoked unit.}
 
 @defform[
-#:literals (import export)
-(define-values/invoke-unit unit-expr 
+#:literals (import export values)
+(define-values/invoke-unit unit-expr
   (import tagged-sig-spec ...)
-  (export tagged-sig-spec ...))]{
+  (export tagged-sig-spec ...)
+  maybe-results-clause)
+ #:grammar
+ ([maybe-results-clause (code:line)
+                        (values result-id ...)
+                        (values result-id ... . rest-results-id)])]{
 
 Like @racket[invoke-unit], but the values of the unit's exports are
 copied to new bindings.
@@ -302,7 +319,17 @@ treated as a kind of import into the local definition context. That
 is, for every binding that would be available in a unit that used the
 @racket[export] clause's @racket[tagged-sig-spec] as an import, a
 definition is generated for the context of the
-@racket[define-values/invoke-unit] form.}
+@racket[define-values/invoke-unit] form.
+
+If no @racket[maybe-results-clause] is provided, the unit body may return
+any number of values, all of which are ignored. Otherwise, the values
+returned from the unit body are bound to the given @racket[result-id]s,
+in order. If no @racket[rest-results-id] is provided, the body must return
+exactly as many values as there are @racket[result-id]s, but if it is
+provided, the body may return arbitrarily many more, and
+@racket[rest-results-id] is bound to a list containing the extra results.
+
+@history[#:changed "8.8.0.7" @elem{Added @racket[maybe-results-clause].}]}
 
 @; ------------------------------------------------------------------------
 
@@ -402,7 +429,7 @@ Evaluating a reference to a @racket[unit-id] bound by
 @racket[define-unit] produces a unit, just like evaluating an
 @racket[id] bound by @racket[(define id (unit ...))]. In addition,
 however, @racket[unit-id] can be used in @racket[compound-unit/infer].
-See @racket[unit] for information on @racket[tagged-sig-spec], 
+See @racket[unit] for information on @racket[tagged-sig-spec],
 @racket[init-depends-decl], and @racket[unit-body-expr-or-defn].}
 
 @defform/subs[
@@ -425,13 +452,13 @@ See @racket[unit] for information on @racket[tagged-sig-spec],
   sig-id]
 
  [infer-linkage-decl
-  ((link-binding ...) unit-id 
+  ((link-binding ...) unit-id
                       tagged-link-id ...)
   unit-id])]{
 
 Like @racket[compound-unit]. Syntactically, the difference between
 @racket[compound-unit] and @racket[compound-unit/infer] is that the
-@racket[unit-expr] for a linked unit is replaced with a
+@racket[_unit-expr] for a linked unit is replaced with a
 @racket[unit-id], where a @racket[unit-id] is bound by
 @racket[define-unit] (or one of the other unit-binding forms that we
 introduce later in this section). Furthermore, an import can name just
@@ -527,20 +554,56 @@ Like @racket[invoke-unit], but uses static information associated with
 @racket[unit-id] to infer which imports must be assembled from the
 current context.  If given a link form containing multiple
 @racket[link-unit-id]s, then the units are first linked via
-@racket[define-compound-unit/infer].}
+@racket[define-compound-unit/infer].
 
-@defform/subs[
-#:literals (export link)
-(define-values/invoke-unit/infer maybe-exports unit-spec)
-[(maybe-exports code:blank (export tagged-sig-spec ...))
- (unit-spec unit-id (link link-unit-id ...))]]{
+When assembling imports from the current context, the @tech{lexical
+information} of a @racket[unit-id] is used for constructing the lexical
+information of the signatures for the unit's imports (i.e., the lexical
+information that would normally be derived from the signature reference).
+See @racket[define-signature] for more information.}
+
+@defform*[
+ #:literals (export link values)
+ [(define-values/invoke-unit/infer
+    unit-spec
+    maybe-exports
+    maybe-results-clause)
+  (define-values/invoke-unit/infer
+    (export tagged-sig-spec ...)
+    unit-spec)]
+ #:grammar
+ ([unit-spec unit-id (link link-unit-id ...)]
+  [maybe-exports code:blank (export tagged-sig-spec ...)]
+  [maybe-results-clause (code:line)
+                        (values result-id ...)
+                        (values result-id ... . rest-results-id)])]{
 
 Like @racket[define-values/invoke-unit], but uses static information
 associated with @racket[unit-id] to infer which imports must be
-assembled from the current context and which exports should be bound
-by the definition.  If given a link form containing multiple
-@racket[link-unit-id]s, then the units are first linked via
-@racket[define-compound-unit/infer].}
+assembled from the current context and, if no @racket[export] clause
+is present, which exports should be bound by the definition. If given
+a link form containing multiple @racket[link-unit-id]s, then the units
+are first linked via @racket[define-compound-unit/infer].
+
+Similar to @racket[invoke-unit/infer], the @tech{lexical information}
+of a @racket[unit-id] is used for constructing the lexical information
+of the signatures for the unit's inferred imports and inferred exports
+(i.e., the lexical information that would normally be derived from a
+signature reference). See @racket[define-signature] for more
+information.
+
+If @racket[maybe-results-clause] is provided, the values returned by
+the unit body are bound in the same way as @racket[define-values/invoke-unit].
+
+For backwards compatibility, an @racket[export] clause is allowed to
+appear before @racket[unit-spec] (in which case no @racket[maybe-results-clause]
+may be provided). New programs should provide @racket[unit-spec] first
+(which is consistent with @racket[define-values/invoke-unit]).
+
+@history[
+ #:changed "8.8.0.7" @elem{Allowed @racket[unit-spec] to appear before
+   @racket[maybe-exports] for consistency with @racket[define-values/invoke-unit]
+   and added @racket[maybe-results-clause].}]}
 
 @; ------------------------------------------------------------------------
 
@@ -573,7 +636,7 @@ See @racket[unit] for the grammar of @racket[tagged-sig-spec].}
 ]{
 
 Like @racket[unit-from-context], in that a unit is constructed from
-the enclosing environment, and like @racket[define-unit], in that 
+the enclosing environment, and like @racket[define-unit], in that
 @racket[id] is bound to static information to be used later with inference.}
 
 @; ------------------------------------------------------------------------
@@ -585,7 +648,7 @@ the enclosing environment, and like @racket[define-unit], in that
 (unit/new-import-export
   (import tagged-sig-spec ...)
   (export tagged-sig-spec ...)
-  init-depends-decl 
+  init-depends-decl
   ((tagged-sig-spec ...) unit-expr tagged-sig-spec))
 ]{
 
@@ -616,7 +679,7 @@ each of the bindings implied by an @racket[export]
 (define-unit/new-import-export unit-id
   (import tagged-sig-spec ...)
   (export tagged-sig-spec ...)
-  init-depends-decl 
+  init-depends-decl
   ((tagged-sig-spec ...) unit-expr tagged-sig-spec))
 ]{
 
@@ -651,24 +714,32 @@ like @racket[define-unit].}
 
 @defform*[
 [(define-signature-form sig-form-id expr)
- (define-signature-form (sig-form-id id) body ...+)]
+ (define-signature-form (sig-form-id id) body ...+)
+ (define-signature-form (sig-form-id id intro-id) body ...+)]
 ]{
 
 Binds @racket[sig-form-id] for use within a @racket[define-signature]
 form.
 
 In the first form, the result of @racket[expr] must be a transformer
-procedure.  In the second form, @racket[sig-form-id] is bound to a
+procedure that accepts one argument.  In the second form, @racket[sig-form-id] is bound to a
 transformer procedure whose argument is @racket[id] and whose body is
-the @racket[body]s. The result of the transformer must be a list of
+the @racket[body]s. The third form is like the second one, but
+@racket[intro-id] is bound to a procedure that is analogous to @racket[syntax-local-introduce]
+for the signature-form expansion.
+
+The result of the transformer procedure must be a list of
 syntax objects, which are substituted for a use of
 @racket[sig-form-id] in a @racket[define-signature] expansion. (The
 result is a list so that the transformer can produce multiple
 declarations; @racket[define-signature] has no splicing @racket[begin]
-form.)}
+form.)
+
+@history[#:changed "8.1.0.7" @elem{Added support for the form with a transformer
+                                   @racket[expr].}]}
 
 @defform/subs[
-(struct/ctc id ([field contract-expr] ...) struct-option ...) 
+(struct/ctc id ([field contract-expr] ...) struct-option ...)
 
 ([field id
         [id #:mutable]]
@@ -702,12 +773,12 @@ Expands to a @racket[provide] of all identifiers implied by the
 
 @defform/subs[#:literals (import export values init-depend)
               (unit/c
-	        (import sig-block ...)
-	        (export sig-block ...)
+	        (import sig-spec-block ...)
+	        (export sig-spec-block ...)
 		init-depends-decl
 		optional-body-ctc)
-              ([sig-block (tagged-sig-id [id contract] ...)
-                          tagged-sig-id]
+              ([sig-spec-block (tagged-sig-spec [id contract] ...)
+                               tagged-sig-spec]
 	       [init-depends-decl
 	         code:blank
 		 (init-depend tagged-sig-id ...)]
@@ -726,11 +797,18 @@ superset of the export signatures listed in the unit contract. Additionally,
 the unit value must declare initialization dependencies that are a subset of
 those specified in the unit contract. Any identifier which is not listed
 for a given signature is left alone. Variables used in a given
-@racket[contract] expression first refer to other variables in the same
-signature, and then to the context of the @racket[unit/c] expression.
+@racket[contract] expression first refer to other variables in any of the
+listed signatures, and then to the context of the @racket[unit/c] expression.
 If a body contract is specified then the result of invoking the unit value
-is wrapped with the given contract, if no body contract is supplied then
-no wrapping occurs when the unit value is invoked.}
+is wrapped with the given contract, otherwise the values are returned as-is.
+
+@history[
+ #:changed "8.8.0.7" @elem{Changed @racket[sig-spec-block] to allow arbitrary
+   @racket[tagged-sig-spec]s instead of only allowing @racket[tagged-sig-id]s.
+   Made bindings from @emph{all} signatures visible in the scope of each
+   @racket[contract] expression instead of only the bindings from the same
+   signature. Additionally, contracts on signature bindings are enforced
+   within @racket[contract] expressions.}]}
 
 @defform/subs[#:literals (import export values)
               (define-unit/contract unit-id
@@ -748,7 +826,13 @@ no wrapping occurs when the unit value is invoked.}
 		 (code:line #:invoke/contract (values contract ...))])]{
 The @racket[define-unit/contract] form defines a unit compatible with
 link inference whose imports and exports are contracted with a unit
-contract.  The unit name is used for the positive blame of the contract.}
+contract.  The unit name is used for the positive blame of the contract.
+
+@history[
+ #:changed "8.8.0.7" @elem{Made bindings from @emph{all} signatures visible in
+   the scope of each @racket[contract] expression instead of only the bindings
+   from the same signature. Additionally, contracts on signature bindings are
+   enforced within @racket[contract] expressions.}]}
 
 
 @; ------------------------------------------------------------------------
@@ -876,9 +960,10 @@ values:
 
 ]
 
-Each of the result identifiers is given a lexical context that is
+Each of the result identifiers is given lexical information that is
 based on @racket[sig-identifier], so the names are suitable for
-reference or binding in the context of @racket[sign-identifier].
+reference or binding in the context of @racket[sig-identifier].
+See @racket[define-signature] for more information.
 
 If @racket[sig-identifier] is not bound to a signature, then the
 @exnraise[exn:fail:syntax]. In that case, the given
@@ -904,4 +989,3 @@ then the @exnraise[exn:fail:syntax]. In that case, the given
 @racket[unit-identifier] is used as the detail source location.
 
 @history[#:added "6.1.1.8"]}
-

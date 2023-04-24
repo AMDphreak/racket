@@ -61,6 +61,26 @@ Like @racket[=], @racket[<], @racket[>], @racket[<=], @racket[>=],
 Like @racket[round], @racket[floor], @racket[ceiling], and
 @racket[truncate], but constrained to consume @tech{flonums}.}
 
+
+@defproc[(flsingle    [a flonum?]) flonum?]{
+
+Returns a value like @racket[a], but potentially discards precision
+and range so that the result can be represented as a single-precision
+IEEE floating-point number (even if @tech{single-flonums} are not
+supported).
+
+Using @racket[flsingle] on the arguments and results of @racket[fl+],
+@racket[fl-], @racket[fl*], @racket[fl/], and @racket[flsqrt]---that
+is, performing double-precision operations on values representable in
+single precision and then rounding the result to single precision---is
+always the same as performing the corresponding single-precision
+operation @cite{Roux14}. (For other operations, the IEEE
+floating-point specification does not make enough guarantees to say
+more about the interaction with @racket[flsingle].)
+
+@history[#:added "7.8.0.7"]}
+
+
 @deftogether[(
 @defproc[(flsin  [a flonum?]) flonum?]
 @defproc[(flcos  [a flonum?]) flonum?]

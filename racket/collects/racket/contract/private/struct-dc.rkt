@@ -319,7 +319,7 @@
                 (if (null? l)
                     v
                     (apply f v (append l (list impersonator-prop:contracted ctc
-                                               impersonator-prop:blame (blame-add-missing-party blame neg-party))))))
+                                               impersonator-prop:blame (cons blame neg-party))))))
               (app* chaperone-struct
                     (app* impersonate-struct
                           v
@@ -831,8 +831,10 @@
            (raise-syntax-error 
             'struct/dc 
             (string-append 
-             "expected an identifier that names a field or a sequence with a field name,"
-             " the #:parent keyword, and the parent struct")
+             "could not identify selector;\n"
+             " expected either an identifier that names a field,\n"
+             " a sequence with a field name, #:parent, and the parent struct that matches, or\n"
+             " a sequence starting with #:selector and a selector identifier")
             stx
             sel-name)))
        
@@ -1568,19 +1570,7 @@
                                          (free-identifier=? (datum->syntax stx x)
                                                             sel)))
                              si-selectors)
-                      (define strip-reg 
-                        (regexp (format "^~a-" (regexp-quote (symbol->string (syntax-e struct-id))))))
-                      (define field-name
-                        (datum->syntax 
-                         (disarm sel)
-                         (string->symbol (regexp-replace strip-reg
-                                                         (symbol->string (syntax-e sel))
-                                                         ""))))
-                      (cond
-                        [(free-identifier=? #'struct-name struct-id)
-                         #`(#:selector #,sel)]
-                        [else
-                         #`(#,field-name #:parent #,struct-id)])]
+                      #`(#:selector #,sel)]
                      [else #f])])]
                [else #f])))
          (unless candidate

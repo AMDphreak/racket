@@ -12,10 +12,12 @@
          racket/string
          compiler/cm
          compiler/compilation-path
+         compiler/cross
          planet/planet-archives
          planet/private/planet-shared
          (only-in planet/resolver resolve-planet-path)
          setup/cross-system
+         setup/variant
 
          "option.rkt"
          compiler/compiler
@@ -105,7 +107,15 @@
 
   (define (setup-fprintf p task s . args)
     (let ([task (if task (string-append task ": ") "")])
-      (apply fprintf p (string-append name-str ": " task s "\n") args)
+      (define st
+        (string-append name-str ": " task s
+                       (if timestamp-output?
+                           (format " @ ~a" (current-process-milliseconds))
+                           "")
+                       "\n"))
+      (if (null? args)
+          (write-string st p)
+          (apply fprintf p st args))
       (flush-output p)))
 
   (define (setup-printf task s . args)
@@ -159,6 +169,16 @@
   ;; avoid caching compile-file information across different collections:
   (define limit-cross-collection-cache?
     (getenv "PLT_SETUP_LIMIT_CACHE"))
+
+  ;; In non-parallel mode, forcing a GC after each collection or
+  ;; document is a relatively good time-to-space tradeoff, so do that
+  ;; unless `PLT_SETUP_NO_FORCE_GC` is set:
+  (define gc-after-each-sequential?
+    (not (getenv "PLT_SETUP_NO_FORCE_GC")))
+
+  ;; Option to show CPU time since startup on each status line:
+  (define timestamp-output?
+    (and (getenv "PLT_SETUP_SHOW_TIMESTAMPS") #t))
 
   ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
   ;;                   Errors                      ;;
@@ -778,8 +798,8 @@
       (when (and (pair? deps) (list? deps))
         (for ([s (in-list (cdddr deps))])
           (unless (external-dep? s)
-              (define new-s (dep->path s))
-              (when (path-string? new-s) (hash-set! dependencies new-s #t))))))
+            (define new-s (dep->path s))
+            (when (path-string? new-s) (hash-set! dependencies new-s #t))))))
     (delete-file path))
 
   (define (delete-files-in-directory path printout dependencies)
@@ -860,22 +880,24 @@
     ;; Unless specific collections were named, also delete .zos for
     ;; referenced modules and delete info-domain cache
     (when no-specific-collections?
-      (setup-printf #f "checking dependencies")
-      (let loop ([old-dependencies dependencies])
-        (define dependencies (make-hash))
-        (define did-something? #f)
-        (hash-for-each
-         old-dependencies
-         (lambda (file _)
-           (define-values [dir name dir?] (split-path file))
-           (define zo  (build-path dir mode-dir (path-add-extension name #".zo")))
-           (define dep (build-path dir mode-dir (path-add-extension name #".dep")))
-           (when (and (file-exists? dep) (file-exists? zo))
-             (set! did-something? #t)
-             (setup-printf "deleting" "~a" (path->relative-string/setup zo #:cache pkg-path-cache))
-             (delete-file/record-dependency zo dependencies)
-             (delete-file/record-dependency dep dependencies))))
-        (when did-something? (loop dependencies)))
+      (unless (or (avoid-main-installation)
+                  (not (make-user)))
+        (setup-printf #f "checking dependencies")
+        (let loop ([old-dependencies dependencies])
+          (define dependencies (make-hash))
+          (define did-something? #f)
+          (hash-for-each
+           old-dependencies
+           (lambda (file _)
+             (define-values [dir name dir?] (split-path file))
+             (define zo  (build-path dir mode-dir (path-add-extension name #".zo")))
+             (define dep (build-path dir mode-dir (path-add-extension name #".dep")))
+             (when (and (file-exists? dep) (file-exists? zo))
+               (set! did-something? #t)
+               (setup-printf "deleting" "~a" (path->relative-string/setup zo #:cache pkg-path-cache))
+               (delete-file/record-dependency zo dependencies)
+               (delete-file/record-dependency dep dependencies))))
+          (when did-something? (loop dependencies))))
       (when (make-info-domain)
         (setup-printf #f "clearing info-domain caches")
         (define (check-one-info-domain fn)
@@ -883,12 +905,21 @@
             (with-handlers ([exn:fail:filesystem? (warning-handler (void))])
               (with-output-to-file fn void #:exists 'truncate/replace))))
         (for ([p (current-library-collection-paths)])
-          (check-one-info-domain (build-path p "info-domain" "compiled" "cache.rktd")))
-        (check-one-info-domain (build-path (find-share-dir) "info-cache.rktd"))
-        (check-one-info-domain (build-path (find-user-share-dir) "info-cache.rktd")))
+          (unless (or (and (avoid-main-installation) (hash-ref main-collects-dirs p #f))
+                      (and (not (make-user)) (not (hash-ref main-collects-dirs p #f))))
+            (check-one-info-domain (build-path p "info-domain" "compiled" "cache.rktd"))))
+        (unless (avoid-main-installation)
+          (check-one-info-domain (build-path (find-share-dir) "info-cache.rktd")))
+        (when (make-user)
+          (check-one-info-domain (build-path (find-user-share-dir) "info-cache.rktd"))))
       (when make-docs?
         (setup-printf #f "deleting documentation databases")
-        (for ([d (in-list (list (find-doc-dir) (find-user-doc-dir)))])
+        (for ([d (in-list (append (if (avoid-main-installation)
+                                      null
+                                      (list (find-user-doc-dir)))
+                                  (if (make-user)
+                                      (list (find-user-doc-dir))
+                                      null)))])
           (when d
             (define f (build-path d "docindex.sqlite"))
             (when (file-exists? f)
@@ -1086,7 +1117,9 @@
         (setup-printf "making" "~a" (cc-name cc))
         (control-io
          (lambda (p where)
-            (set! gcs 2)
+            (when gc-after-each-sequential?
+              ;; trigger `(collect-garbage)` afterward, and again after next collection:
+              (set! gcs 2))
             (setup-fprintf p #f " in ~a"
                            (path->relative-string/setup
                             (path->complete-path where (cc-path cc))
@@ -1276,7 +1309,7 @@
                                                     (and (path? base)
                                                          (equal? (path->directory-path p)
                                                                  (path->directory-path base)))))))]
-                                     [else
+                                     [_
                                       #t])
                                    p)]))
                          (if (and dir
@@ -1323,27 +1356,28 @@
       ;; already there, if the collection has an "info.ss" file:
       (when (or (file-exists? (build-path (cc-path cc) "info.rkt"))
                 (file-exists? (build-path (cc-path cc) "info.ss")))
-        (hash-set! t
-                   (case (cc-info-path-mode cc)
-                     [(relative)
-                       ;; Use relative path:
-                      (path->info-relative (apply build-path
-                                                  (cc-info-root cc)
-                                                  (cc-collection cc)))]
-                     [(abs-in-relative) 
-                      ;; Try relative to `lib':
-                      (let ([p (path->main-lib-relative (cc-path cc))])
-                        (if (path? p)
-                            ;; Fall back to relative (with ".."s) to info root:
-                            (let ([rp (find-relative-path (cc-info-root cc)
-                                                          p
-                                                          #:more-than-root? #t)])
-                              (if (relative-path? rp)
-                                  (encode-relative-path rp)
-                                  (path->bytes rp)))
-                            p))]
-                     [else (path->bytes (cc-path cc))])
-                   (cons (domain) (cc-shadowing-policy cc)))))
+        (unless (eq? 'all (omitted-paths (cc-path cc) getinfo/log-failure (cc-omit-root cc)))
+          (hash-set! t
+                     (case (cc-info-path-mode cc)
+                       [(relative)
+                        ;; Use relative path:
+                        (path->info-relative (apply build-path
+                                                    (cc-info-root cc)
+                                                    (cc-collection cc)))]
+                       [(abs-in-relative)
+                        ;; Try relative to `lib':
+                        (let ([p (path->main-lib-relative (cc-path cc))])
+                          (if (path? p)
+                              ;; Fall back to relative (with ".."s) to info root:
+                              (let ([rp (find-relative-path (cc-info-root cc)
+                                                            p
+                                                            #:more-than-root? #t)])
+                                (if (relative-path? rp)
+                                    (encode-relative-path rp)
+                                    (path->bytes rp)))
+                              p))]
+                       [else (path->bytes (cc-path cc))])
+                     (cons (domain) (cc-shadowing-policy cc))))))
     ;; In "tidy" mode, make sure we check each "cache.rktd":
     (when (or (make-tidy)
               no-specific-collections?)
@@ -1414,9 +1448,10 @@
               name-str
               (if no-specific-collections? #f (map cc-path ccs-to-compile))
               latex-dest auto-start-doc? (make-user) (force-user-docs)
-              (make-tidy) (avoid-main-installation)
+              (make-tidy) (avoid-main-installation) (sync-docs-only)
               (lambda (what go alt) (record-error what "building docs" go alt))
-              setup-printf))
+              setup-printf
+              gc-after-each-sequential?))
 
   (define (make-docs-step)
     (setup-printf #f (add-time "--- building documentation ---"))
@@ -1521,9 +1556,26 @@
                  (make-directory* dir))
                (define skip-non-addon? (and (cc-main? cc)
                                             (avoid-main-installation)))
+               (define skip-untethered-main? (and (cc-main? cc)
+                                                  (or
+                                                   ;; Don't create untethered if we're creating tethered
+                                                   config-p
+                                                   ;; If the executable already exists in a search
+                                                   ;; directory other than the one for `p`, no need
+                                                   ;; to write `p` after all
+                                                   (for/or ([dir (in-list (if (and (eq? kind 'gui)
+                                                                                   (not (script-variant?
+                                                                                         (current-launcher-variant))))
+                                                                              (get-gui-bin-extra-search-dirs)
+                                                                              (get-console-bin-extra-search-dirs)))])
+                                                     (define-values (base name dir?) (split-path p))
+                                                     (define p2 (build-path dir name))
+                                                     (or (file-exists? p2)
+                                                         (directory-exists? p2))))))
                (unless skip-non-addon?
-                 (prep-dir p)
                  (prep-dir receipt-path)
+                 (unless skip-untethered-main?
+                   (prep-dir p))
                  (when config-p
                    (prep-dir config-p)))
                (when addon-p
@@ -1573,7 +1625,8 @@
                     p
                     aux)))
                (unless skip-non-addon?
-                 (create p (not (cc-main? cc)) #f)
+                 (unless skip-untethered-main?
+                   (create p (not (cc-main? cc)) #f))
                  (when config-p
                    (create config-p #f #t)))
                (when addon-p
@@ -1749,7 +1802,7 @@
       (write-receipt-hash receipt-path ht2)))
 
   ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-  ;;       Foriegn Libraries and Man Pages         ;;
+  ;;       Foreign Libraries and Man Pages         ;;
   ;; ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
   (define (make-copy/move-step what
@@ -1758,6 +1811,7 @@
                                copy-tag
                                move-tag
                                find-target-dir
+                               get-extra-search-dirs
                                find-user-target-dir
                                path->relative-string/*
                                receipt-file
@@ -1797,37 +1851,52 @@
                               (define (copy-lib lib moving?)
                                 (define src (path->complete-path lib (cc-path cc)))
                                 (define lib-name (file-name-from-path lib))
-                                (define dest (build-dest-path dir lib-name))
-                                (define already? (or (and moving?
+                                (cond
+                                  [(and (cc-main? cc)
+                                        (for/or ([s-dir (in-list (get-extra-search-dirs))])
+                                          (let ([p (build-dest-path s-dir lib-name)])
+                                            (and (or (file-exists? p)
+                                                     (directory-exists? p))
+                                                 (or (and moving?
                                                           (not (file-exists? src))
-                                                          (not (directory-exists? src))
-                                                          (or (file-exists? dest)
-                                                              (directory-exists? dest)))
-                                                     (same-content? src dest)))
-                                (unless already?
-                                  (setup-printf "installing" (string-append what " ~a")
-                                                (path->relative-string/* dest)))
-                                (hash-set!
-                                 installed-libs
-                                 (record-lib receipt-path lib-name (cc-collection cc) (cc-path cc))
-                                 #t)
-                                (unless already?
-                                  (hash-set! dests dest #t)
-                                  (delete-directory/files/hard dest)
-				  (make-parent-directory* dest)
-                                  (if (file-exists? src)
-                                      (if (cc-main? cc)
-                                          (copy-file src dest)
-                                          (copy-user-lib src dest))
-                                      (copy-directory/files src dest)))
-                                src)
+                                                          (not (directory-exists? src)))
+                                                     (same-content? src p))))))
+                                   ;; already exists in one of the search directories, so
+                                   ;; don't copy/move to this one
+                                   #f]
+                                  [else
+                                   (define dest (build-dest-path dir lib-name))
+                                   (define already? (or (and moving?
+                                                             (not (file-exists? src))
+                                                             (not (directory-exists? src))
+                                                             (or (file-exists? dest)
+                                                                 (directory-exists? dest)))
+                                                        (same-content? src dest)))
+                                   (unless already?
+                                     (setup-printf "installing" (string-append what " ~a")
+                                                   (path->relative-string/* dest)))
+                                   (hash-set!
+                                    installed-libs
+                                    (record-lib receipt-path lib-name (cc-collection cc) (cc-path cc))
+                                    #t)
+                                   (unless already?
+                                     (hash-set! dests dest #t)
+                                     (delete-directory/files/hard dest)
+                                     (make-parent-directory* dest)
+                                     (if (file-exists? src)
+                                         (if (cc-main? cc)
+                                             (copy-file src dest)
+                                             (copy-user-lib src dest))
+                                         (copy-directory/files src dest)))
+                                   src]))
                               
                               (for ([lib (in-list copy-libs)])
                                 (copy-lib lib #f))
                               
                               (for ([lib (in-list move-libs)])
                                 (define src (copy-lib lib #t))
-                                (delete-directory/files src #:must-exist? #f)))))
+                                (when src
+                                  (delete-directory/files src #:must-exist? #f))))))
       (when (or no-specific-collections?
                 (make-tidy))
         (unless (avoid-main-installation)
@@ -1936,6 +2005,7 @@
                          'copy-foreign-libs
                          'move-foreign-libs
                          find-lib-dir
+                         get-cross-lib-extra-search-dirs
                          find-user-lib-dir
                          path->relative-string/lib
                          "libs.rktd" #t
@@ -1960,6 +2030,7 @@
                          'copy-shared-files
                          'move-shared-files
                          find-share-dir
+                         get-share-extra-search-dirs
                          find-user-share-dir
                          path->relative-string/share
                          "shares.rktd" #t
@@ -1978,6 +2049,7 @@
                          'copy-man-pages
                          'move-man-pages
                          find-man-dir
+                         get-man-extra-search-dirs
                          find-user-man-dir
                          path->relative-string/man
                          "mans.rktd" #f
@@ -2075,9 +2147,7 @@
   (setup-printf "version" "~a" (version))
   (setup-printf "platform" "~a [~a]" (cross-system-library-subpath #f) (cross-system-type 'gc))
   (setup-printf "target machine" "~a" (or (current-compile-target-machine)
-                                          ;; Check for `cross-multi-compile?` mode like compiler/cm:
-                                          (and ((length (current-compiled-file-roots)) . > . 1)
-                                               (cross-installation?)
+                                          (and (cross-multi-compile? (current-compiled-file-roots))
                                                (cross-system-type 'target-machine))
                                           'any))
   (when (cross-installation?)

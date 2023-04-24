@@ -1,11 +1,12 @@
 #lang racket/base
-(require "shelly.rkt"
+(require racket/file
+         "shelly.rkt"
          "util.rkt")
 
 (this-test-is-run-by-the-main-test)
 
 (pkg-tests
- (define dir (getenv "PLTADDONDIR"))
+ (define dir (find-system-path 'addon-dir))
  (define pkg-dir (build-path dir "pkgs"))
  (define (try-now)
    (shelly-case
@@ -34,5 +35,5 @@
        (rename-file-or-directory alt-dir pkg-dir))
      ;; create the directory and try again:
      (begin
-       (make-directory pkg-dir)
+       (make-directory* pkg-dir)
        (try-now))))

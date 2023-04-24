@@ -24,6 +24,8 @@
          call-with-input-string
          call-with-input-bytes
 
+         combine-output
+
          ;; `mzlib/port` exports
          open-output-nowhere
          make-pipe-with-specials
@@ -39,13 +41,14 @@
          copy-port
          input-port-append
          convert-stream
-         make-limited-input-port
          reencode-input-port
          reencode-output-port
          dup-input-port
          dup-output-port
 
          (contract-out
+           [make-limited-input-port ((input-port? exact-nonnegative-integer?) (any/c)
+                                     . ->* . input-port?)]
            [read-bytes-avail!-evt (mutable-bytes? input-port-with-progress-evts?
                                    . -> . evt?)]
            [peek-bytes-avail!-evt (mutable-bytes? exact-nonnegative-integer? evt?/false
@@ -163,6 +166,75 @@
 
 (define (call-with-input-bytes str proc)
   (with-input-from-x 'call-with-input-bytes 1 #t str proc))
+
+(define (combine-output a-out b-out)
+  (struct buffer (bstr out start end) #:authentic #:mutable)
+  (define pending #f)
+  (define lock (make-semaphore 1))
+  (define ready-evt (replace-evt a-out (λ (_) b-out)))
+  (define retry-evt (handle-evt
+                     (replace-evt
+                      (semaphore-peek-evt lock)
+                      (λ (_) (replace-evt a-out (λ (_) b-out))))
+                     (λ (_) #f)))
+  (define (write-pending!)
+    (when pending
+      (define bstr  (buffer-bstr pending))
+      (define out   (buffer-out pending))
+      (define start (buffer-start pending))
+      (define end   (buffer-end pending))
+      (define n (write-bytes-avail* bstr out start end))
+      (when n
+        (cond
+          [(= n (- end start))
+           (set! pending #f)]
+          [(> n 0)
+           (set-buffer-start! pending (+ start n))]))))
+  (define (write-out bstr start end non-blocking? enable-break?)
+    (define result
+      (call-with-semaphore
+       lock
+       (λ ()
+         (write-pending!)
+         (cond
+           [pending       retry-evt]
+           [(= start end) 0]
+           [enable-break? (write-out* write-bytes-avail/enable-break bstr start end)]
+           [else          (write-out* write-bytes-avail* bstr start end)]))
+       (λ () retry-evt)))
+    (when (eqv? result 0)
+      (flush-output a-out)
+      (flush-output b-out))
+    result)
+  (define (write-out* write-initial bstr start end)
+    (define m (write-initial bstr a-out start end))
+    (cond
+      [(or (not m) (= m 0))
+       retry-evt]
+      [else
+       (define n
+         (or (write-bytes-avail* bstr b-out start (+ start m))
+             0))
+       (when (< n m)
+         (set! pending (buffer bstr b-out (+ start n) (+ start m))))
+       m]))
+  (define (close)
+    (call-with-semaphore
+     lock
+     (λ ()
+       (when pending
+         (write-bytes (buffer-bstr pending)
+                      (buffer-out pending)
+                      (buffer-start pending)
+                      (buffer-end pending))
+         (set! pending #f))))
+    (flush-output a-out)
+    (flush-output b-out))
+  (make-output-port
+   'tee
+   ready-evt
+   write-out
+   close))
 
 ;; ----------------------------------------
 ;; the code below used to be in `mzlib/port`
@@ -593,14 +665,25 @@
                             #:init-position [init-position 1])
   (define buffer-mode (or (file-stream-buffer-mode orig-in)
                           'block))
+  (define (make-evt delta)
+    (wrap-evt (if (= delta 0)
+                  orig-in
+                  (peek-bytes-evt 1 delta #f orig-in))
+              (lambda (v) 0)))
   (make-input-port/read-to-peek
    name
    (lambda (s)
      (let ([r (peek-bytes-avail!* s delta #f orig-in)])
-       (set! delta (+ delta (if (number? r) r 1)))
-       (if (eq? r 0) (wrap-evt orig-in (lambda (v) 0)) r)))
+       (cond
+         [(eq? r 0) (make-evt delta)]
+         [else
+          (set! delta (+ delta (if (number? r) r 1)))
+          r])))
    (lambda (s skip default)
-     (peek-bytes-avail!* s (+ delta skip) #f orig-in))
+     (define r (peek-bytes-avail!* s (+ delta skip) #f orig-in))
+     (cond
+       [(eq? r 0) (make-evt (+ delta skip))]
+       [else r]))
    void
    #f
    void
@@ -1349,7 +1432,7 @@
                                      (let ([bstr (make-bytes (- (cdr p) (car p)))])
                                        (unless (= (car p) (cdr p))
                                          (let loop ([offset 0])
-                                           (let ([v (peek-bytes-avail! bstr (car p) progress-evt input-port offset)])
+                                           (let ([v (peek-bytes-avail! bstr (+ (car p) offset) progress-evt input-port offset)])
                                              (unless (zero? v)
                                                (when ((+ offset v) . < . (bytes-length bstr))
                                                  (loop (+ offset v)))))))

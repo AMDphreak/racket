@@ -4,6 +4,8 @@
          "../path/path.rkt"
          "../path/parameter.rkt"
          "../path/directory-path.rkt"
+         "../path/cleanse.rkt"
+         (only-in "../path/windows.rkt" special-filename?)
          "../host/rktio.rkt"
          "../host/thread.rkt"
          "../host/error.rkt"
@@ -13,12 +15,14 @@
          "host.rkt"
          "identity.rkt"
          "error.rkt"
+         "permissions.rkt"
          (only-in "error.rkt"
                   set-maybe-raise-missing-module!))
 
 (provide directory-exists?
          file-exists?
          link-exists?
+         file-or-directory-type
          make-directory
          directory-list
          current-force-delete-permissions
@@ -27,6 +31,7 @@
          rename-file-or-directory
          file-or-directory-modify-seconds
          file-or-directory-permissions
+         file-or-directory-stat
          file-or-directory-identity
          file-size
          copy-file
@@ -46,16 +51,46 @@
 
 (define/who (file-exists? p)
   (check who path-string? p)
-  (rktio_file_exists rktio (->host p who '(exists))))
+  (define host-path (->host p who '(exists)))
+  (cond
+    [(and (eq? 'windows (system-type))
+          (special-filename? host-path #:immediate? #f))
+     #t]
+    [else
+     (rktio_file_exists rktio host-path)]))
 
 (define/who (link-exists? p)
   (check who path-string? p)
   (rktio_link_exists rktio (->host p who '(exists))))
 
-(define/who (make-directory p)
+(define/who (file-or-directory-type p [must-exist? #f])
   (check who path-string? p)
+  (define host-path (->host p who '(exists)))
+  (cond
+    [(and (eq? 'windows (system-type))
+          (special-filename? host-path #:immediate? #f))
+     'file]
+    [else
+     (define r (rktio_file_type rktio host-path))
+     (cond
+       [(eqv? r RKTIO_FILE_TYPE_FILE) 'file]
+       [(eqv? r RKTIO_FILE_TYPE_DIRECTORY) 'directory]
+       [(eqv? r RKTIO_FILE_TYPE_LINK) 'link]
+       [(eqv? r RKTIO_FILE_TYPE_DIRECTORY_LINK) 'directory-link]
+       [else
+        (and must-exist?
+             (raise-filesystem-error who
+                                     r
+                                     (format (string-append
+                                              "access failed\n"
+                                              "  path: ~a")
+                                             (host-> host-path))))])]))
+
+(define/who (make-directory p [perms RKTIO_DEFAULT_DIRECTORY_PERM_BITS])
+  (check who path-string? p)
+  (check who permissions? #:contract permissions-desc perms)
   (define host-path (->host p who '(write)))
-  (define r (rktio_make_directory rktio host-path))
+  (define r (rktio_make_directory_with_permissions rktio host-path perms))
   (when (rktio-error? r)
     (raise-filesystem-error who
                             r
@@ -114,7 +149,7 @@
              [else
               (rktio_free fnp)
               (end-atomic)
-              (loop (cons (host-> fn) accum))]))])))))
+              (loop (cons (host-element-> fn) accum))]))])))))
 
 (define/who (delete-file p)
   (check who path-string? p)
@@ -254,6 +289,63 @@
                    l)])
        l)]))
 
+(define/who (file-or-directory-stat p [as-link? #f])
+  (check who path-string? p)
+  (define host-path (->host p who '(exists)))
+  (start-atomic)
+  (define r0 (rktio_file_or_directory_stat rktio host-path (not as-link?)))
+  (define r (if (rktio-error? r0)
+                r0
+                (begin0
+                  (rktio_stat_to_vector r0)
+                  (rktio_free r0))))
+  (end-atomic)
+  (cond
+    [(rktio-error? r0)
+     (raise-filesystem-error who
+                             r
+                             (format (string-append
+                                      "cannot get stat result\n"
+                                      "  path: ~a")
+                                     (host-> host-path)))]
+    [else
+     ; The nanosecond struct fields are only the fractional seconds part, i. e.
+     ; they're below 1_000_000_000. Thus combine them with the seconds parts to
+     ; get the nanoseconds including the whole seconds.
+     (define (combined-nanoseconds seconds-index)
+       (+ (* #e1e9 (vector-ref r seconds-index))
+          (vector-ref r (add1 seconds-index))))
+     (define main-hash
+       (hasheq 'device-id (vector-ref r 0)
+               'inode (vector-ref r 1)
+               'mode (vector-ref r 2)
+               'hardlink-count (vector-ref r 3)
+               'user-id (vector-ref r 4)
+               'group-id (vector-ref r 5)
+               'device-id-for-special-file (vector-ref r 6)
+               'size (vector-ref r 7)
+               'block-size (vector-ref r 8)
+               'block-count (vector-ref r 9)
+               'access-time-seconds (vector-ref r 10)
+               'access-time-nanoseconds (combined-nanoseconds 10)
+               'modify-time-seconds (vector-ref r 12)
+               'modify-time-nanoseconds (combined-nanoseconds 12)))
+     (define ctime-hash
+       (if (vector-ref r 15)
+           (hasheq 'change-time-seconds (vector-ref r 14)
+                   'change-time-nanoseconds (combined-nanoseconds 14)
+                   'creation-time-seconds 0
+                   'creation-time-nanoseconds 0)
+           (hasheq 'change-time-seconds 0
+                   'change-time-nanoseconds 0
+                   'creation-time-seconds (vector-ref r 14)
+                   'creation-time-nanoseconds (combined-nanoseconds 14))))
+     ; We can't use `hash-union` (from `racket/hash`) in the kernel code, so
+     ; simulate the function.
+     (for/fold ([new-hash main-hash])
+               ([(key value) (in-hash ctime-hash)])
+        (hash-set new-hash key value))]))
+
 (define/who (file-or-directory-identity p [as-link? #f])
   (check who path-string? p)
   (define host-path (->host p who '(exists)))
@@ -281,9 +373,15 @@
                                      (host-> host-path)))]
     [else r]))
 
-(define/who (copy-file src dest [exists-ok? #f])
+(define/who (copy-file src dest [exists-ok? #f] [permissions #f] [override-create-permissions? #t])
   (check who path-string? src)
   (check who path-string? dest)
+  (check who (lambda (m)
+               (or (not m)
+                   (and (exact-integer? m)
+                        (<= 0 m 65535))))
+         #:contract "(or/c #f (integer-in 0 65535))"
+         permissions)
   (define src-host (->host src who '(read)))
   (define dest-host (->host dest who '(write delete)))
   (define (report-error r)
@@ -297,7 +395,9 @@
                                     (host-> src-host)
                                     (host-> dest-host))))
   (start-atomic)
-  (let ([cp (rktio_copy_file_start rktio dest-host src-host exists-ok?)])
+  (let ([cp (rktio_copy_file_start_permissions rktio dest-host src-host exists-ok?
+                                               permissions (or permissions 0)
+                                               override-create-permissions?)])
     (cond
       [(rktio-error? cp)
        (end-atomic)
@@ -344,9 +444,11 @@
 
 (define (do-resolve-path p who)
   (check who path-string? p)
-  (define host-path (->host (path->path-without-trailing-separator (->path p)) who '(exists)))
+  (define p-path (->path p))
+  (define host-path (->host p-path who '(exists)))
+  (define host-path/no-sep (host-path->host-path-without-trailing-separator host-path))
   (start-atomic)
-  (define r0 (rktio_readlink rktio host-path))
+  (define r0 (rktio_readlink rktio host-path/no-sep))
   (define r (if (rktio-error? r0)
                 r0
                 (begin0
@@ -356,10 +458,10 @@
   (cond
     [(rktio-error? r)
      ;; Errors are not reported, but are treated like non-links
-     (define new-path (host-> host-path))
+     (define new-path (cleanse-path p-path))
      ;; If cleansing didn't change p, then return an `eq?` path
      (cond
-       [(equal? new-path p) p]
+       [(equal? new-path p-path) p-path]
        [else new-path])]
     [else (host-> r)]))
 

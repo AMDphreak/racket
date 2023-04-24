@@ -2,7 +2,9 @@
 
 (define undefined '#{undefined bjjxts6iq4xqtw8kz4eb1jxbs-0})
 
-(define-record-type variable (fields (mutable val) name))
+(define-record-type variable
+  (fields (mutable val) name)
+  (sealed #t))
 
 (define (variable-set! var val)
   (variable-val-set! var val))
@@ -17,6 +19,8 @@
   (raise
    (|#%app|
     exn:fail:contract:variable
-    (string-append (symbol->string (variable-name var))
-                   ": undefined;\n cannot reference undefined identifier")
+    (error-message->adjusted-string
+     (variable-name var) 'local
+     "undefined;\n cannot reference undefined identifier"
+     primitive-realm)
     (current-continuation-marks))))

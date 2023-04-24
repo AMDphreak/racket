@@ -6,8 +6,19 @@
          (only-in racket/private/hash paired-fold)
          (for-syntax racket/base))
 
+;; `assoc?` is not constant time, but it's likely to be called multiple
+;; times on a given argument, so keep a weak hash of known associates:
+(define known-assocs (make-weak-hasheq))
+
 (define (assoc? v)
-  (and (list? v) (andmap pair? v)))
+  (or (null? v)
+      (and (pair? v)
+           (or (hash-ref known-assocs v #f)
+               (and (list? v)
+                    (andmap pair? v)
+                    (begin
+                      (hash-set! known-assocs v #t)
+                      #t))))))
 
 (define (immutable-hash? v)
   (and (hash? v) (immutable? v)))
@@ -52,9 +63,19 @@
              (default)
              default))]))
 
+;; The `assoc-...` functions are available only through the dictionary
+;; interface, which reaches them through functions with a `dict?`
+;; contract, so no additional check is needed
+(define (assoc?/internal e)
+  #t)
+
+;; For dispatch, it's enough to check for null or a pair:
+(define (pair-or-null? v)
+  (or (null? v) (pair? v)))
+
 (define no-arg (gensym))
 (define (assoc-ref d key [default no-arg])
-  (unless (assoc? d)
+  (unless (assoc?/internal d)
     (raise-argument-error 'dict-ref "dict?" d))
   (cond
     [(assoc key d) => cdr]
@@ -77,7 +98,7 @@
       v))
 
 (define (assoc-set d key val)
-  (unless (assoc? d)
+  (unless (assoc?/internal d)
     (raise-argument-error 'dict-set "dict?" d))
   (let loop ([xd d])
     (cond
@@ -123,7 +144,7 @@
     (dict-set d key (xform (dict-ref d key default)))]))
 
 (define (assoc-remove d key)
-  (unless (assoc? d)
+  (unless (assoc?/internal d)
     (raise-argument-error 'dict-remove "dict?" d))
   (let loop ([xd d])
     (cond
@@ -131,7 +152,7 @@
      [else
       (let ([a (car xd)])
         (if (equal? (car a) key)
-            (loop (cdr xd))
+            (cdr xd)
             (cons a (loop (cdr xd)))))])))
 
 (define (vector-iterate-first d)
@@ -155,6 +176,55 @@
 (define (vector-iterate-key d i) i)
 
 (define vector-iterate-value vector-ref)
+
+(define (assoc-count d)
+  (unless (assoc?/internal d)
+    (raise-argument-error 'dict-count "dict?" d))
+  (length d))
+
+(struct assoc-iter (head pos))
+
+(define (assoc-iterate-first d)
+  (unless (assoc?/internal d)
+    (raise-argument-error 'dict-iterate-first "dict?" d))
+  (if (null? d) #f (assoc-iter d d)))
+
+(define (assoc-iterate-next d i)
+  (cond
+    [(and (assoc-iter? i)
+          (eq? d (assoc-iter-head i)))
+     (let ([pos (cdr (assoc-iter-pos i))])
+       (if (null? pos)
+           #f
+           (assoc-iter d pos)))]
+    [(assoc?/internal d)
+     (raise-mismatch-error
+      'dict-iterate-next
+      "invalid iteration position for association list: "
+      i)]
+    [else (raise-argument-error 'dict-iterate-next "dict?" d)]))
+
+(define (assoc-iterate-key d i)
+  (cond
+    [(and (assoc-iter? i) (eq? d (assoc-iter-head i)))
+     (caar (assoc-iter-pos i))]
+    [(assoc?/internal d)
+     (raise-mismatch-error
+      'dict-iterate-key
+      "invalid iteration position for association list: "
+      i)]
+    [else (raise-argument-error 'dict-iterate-key "dict?" d)]))
+
+(define (assoc-iterate-value d i)
+  (cond
+    [(and (assoc-iter? i) (eq? d (assoc-iter-head i)))
+     (cdar (assoc-iter-pos i))]
+    [(assoc?/internal d)
+     (raise-mismatch-error
+      'dict-iterate-value
+      "invalid iteration position for association list: "
+      i)]
+    [else (raise-argument-error 'dict-iterate-value "dict?" d)]))
 
 (define (vector-has-key? vec key)
   (and (exact-nonnegative-integer? key)
@@ -184,22 +254,8 @@
 (define (vector-empty? vec)
   (zero? (vector-length vec)))
 
-(define (assoc-fold-unique f init d #:who [who 'assoc-fold-unique])
-  (unless (assoc? d)
-    (raise-argument-error who "dict?" d))
-  (let loop ([xd d]
-             [acc init]
-             [seen (make-immutable-hash)])
-    (cond
-      [(null? xd) acc]
-      [else
-       (let ([a (car xd)])
-         (if (hash-has-key? seen (car a))
-             (loop (cdr xd) acc seen)
-             (loop (cdr xd) (f a acc) (hash-set seen (car a) #t))))])))
-
 (define (assoc-has-key? d key)
-  (unless (assoc? d)
+  (unless (assoc?/internal d)
     (raise-argument-error 'dict-has-key? "dict?" d))
   (pair? (assoc key d)))
 
@@ -209,26 +265,33 @@
       (raise-argument-error 'dict-map "dict?" d))
     (proc (car x) (cdr x))))
 
+(define (assoc-map/copy d proc)
+  (for/list ([x (in-list d)])
+    (unless (pair? x)
+      (raise-argument-error 'dict-map/copy "dict?" d))
+    (define-values [k v] (proc (car x) (cdr x)))
+    (cons k v)))
+
 (define (assoc-for-each d proc)
   (for ([x (in-list d)])
     (unless (pair? x)
       (raise-argument-error 'dict-for-each "dict?" d))
     (proc (car x) (cdr x))))
 
-(define (assoc-count d)
-  (assoc-fold-unique (lambda (a acc) (+ acc 1)) 0 d #:who dict-count))
-
 (define (assoc-keys d)
-  (reverse (assoc-fold-unique (lambda (a acc) (cons (car a) acc)) null d #:who 'dict-keys)))
+  (for/list ([x (in-list d)])
+    (unless (pair? x)
+      (raise-argument-error 'dict-keys "dict?" d))
+    (car x)))
 
 (define (assoc-values d)
-  (reverse (assoc-fold-unique (lambda (a acc) (cons (cdr a) acc)) null d #:who 'dict-values)))
-
-(define (assoc->list d)
-  (reverse (assoc-fold-unique cons null d #:who 'dict->list)))
+  (for/list ([x (in-list d)])
+    (unless (pair? x)
+      (raise-argument-error 'dict-values "dict?" d))
+    (cdr x)))
 
 (define (fallback-copy d)
-  (unless (dict-implements? d 'dict-clear dict-set!)
+  (unless (dict-implements? d 'dict-clear 'dict-set!)
     (raise-support-error 'dict-copy d))
   (define d2 (dict-clear d))
   (for ([(k v) (in-dict d)])
@@ -236,50 +299,6 @@
   d2)
 
 (define (assoc-clear d) '())
-
-(struct assoc-iter (head pos))
-
-(define (assoc-iterate-first d)
-  (unless (assoc? d)
-    (raise-argument-error 'dict-iterate-first "dict?" d))
-  (if (null? d) #f (assoc-iter d (assoc->list d))))
-
-(define (assoc-iterate-next d i)
-  (cond
-    [(and (assoc-iter? i)
-          (eq? d (assoc-iter-head i)))
-     (let ([pos (cdr (assoc-iter-pos i))])
-       (if (null? pos)
-           #f
-           (assoc-iter d pos)))]
-    [(assoc? d)
-     (raise-mismatch-error
-      'dict-iterate-next
-      "invalid iteration position for association list: "
-      i)]
-    [else (raise-argument-error 'dict-iterate-next "dict?" d)]))
-
-(define (assoc-iterate-key d i)
-  (cond
-    [(and (assoc-iter? i) (eq? d (assoc-iter-head i)))
-     (caar (assoc-iter-pos i))]
-    [(assoc? d)
-     (raise-mismatch-error
-      'dict-iterate-key
-      "invalid iteration position for association list: "
-      i)]
-    [else (raise-argument-error 'dict-iterate-key "dict?" d)]))
-
-(define (assoc-iterate-value d i)
-  (cond
-    [(and (assoc-iter? i) (eq? d (assoc-iter-head i)))
-     (cdar (assoc-iter-pos i))]
-    [(assoc? d)
-     (raise-mismatch-error
-      'dict-iterate-value
-      "invalid iteration position for association list: "
-      i)]
-    [else (raise-argument-error 'dict-iterate-value "dict?" d)]))
 
 (define (fallback-clear d)
   (unless (dict-implements? d 'dict-remove)
@@ -313,6 +332,23 @@
   (for ([(k v) (:in-dict d)])
     (f k v)))
 
+(define (fallback-map/copy d f)
+  (cond
+    [(dict-can-functional-set? d)
+     (for/fold ([acc (dict-clear d)])
+               ([(k1 v1) (:in-dict d)])
+       (define-values [k2 v2] (f k1 v1))
+       (dict-set acc k2 v2))]
+    [(dict-mutable? d)
+     (define acc (dict-copy d))
+     (dict-clear! acc)
+     (for ([(k1 v1) (:in-dict d)])
+       (define-values [k2 v2] (f k1 v1))
+       (dict-set! acc k2 v2))
+     acc]
+    [else
+     (raise-support-error 'dict-map/copy d)]))
+
 (define (fallback-keys d)
   (for/list ([k (:in-dict-keys d)])
     k))
@@ -342,13 +378,14 @@
     (define dict-set*! hash-set*!)
     (define dict-update! hash-update!)
     (define dict-map hash-map)
+    (define dict-map/copy hash-map/copy)
     (define dict-for-each hash-for-each)
     (define dict-keys hash-keys)
     (define dict-values hash-values)
     (define dict->list hash->list)
     (define dict-copy hash-copy)
     (define dict-empty? hash-empty?)
-    (define dict-clear hash-clear)
+    (define dict-clear hash-copy-clear)
     (define dict-clear! hash-clear!)]
    [immutable-hash? immutable-hash?
     (define dict-ref hash-ref)
@@ -363,6 +400,7 @@
     (define dict-set* hash-set*)
     (define dict-update hash-update)
     (define dict-map hash-map)
+    (define dict-map/copy hash-map/copy)
     (define dict-for-each hash-for-each)
     (define dict-keys hash-keys)
     (define dict-values hash-values)
@@ -401,7 +439,7 @@
     (define dict-copy vector-copy)
     (define dict->list vector->assoc)
     (define dict-empty? vector-empty?)]
-   [assoc? list?
+   [assoc? pair-or-null?
     (define dict-ref assoc-ref)
     (define dict-set assoc-set)
     (define dict-remove assoc-remove)
@@ -412,10 +450,11 @@
     (define dict-iterate-value assoc-iterate-value)
     (define dict-has-key? assoc-has-key?)
     (define dict-map assoc-map)
+    (define dict-map/copy assoc-map/copy)
     (define dict-for-each assoc-for-each)
     (define dict-keys assoc-keys)
     (define dict-values assoc-values)
-    (define dict->list assoc->list)
+    (define dict->list values)
     (define dict-empty? null?)
     (define dict-clear assoc-clear)])
   #:defaults ()
@@ -428,6 +467,7 @@
    (define dict-update fallback-update)
    (define dict-count fallback-count)
    (define dict-map fallback-map)
+   (define dict-map/copy fallback-map/copy)
    (define dict-for-each fallback-for-each)
    (define dict-keys fallback-keys)
    (define dict-values fallback-values)
@@ -454,6 +494,7 @@
   (dict-update! dict key proc [default])
   (dict-update dict key proc [default])
   (dict-map dict proc)
+  (dict-map/copy dict proc)
   (dict-for-each dict proc)
   (dict-keys dict)
   (dict-values dict)
@@ -639,6 +680,7 @@
          dict-update!
          dict-update
          dict-map
+         dict-map/copy
          dict-for-each
          dict-keys
          dict-values

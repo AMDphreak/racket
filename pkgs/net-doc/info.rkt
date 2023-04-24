@@ -10,7 +10,8 @@
 (define build-deps '("compatibility-lib"
                      "net-lib"
                      "racket-doc"
-                     "scribble-lib"
-                     "web-server-doc"
-                     "web-server-lib"))
+                     "scribble-lib"))
 (define update-implies '("net-lib"))
+
+(define license
+  '(Apache-2.0 OR MIT))

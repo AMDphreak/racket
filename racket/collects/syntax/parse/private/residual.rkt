@@ -90,7 +90,7 @@
                  #'(quote #f)))
            #'(quote #f)))]))
 
-;; stx-list-take : stxish nat -> syntax
+;; stx-list-take : Stx Nat -> Syntax
 (define (stx-list-take stx n)
   (datum->syntax #f
                  (let loop ([stx stx] [n n])
@@ -99,7 +99,7 @@
                        (cons (stx-car stx)
                              (loop (stx-cdr stx) (sub1 n)))))))
 
-;; stx-list-drop/cx : stxish stx nat -> (values stxish stx)
+;; stx-list-drop/cx : Stx Syntax Nat -> (values Stx Syntax)
 (define (stx-list-drop/cx x cx n)
   (let loop ([x x] [cx cx] [n n])
     (if (zero? n)
@@ -110,12 +110,12 @@
               (sub1 n)))))
 
 ;; check-attr-value : Any d:Nat b:Boolean Syntax/#f -> (Listof^d (if b Syntax Any))
-(define (check-attr-value v0 depth0 base? ctx)
+(define (check-attr-value v0 depth0 stx? ctx)
   (define (bad kind v)
     (raise-syntax-error #f (format "attribute contains non-~s value\n  value: ~e" kind v) ctx))
   (define (depthloop depth v)
     (if (zero? depth)
-        (if base? (baseloop v) v)
+        (baseloop v)
         (let listloop ([v v] [root? #t])
           (cond [(null? v) null]
                 [(pair? v) (let ([new-car (depthloop (sub1 depth) (car v))]
@@ -126,13 +126,14 @@
                 [(and root? (eq? v #f)) (begin (signal-absent-pvar) (bad 'list v))]
                 [else (bad 'list v)]))))
   (define (baseloop v)
-    (cond [(syntax? v) v]
-          [(promise? v) (baseloop (force v))]
+    (cond [(promise? v) (baseloop (force v))]
+          [(not stx?) v]
+          [(syntax? v) v]
           [(eq? v #f) (begin (signal-absent-pvar) (bad 'syntax v))]
           [else (bad 'syntax v)]))
   (depthloop depth0 v0))
 
-;; datum->syntax/with-clause : any -> syntax
+;; datum->syntax/with-clause : Any -> Syntax
 (define (datum->syntax/with-clause x)
   (cond [(syntax? x) x]
         [(2d-stx? x #:traverse-syntax? #f)
@@ -145,7 +146,7 @@
                  "  value: ~e")
                 x)]))
 
-;; check-literal* : id phase phase (listof phase) stx -> void
+;; check-literal* : Id Phase Phase (Listof Phase) Syntax -> Void
 (define (check-literal* id used-phase mod-phase ok-phases/ct-rel ctx)
   (unless (or (memv (and used-phase (- used-phase mod-phase))
                     ok-phases/ct-rel)

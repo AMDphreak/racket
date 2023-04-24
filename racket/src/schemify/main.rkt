@@ -1,10 +1,9 @@
 #lang racket/base
 (require "schemify.rkt"
          "known.rkt"
-         "lift.rkt"
          "jitify.rkt"
          "xify.rkt"
-         "path.rkt"
+         "fasl-literal.rkt"
          "interpret.rkt"
          "size.rkt"
          "fasl.rkt")
@@ -14,17 +13,16 @@
          
          (all-from-out "known.rkt")
 
-         lift-in-schemified-linklet
-         lift-in-schemified-body
-
          jitify-schemified-linklet
 
          xify
 
-         extract-paths-from-schemified-linklet
-         make-path->compiled-path
-         compiled-path->path
+         fasl-literal?
+         fasl-literals
+         unfasl-literals/lazy
+         force-unfasl-literals
 
+         interpreter-link!
          interpretable-jitified-linklet
          interpret-linklet
 

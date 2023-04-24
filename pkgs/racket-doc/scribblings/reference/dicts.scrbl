@@ -2,7 +2,8 @@
 @(require "mz.rkt" (for-label racket/generic))
 
 @(define dict-eval (make-base-eval))
-@examples[#:hidden #:eval dict-eval (require racket/dict racket/generic racket/contract)]
+@examples[#:hidden #:eval dict-eval
+          (require racket/dict racket/generic racket/contract racket/string)]
 
 @title[#:tag "dicts"]{Dictionaries}
 
@@ -15,13 +16,19 @@ values. The following datatypes are all dictionaries:
 
  @item{@techlink{vectors} (using only exact integers as keys);}
 
- @item{@techlink{lists} of @techlink{pairs} (an @deftech{association
-       list} using @racket[equal?] to compare keys); and}
+ @item{@techlink{lists} of @techlink{pairs} as an @deftech{association
+       list} using @racket[equal?] to compare keys, which must be distinct; and}
 
  @item{@techlink{structures} whose types implement the @racket[gen:dict]
        @tech{generic interface}.}
 
 ]
+
+When list of pairs is used as @tech{association list} but does not
+have distinct keys (so it's not an association list), operations like
+@racket[dict-ref] and @racket[dict-remove] operate on the first
+instance of the key, while operations like @racket[dict-map] and
+@racket[dict-keys] produce an element for every instance of the key.
 
 @note-lib[racket/dict]
 
@@ -193,7 +200,7 @@ only supported for dictionary types that directly implement them.
 
 @defproc[(dict-ref [dict dict?]
                    [key any/c]
-                   [failure-result (failure-result/c any/c)
+                   [failure-result failure-result/c
                                    (lambda () (raise (make-exn:fail ....)))])
          any]{
 
@@ -485,7 +492,7 @@ Supported for any @racket[dict] that implements @racket[dict-ref] and
 @defproc[(dict-update! [dict (and/c dict? (not/c immutable?))]
                        [key any/c]
                        [updater (any/c . -> . any/c)]
-                       [failure-result (failure-result/c any/c)
+                       [failure-result failure-result/c
                                        (lambda () (raise (make-exn:fail ....)))]) void?]{
 
 Composes @racket[dict-ref] and @racket[dict-set!] to update an
@@ -511,7 +518,7 @@ v
 @defproc[(dict-update [dict dict?]
                       [key any/c]
                       [updater (any/c . -> . any/c)]
-                      [failure-result (failure-result/c any/c)
+                      [failure-result failure-result/c
                                       (lambda () (raise (make-exn:fail ....)))])
           (and/c dict? immutable?)]{
 
@@ -548,6 +555,32 @@ Supported for any @racket[dict] that implements @racket[dict-iterate-first],
 #:eval dict-eval
 (dict-map #hash((a . "apple") (b . "banana")) vector)
 ]}
+
+
+@defproc[(dict-map/copy [dict dict?]
+                        [proc (any/c any/c . -> . (values any/c any/c))])
+         dict?]{
+
+Applies the procedure @racket[proc] to each element in
+@racket[dict] in an unspecified order, accumulating the results
+into a dict of the same kind.
+The procedure @racket[proc] is called each time with a key
+and its value, and must return a corresponding key and
+value.
+
+Supported for any @racket[dict] that implements
+@racket[dict-iterate-first], @racket[dict-iterate-next],
+@racket[dict-iterate-key], and @racket[dict-iterate-value],
+and either @racket[dict-set] and @racket[dict-clear], or
+@racket[dict-set!], @racket[dict-copy], and
+@racket[dict-clear!].
+
+@examples[
+#:eval dict-eval
+(dict-map/copy #hash((a . "apple") (b . "banana")) (lambda (k v) (values k (string-upcase v))))
+]
+
+@history[#:added "8.5.0.2"]}
 
 
 @defproc[(dict-for-each [dict dict?]
@@ -975,7 +1008,7 @@ See @racket[define-custom-hash-types] for an example.
  in terms of a hash table where keys are compared with
  @racket[eql?], hashed with @racket[hash1] and
  @racket[hash2], and where the key predicate is
- @racket[key?]. See @racket[gen:equal+hash] for information
+ @racket[key?]. See @racket[gen:equal-mode+hash] and @racket[gen:equal+hash] for information
  on suitable equality and hashing functions.
 
 The @racket[make-custom-hash] and @racket[make-weak-custom-hash]
@@ -1007,5 +1040,53 @@ See also @racket[define-custom-hash-types].
 
 
 }
+
+@section{Passing Keyword Arguments in Dictionaries}
+
+@defproc[
+ (keyword-apply/dict [proc procedure?]
+                     [kw-dict dict?] ; (dict/c keyword? any/c)
+                     [pos-arg any/c] ...
+                     [pos-args (listof any/c)]
+                     [#:<kw> kw-arg any/c] ...)
+ any]{
+Applies the @racket[proc] using the positional arguments
+from @racket[(list* pos-arg ... pos-args)], and the keyword
+arguments from @racket[kw-dict] in addition to the directly
+supplied keyword arguments in the @racket[#:<kw> kw-arg]
+ sequence.
+
+All the keys in @racket[kw-dict] must be keywords.
+The keywords in the @racket[kw-dict] do not have to be
+sorted. However, the keywords in @racket[kw-dict] and the
+directly supplied @racket[#:<kw>] keywords must not overlap.
+The given @racket[proc] must accept all of the keywords in
+@racket[kw-dict] plus the @racket[#:<kw>]s.
+
+@examples[
+#:eval dict-eval
+(define (sundae #:ice-cream [ice-cream '("vanilla")]
+                #:toppings [toppings '("brownie-bits")]
+                #:sprinkles [sprinkles "chocolate"]
+                #:syrup [syrup "caramel"])
+  (format "A sundae with ~a ice cream, ~a, ~a sprinkles, and ~a syrup."
+          (string-join ice-cream #:before-last " and ")
+          (string-join toppings #:before-last " and ")
+          sprinkles
+          syrup))
+(keyword-apply/dict sundae '((#:ice-cream . ("chocolate"))) '())
+(keyword-apply/dict sundae
+                    (hash '#:toppings '("cookie-dough")
+                          '#:sprinkles "rainbow"
+                          '#:syrup "chocolate")
+                    '())
+(keyword-apply/dict sundae
+                    #:sprinkles "rainbow"
+                    (hash '#:toppings '("cookie-dough")
+                          '#:syrup "chocolate")
+                    '())
+]
+@history[#:added "7.9"]}
+
 
 @close-eval[dict-eval]

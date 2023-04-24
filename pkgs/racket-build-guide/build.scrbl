@@ -53,7 +53,7 @@ several options:
    @secref["quick-in-place"] for more instructions.}
 
  @item{@bold{Unix-style install} --- This mode installs to a given
-   destination directory (on platforms other Windows), leaving no
+   destination directory (on platforms other than Windows), leaving no
    reference to the source directory. This is the most natural mode
    for installing once from the source repository. See
    @secref["quick-unix-style"] for more instructions.}
@@ -72,14 +72,11 @@ several options:
    snapshots and releases are created, and you can create your own.
    See @secref["distribute"] for more instructions.}
 
- @item{@bold{In-place Racket on Chez Scheme build} --- This mode
-   builds using Chez Scheme via @exec{make cs}. Unless you use various
-   options described in @secref["build-cs"], this process downloads
-   Chez Scheme from GitHub, builds a traditional @exec{racket} with
-   minimal packages, builds Chez Scheme, and then builds Racket on
-   Chez Scheme using Racket and Chez Scheme. Final executables with
-   names that end in @litchar{cs} or @litchar{CS} are the Racket on
-   Chez Scheme variants.}
+ @item{@bold{In-place Racket BC build} --- This mode builds the old
+   Racket implementation (where ``BC'' means ``bytecode'' or ``before
+   Chez Scheme''). Final executables with names that end in
+   @litchar{bc} or @litchar{BC} are the Racket BC variants. See
+   @secref["build-cs"] for more information.}
 
 ]
 
@@ -90,14 +87,16 @@ On Unix (including Linux) and Mac OS, @exec{make} (or @exec{make in-place})
 creates a build in the @filepath{racket} directory.
 
 On Windows with Microsoft Visual Studio (any version between 2008/9.0
-and 2019/16.0), @exec{nmake win32-in-place} creates a build in the
-@filepath{racket} directory. For information on configuring your
-command-line environment for Visual Studio, see
-@filepath{racket/src/worksp/README.txt}.
-
-On Windows with MinGW, use @exec{make PLAIN_RACKET=racket/racket},
-since MinGW uses Unix-style tools but generates a Windows-layout
-Racket build.
+and 2022/17.0), @exec{nmake} creates a build in the @filepath{racket}
+directory. If your command-prompt environment is not already
+configured for Visual Studio to run programs like @exec{nmake.exe} and
+@exec{cl.exe}, you run @filepath{racket/src/worksp/msvcprep.bat}
+(PowerShell: @filepath{racket/src/worksp/msvcprep.ps1}} and provide an
+argument that selects a build mode: @exec{x86} (32-bit Intel/AMD
+mode), @exec{x64} or @exec{x86_amd64} (64-bit Intel/AMD mode), or
+@exec{x64_arm64} (64-bit Arm mode). Any use of @exec{make} described
+in this build guide should also work with @exec{nmake}, except as
+noted.
 
 In all cases, an in-place build includes (via links) a few packages
 that are in the @filepath{pkgs} directory. To get new versions of
@@ -112,14 +111,14 @@ See @secref["more"] for more information.
 @section[#:tag "quick-unix-style"]{Quick Instructions: Unix-Style Install}
 
 On Unix (including Linux), @exec{make unix-style PREFIX=@nonterm{dir}}
-builds and installs into @filepath{@nonterm{dir}} (which must be an
-absolute path) with binaries in @filepath{@nonterm{dir}/bin}, packages
-in @filepath{@nonterm{dir}/share/racket/pkgs}, documentation in
+builds and installs into @filepath{@nonterm{dir}} with binaries in
+@filepath{@nonterm{dir}/bin}, packages in
+@filepath{@nonterm{dir}/share/racket/pkgs}, documentation in
 @filepath{@nonterm{dir}/share/racket/doc}, etc.
 
 On Mac OS, @exec{make unix-style PREFIX=@nonterm{dir}} builds and
-installs into @filepath{@nonterm{dir}} (which must be an absolute
-path) with binaries in @filepath{@nonterm{dir}/bin}, packages in
+installs into @filepath{@nonterm{dir}} with binaries in
+@filepath{@nonterm{dir}/bin}, packages in
 @filepath{@nonterm{dir}/share/pkgs}, documentation in
 @filepath{@nonterm{dir}/doc}, etc.
 
@@ -130,9 +129,9 @@ A Unix-style install leaves no reference to the source directory.
 To split the build and install steps of a Unix-style installation,
 supply @exec{DESTDIR=@nonterm{dest-dir}} with @exec{make unix-style
 PREFIX=@nonterm{dir}}, which assembles the installation in
-@filepath{@nonterm{dest-dir}} (which must be an absolute path). Then,
-copy the content of @filepath{@nonterm{dest-dir}} to the target root
-@filepath{@nonterm{dir}}.
+@filepath{@nonterm{dest-dir}}. Then, copy or move the content of
+@filepath{@nonterm{dest-dir}} to the target root
+@filepath{@nonterm{dir}}; take care to preserve file timestamps.
 
 See @secref["more"] for more information.
 
@@ -140,17 +139,17 @@ See @secref["more"] for more information.
 @section[#:tag "more"]{More Instructions: Building Racket}
 
 The @filepath{racket} directory contains minimal Racket, which is just
-enough to run @exec{raco pkg} to install everything else. The first
-step of @exec{make in-place} or @exec{make unix-style} is to build
-minimal Racket, and you can read @filepath{racket/src/README} for more
-information.
+enough to run @exec{raco pkg} to install everything else. A first step
+of @exec{make in-place} or @exec{make unix-style} is to build minimal
+Racket, and you can read @filepath{racket/src/README.txt} for more
+information, including information about dependencies. (The very first
+step of a build is to compile Zuo, which is a tiny variant of Racket
+that @seclink["zuo"]{drives the rest of the build system}.)
 
 If you would like to provide arguments to @exec{configure} for the
 minimal Racket build, then you can supply them with by adding
-@exec{CONFIGURE_ARGS_qq="@nonterm{options}"} to @exec{make in-place}
-or @exec{make unix-style}. (The @tt{_qq} suffix on the variable name
-@tt{CONFIGURE_ARGS_qq} is a convention that indicates that single- and
-double-quote marks are allowed in the value.)
+@exec{CONFIGURE_ARGS="@nonterm{options}"} to @exec{make in-place}
+or @exec{make unix-style}.
 
 The @filepath{pkgs} directory contains packages that are tied to the
 Racket core implementation and are therefore kept in the same Git
@@ -158,12 +157,12 @@ repository. A @exec{make in-place} links to the package in-place,
 while @exec{make unix-style} copies packages out of @filepath{pkgs} to
 install them.
 
-To install a subset of the packages in @filepath{pkgs}, supply @exec{PKGS} value to
-@exec{make}. For example,
+To install a subset of the packages that would otherwise be installed,
+supply a @exec{PKGS} value to @exec{make}. For example,
 
 @commandline{make PKGS="gui-lib readline-lib"}
 
-links only the @filepath{gui-lib} and @filepath{readline-lib} packages
+installs only the @filepath{gui-lib} and @filepath{readline-lib} packages
 and their dependencies. The default value of @exec{PKGS} is
 @tt{"main-distribution main-distribution-test"}. If you run @tt{make}
 a second time, all previously installed packages remain installed and
@@ -172,9 +171,11 @@ selected package, use @exec{raco pkg remove}.
 
 To build anything other than the latest sources in the repository
 (e.g., when building from the @tt{v6.2.1} tag), you need a catalog
-that's compatible with those sources. Note that a release distribution
-is configured to use a catalog specific to that release, so you can
-extract the catalog's URL from there.
+that's compatible with those sources. Release tags starting with
+@tt{v7.1} include a default catalog that corresponds to the release.
+For earlier versions, the release distribution is configured to use a
+catalog specific to that release, so you can extract the catalog's URL
+from there.
 
 Using @exec{make} (or @exec{make in-place}) sets the installation's
 name to @tt{development}, unless the installation has been previously
@@ -186,70 +187,68 @@ that packages are installed by default into the installation's space
 instead of user-specific space. The name and/or default-scope
 configuration can be changed through @exec{raco pkg config}.
 
-Note that @exec{make -j @nonterm{n}} controls parallelism for the
-makefile part of a build, but not for the @exec{raco setup} part. To
-control both the makefile and the @exec{raco setup} part, use
+When @exec{make -j @nonterm{n}} is used to specify parallelism, the
+build system may be able to propagate that choice to intermediate
+steps and the @exec{raco setup} part. A more portable alternative is
+to supply the @exec{JOBS} variable:
 
-@commandline{make CPUS=@nonterm{n}}
+@commandline{make JOBS=@nonterm{n}}
 
-which recurs with @exec{make -j @nonterm{n} JOB_OPTIONS="-j
-@nonterm{n}"}. Setting @exec{CPUS} also works with @exec{make
-unix-style}.
+Setting @exec{JOBS} works with other targets, including @exec{make
+unix-style}. For backward compatibility, @exec{CPUS} is recognized as
+an alias for @exec{JOBS}.
 
-Use @exec{make as-is} (or @exec{nmake win32-as-is}) to perform the
-same build actions as @exec{make in-place}, but without consulting any
-package catalogs or package sources to install or update packages. In
-other words, use @exec{make as-is} to rebuild after local changes that
-could include changes to the Racket core. (If you change only
-packages, then @exec{raco setup} should suffice.)
+Use @exec{make as-is} to perform the same build actions as @exec{make
+in-place}, but without consulting any package catalogs or package
+sources to install or update packages. In other words, use @exec{make
+as-is} to rebuild after local changes that could include changes to
+minimal Racket. (If you change only packages, then @exec{raco setup}
+should suffice.)
 
 If you need even more control over the build, carry on to
 @secref["even-more"] further below.
 
 
 @; ------------------------------------------------------------
-@section[#:tag "build-cs"]{More Instructions: Building Racket on Chez Scheme}
+@section[#:tag "build-cs"]{More Instructions: Building Racket CS and Racket BC}
 
-The @exec{make cs} target (or @exec{make cs-as-is} for a rebuild, or
-@exec{nmake win32-cs} on Windows with Visual Studio) builds a variant
-of Racket that runs on Chez Scheme. By default, the executables for
-the Racket-on-Chez variant all have a @litchar{cs} or @litchar{CS}
-suffix, and they coexist with a traditional Racket build by keeping
-compiled files in a machine-specific subdirectory of the
-@filepath{compiled} directory. You can remove the @litchar{cs} suffix
+The default build of Racket, also known as Racket CS, uses and
+incorporates Chez Scheme. Chez Scheme sources are included in the
+Racket repository.
+
+Building Racket CS requires either an existing Racket or pb (portable
+bytecode) boot files for Chez Scheme. By default, pb boot files are
+downloaded from a separate Git repository by @exec{make}. If you have
+Racket v7.1 or later, then you can choose instead to bootstrap using
+that Racket implementation with
+
+@commandline{make cs BOOTFILE_RACKET=racket}
+
+The @exec{make bc} target (or @exec{make bc-as-is} for a rebuild) builds an older
+variant of Racket, called Racket BC, which does not use Chez Scheme.
+By default, the executables for the Racket BC variant all have a
+@litchar{bc} or @litchar{BC} suffix, and they coexist with a Racket CS
+build by keeping compiled files in a @filepath{bc} subdirectory of the
+@filepath{compiled} directory. You can remove the @litchar{bc} suffix
 and the subdirectory in @filepath{compiled} by providing
-@exec{RACKETCS_SUFFIX=""} to @exec{make}. (One day, if all goes well,
-the default for @exec{RACKETCS_SUFFIX} will change from @tt{"cs"} to
-@tt{""}.)
+@exec{RACKETBC_SUFFIX=""} to @exec{make bc}.
 
-Building Racket on Chez Scheme requires an existing Racket and Chez
-Scheme. If you use @exec{make cs} with no further arguments, then the
-build process will bootstrap by building a traditional variant of
-Racket and by downloading and building Chez Scheme.
+Along similar lines, you can add a @litchar{cs} suffix to the Racket
+CS executables and cause them to use a machine-specific subdirectory
+of @filepath{compiled} by providing @exec{RACKETCS_SUFFIX="cs"} to
+@exec{make} or @exec{make cs}.
 
-If you have a sufficiently recent Racket installation already with at
-least the @filepath{compiler-lib} package installed, you can supply
-@exec{RACKET=...} with @exec{make cs} to skip that part of the
-bootstrap. And if you have a Chez Scheme source directory already, you
-can supply that with @exec{SCHEME_SRC=@nonterm{dir}} instead of
-downloading a new copy:
-
-@commandline{make cs RACKET=racket SCHEME_SRC=path/to/ChezScheme}
-
-@margin-note{For now, Racket on Chez requires the variant of Chez Scheme at
-             @url{https://github.com/racket/ChezScheme}}
-
-Use @exec{make both} to build both traditional Racket and Racket on
-Chez Scheme, where packages are updated and documentation is built only
-once (using traditional Racket).
-
+Use @exec{make both} to build both Racket BC and Racket CS, where
+packages are updated and documentation is built only once (using
+Racket CS).
 
 @; ------------------------------------------------------------
 @section[#:tag "even-more"]{Even More Instructions: Building Racket Pieces}
 
 Instead of just using @exec{make in-place} or @exec{make unix-style}, you can
 take more control over the build by understanding how the pieces fit
-together.
+together. You can also read @filepath{Makefile}, which defines and
+describes many variables that can be supplied via @exec{make}.
 
 @; - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 @subsection{Building Minimal Racket}
@@ -259,7 +258,7 @@ Instead of using the top-level makefile, you can go into
 which gives you more configuration options.
 
 If you don't want any special configuration and you just want the base
-build, you can use @exec{make base} (or @exec{nmake win32-base}) with the
+build, you can use @exec{make base} with the
 top-level makefile.
 
 Minimal Racket does not require additional native libraries to run,
@@ -268,22 +267,19 @@ functionality is hobbled until native libraries from the
 @filepath{racket-win32-i386} or @filepath{racket-win32-x86_64} package
 are installed.
 
-On all platforms, from the top-level makefile, @exec{JOB_OPTIONS} as a
-makefile variable and @exec{PLT_SETUP_OPTIONS} as an environment
-variable are passed on to the @exec{raco setup} that is used to build
-minimal-Racket libraries. See the documentation for @exec{raco setup}
-for information on the options.
+On all platforms, from the top-level makefile, the
+@exec{PLT_SETUP_OPTIONS} makefile variable is passed on to the
+@exec{raco setup} that is used to build minimal-Racket libraries. See
+the documentation for @exec{raco setup} for information on the
+options. (The @exec{JOB_OPTIONS} makefile variable is also passed on,
+but it is meant to be set by some makefile targets when @exec{CPUS} is
+non-empty.)
 
 For cross compilation, add configuration options to
-@exec{CONFIGURE_ARGS_qq="@nonterm{options}"} as described in the
+@exec{CONFIGURE_ARGS="@nonterm{options}"} as described in the
 @filepath{README.txt} of @filepath{racket/src}, but also add a
-@exec{PLAIN_RACKET=...} argument for the top-level makefile to specify
-the same executable as in an @exec{--enable-racket=...} for
-@exec{configure}. In general, the @exec{PLAIN_RACKET} setting should
-have the form @exec{PLAIN_RACKET="@nonterm{exec} -C"} to ensure that
-cross-compilation mode is used and that any foreign libraries needed
-for build time can be found, but many cross-compilation scenarios work
-without @Flag{C}.
+@exec{RACKET=...} argument for the top-level makefile instead of
+using  @exec{--enable-racket=...} for @exec{configure}.
 
 Specify @exec{SETUP_MACHINE_FLAGS=@nonterm{options}} to set Racket
 flags that control the target machine of compiled bytecode for

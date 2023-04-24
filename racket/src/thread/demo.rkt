@@ -108,16 +108,6 @@
      (check (void) (sync/timeout 0 v)))
 
    ;; evt chaperone
-   (define e1 (make-semaphore 1))
-   (check #t (chaperone-of? (chaperone-evt e1 void) e1))
-   (check #f (chaperone-of? e1 (chaperone-evt e1 void)))
-   (let ([hit #f])
-     (check e1 (sync (chaperone-evt e1 (lambda (e)
-                                         (set! hit e)
-                                         (values e values)))))
-     (check e1 hit))
-   (check #t (semaphore? (chaperone-evt e1 void)))
-
    (check #t (chaperone-of? (chaperone-evt ch void) ch))
    (check #t (channel? (chaperone-evt ch void)))
    (check #t (channel? (chaperone-channel ch void void)))
@@ -149,15 +139,15 @@
    (check-chaperone-channel (lambda (ch v) (sync (channel-put-evt ch v))))
 
    ;; Check sleeping in main thread
-   (define now1 (current-inexact-milliseconds))
+   (define now1 (current-inexact-monotonic-milliseconds))
    (sleep 0.1)
-   (check #t ((current-inexact-milliseconds) . >= . (+ now1 0.1)))
+   (check #t ((current-inexact-monotonic-milliseconds) . >= . (+ now1 0.1)))
 
    ;; Check sleeping in other thread
-   (define now2 (current-inexact-milliseconds))
+   (define now2 (current-inexact-monotonic-milliseconds))
    (define ts (thread (lambda () (sleep 0.1))))
    (check ts (sync ts))
-   (check #t ((current-inexact-milliseconds) . >= . (+ now2 0.1)))
+   (check #t ((current-inexact-monotonic-milliseconds) . >= . (+ now2 0.1)))
 
    ;; Check `alarm-evt`
    (define now2+ (current-inexact-milliseconds))
@@ -235,7 +225,7 @@
      (report-expected-break)
 
      ;; Check that a break exception is delayed if disabled
-     (define now3 (current-inexact-milliseconds))
+     (define now3 (current-inexact-monotonic-milliseconds))
      (define tdelay (with-continuation-mark
                         break-enabled-key
                       (make-thread-cell #f)
@@ -251,7 +241,7 @@
      (check tdelay (sync tdelay))
      (report-expected-break)
      (unless kill?
-       (check #t ((current-inexact-milliseconds) . >= . (+ now3 0.1))))
+       (check #t ((current-inexact-monotonic-milliseconds) . >= . (+ now3 0.1))))
 
      ;; Check that a semaphore wait can be abandoned
      (define tstuck (thread (lambda () (semaphore-wait (make-semaphore)))))

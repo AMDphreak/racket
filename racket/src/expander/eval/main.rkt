@@ -2,9 +2,6 @@
 (require "../common/struct-star.rkt"
          "../syntax/module-binding.rkt"
          "../syntax/api.rkt"
-         (only-in "../syntax/taint.rkt"
-                  [syntax-disarm raw:syntax-disarm]
-                  [syntax-rearm raw:syntax-rearm])
          "../namespace/namespace.rkt"
          "../namespace/module.rkt"
          "../namespace/core.rkt"
@@ -29,6 +26,7 @@
          "reflect.rkt"
          "../expand/log.rkt"
          "../expand/parsed.rkt"
+         "../expand/top-portal-syntax.rkt"
          "../common/performance.rkt"
          "../compile/correlated-linklet.rkt")
 
@@ -163,27 +161,14 @@
                                                        (expand-single form ns observer to-parsed?
                                                                       #:serializable? serializable?)))]
    [else
-    (log-top-lift-begin-before ctx require-lifts lifts exp-s ns)
     (define new-s
-      (wrap-lifts-as-begin (append require-lifts lifts)
-                           #:adjust-form (lambda (form)
-                                           (log-expand ctx 'next)
-                                           (expand-single form ns observer to-parsed?
-                                                          #:serializable? serializable?))
-                           #:adjust-body (lambda (form)
-                                           (cond
-                                             [to-parsed? form]
-                                             [else
-                                              (log-expand ctx 'next)
-                                              ;; This re-expansion should be unnecessary, but we do it
-                                              ;; for a kind of consistentcy with `expand/capture-lifts`
-                                              ;; and for expansion observers
-                                              (expand-single form ns observer to-parsed?
-                                                             #:serializable? serializable?)]))
+      (wrap-lifts-as-begin (append (map parsed-s require-lifts)
+                                   lifts)
                            exp-s
                            (namespace-phase ns)))
-    (log-top-begin-after ctx new-s)
-    new-s]))
+    (log-expand ctx 'lift-loop new-s)
+    (expand-single new-s ns observer to-parsed?
+                   #:serializable? serializable?)]))
 
 (define (expand-once s [ns (current-namespace)])
   (per-top-level s ns
@@ -200,7 +185,8 @@
   (cond
    [(and (null? require-lifts) (null? lifts)) exp-s]
    [else
-    (wrap-lifts-as-begin (append require-lifts lifts)
+    (wrap-lifts-as-begin (append (map parsed-s require-lifts)
+                                 lifts)
                          exp-s
                          (namespace-phase ns))]))
 
@@ -244,11 +230,11 @@
                                               [only-immediate? #t]
                                               [phase phase]
                                               [namespace ns])))
-    (define disarmed-exp-s (raw:syntax-disarm exp-s))
     (cond
      [(or (pair? require-lifts) (pair? lifts))
       ;; Fold in lifted definitions and try again
-      (define new-s (wrap-lifts-as-begin (append require-lifts lifts)
+      (define new-s (wrap-lifts-as-begin (append (map parsed-s require-lifts)
+                                                 lifts)
                                          exp-s
                                          phase))
       (log-expand tl-ctx 'lift-loop new-s)
@@ -260,10 +246,10 @@
       exp-s]
      [(and just-once? (not (eq? exp-s wb-s))) exp-s]
      [else
-      (case (core-form-sym disarmed-exp-s phase)
+      (case (core-form-sym exp-s phase)
         [(begin)
-         (log-expand ctx 'prim-begin)
-         (define-match m disarmed-exp-s '(begin e ...))
+         (log-expand ctx 'prim-begin exp-s)
+         (define-match m exp-s '(begin e ...))
          ;; Map `loop` over the `e`s, but in the case of `eval`,
          ;; tail-call for last one:
          (define (begin-loop es)
@@ -289,8 +275,8 @@
             new-s]
            [else (begin-loop (m 'e))])]
         [(begin-for-syntax)
-         (log-expand tl-ctx 'prim-begin-for-syntax)
-         (define-match m disarmed-exp-s '(begin-for-syntax e ...))
+         (log-expand tl-ctx 'prim-begin-for-syntax exp-s)
+         (define-match m exp-s '(begin-for-syntax e ...))
          (define next-phase (add1 phase))
          (define next-ns (namespace->namespace-at-phase ns next-phase))
          (log-expand tl-ctx 'prepare-env)
@@ -319,12 +305,10 @@
       (namespace-syntax-introduce (datum->syntax #f s) ns)))
 
 (define (re-pair form-id s r)
-  (raw:syntax-rearm
-   (datum->syntax (raw:syntax-disarm s)
-                  (cons form-id r)
-                  s
-                  s)
-   s))
+  (datum->syntax s
+                 (cons form-id r)
+                 s
+                 s))
 
 ;; ----------------------------------------
 
@@ -338,7 +322,7 @@
    (define lift-ctx (make-lift-context (make-top-level-lift ctx)))
    (define require-lift-ctx (make-require-lift-context
                              (namespace-phase ns)
-                             (make-parse-top-lifted-require ns)))
+                             (make-parse-top-lifted-require ns ctx)))
    (define exp-s
      (expand-in-context s (struct*-copy expand-context ctx
                                         [lifts lift-ctx]
@@ -348,24 +332,26 @@
            (get-and-clear-lifts! lift-ctx)
            exp-s)))
 
-(define (make-parse-top-lifted-require ns)
+(define (make-parse-top-lifted-require ns ctx)
   (lambda (s phase)
     ;; We don't "hide" this require in the same way as
     ;; a top-level `#%require`, because it's already
     ;; hidden in the sense of having an extra scope
-    (define-match m (raw:syntax-disarm s) '(#%require req))
+    (define-match m s '(#%require req))
+    (define syms (box null))
     (parse-and-perform-requires! (list (m 'req)) s
                                  ns phase #:run-phase phase
                                  (make-requires+provides #f)
-                                 #:who 'require)))
+                                 #:add-defined-portal (make-top-add-defined-portal ns ctx syms)
+                                 #:who 'require)
+    (parsed-require s (reverse (unbox syms)))))
 
 (define (wrap-lifts-as-lifted-parsed-begin require-lifts
                                            lifts
                                            exp-s rebuild-s
                                            #:adjust-form adjust-form)
   (lifted-parsed-begin (append
-                        (for/list ([req (in-list require-lifts)])
-                          (parsed-require req))
+                        require-lifts
                         (for/list ([ids+syms+rhs (in-list (get-lifts-as-lists lifts))])
                           (define exp-rhs (adjust-form (caddr ids+syms+rhs)))
                           (define just-rhs (if (lifted-parsed-begin? exp-rhs)
@@ -386,28 +372,16 @@
   (log-expand...
    ctx
    (lambda (obs)
-     (define new-s (wrap-lifts-as-begin (append require-lifts lifts)
+     (define new-s (wrap-lifts-as-begin (map parsed-s require-lifts)
+                                        lifts
                                         exp-s
                                         (namespace-phase ns)))
-     (...log-expand obs ['lift-loop new-s])
-     (log-top-begin-before ctx new-s))))
+     (define-match m new-s '(begin e ...))
+     (...log-expand obs ['enter-lift-loop new-s]))))
 
-(define (log-top-begin-before ctx new-s)
+(define (log-top-lift-begin-after ctx new-s)
   (log-expand...
    ctx
    (lambda (obs)
-     (define-match m new-s '(begin e ...))
-     (...log-expand obs
-                    ['visit new-s] ['resolve (m 'begin)]
-                    ['enter-prim new-s] ['prim-begin]
-                    ['enter-list (datum->syntax #f (m 'e) new-s)]))))
-
-(define (log-top-begin-after ctx new-s)
-  (log-expand...
-   ctx
-   (lambda (obs)
-     (define-match m new-s '(begin e ...))
      (log-expand* ctx
-                  ['exit-list (datum->syntax #f (m 'e) new-s)]
-                  ['exit-prim new-s]
-                  ['return new-s]))))
+                  ['end-lift-loop new-s]))))

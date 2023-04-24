@@ -20,7 +20,7 @@
 The @racketmodname[racket/place/distributed] library provides support for
 distributed programming.
 
-The example bellow demonstrates how to launch a remote racket node instance,
+The example below demonstrates how to launch a remote racket node instance,
 launch remote places on the new remote node instance, and start an
 event loop that monitors the remote node instance.
 
@@ -51,7 +51,7 @@ symbol.
 The code for the tuple-server place exists in the file
 @filepath{tuple.rkt}.  The @filepath{tuple.rkt} file contains the use of
 @racket[define-named-remote-server] form, which defines a RPC server
-suitiable for invocation by @racket[supervise-place-at].
+suitable for invocation by @racket[supervise-place-at].
 
 
 

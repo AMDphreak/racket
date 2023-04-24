@@ -8,6 +8,8 @@
 @include-section["startup.scrbl"]
 @include-section["collects.scrbl"]
 @include-section["help.scrbl"]
+@include-section["interaction-info.scrbl"]
 @include-section["interactive.scrbl"]
 @include-section["debugging.scrbl"]
+@include-section["compiler.scrbl"]
 @include-section["kernel.scrbl"]
